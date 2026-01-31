@@ -1,0 +1,61 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Deno",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "runtimeExecutable": "deno",
+      "experimentalNetworking": "off",
+      "runtimeArgs": ["run", "--inspect-brk", "--allow-all", "src/server.ts"],
+      "attachSimplePort": 9229
+    },
+    {
+      "name": "Debug WebSocket Test",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "runtimeExecutable": "deno",
+      "runtimeArgs": [
+        "test",
+        "--inspect-brk",
+        "--allow-all",
+        "--trace-leaks",
+        "src/test/webSocket-test.ts"
+      ],
+      "attachSimplePort": 9229,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen"
+    },
+    {
+      "name": "Debug Deno Tests + MCP",
+      "type": "node",
+      "request": "attach",
+      "port": 9229,
+      "restart": false,
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Attach to Deno Tests (Manual Start)",
+      "type": "node",
+      "request": "attach",
+      "port": 9229,
+      "address": "localhost",
+      "restart": true,
+      "timeout": 30000,
+      "skipFiles": ["/**"]
+    },
+    {
+      "name": "Debug Tests with MCP (Auto Start)",
+      "type": "node",
+      "request": "attach",
+      "port": 9229,
+      "address": "localhost",
+      "restart": true,
+      "timeout": 30000,
+      "skipFiles": ["/**"],
+      "preLaunchTask": "Start Complete Debug Environment"
+    }
+  ]
+}

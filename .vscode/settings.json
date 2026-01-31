@@ -1,0 +1,25 @@
+{
+  "deno.enable": true,
+  "deno.lint": true,
+  "deno.unstable": [],
+  "deno.config": "./deno.json",
+  "deno.testing": true,
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "denoland.vscode-deno",
+  "editor.codeLens": true,
+  "deno.codeLens.test": true,
+  "[javascript]": {
+    "editor.defaultFormatter": "denoland.vscode-deno"
+  },
+  "files.autoSave": "afterDelay",
+  "files.autoSaveDelay": 1000,
+  "[typescript]": {
+    "editor.defaultFormatter": "denoland.vscode-deno"
+  },
+  "files.watcherExclude": {
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/node_modules/**": true
+  },
+  "terminal.integrated.scrollback": 10000
+}

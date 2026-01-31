@@ -1,0 +1,65 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start Deno Debug Session",
+      "type": "shell",
+      "command": "${workspaceFolder}/start-debug-session.sh",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": false,
+        "clear": false,
+        "showReuseMessage": false,
+        "close": false
+      },
+      "runOptions": {
+        "instanceLimit": 1
+      }
+    },
+    {
+      "label": "Start Deno Tests Only",
+      "type": "shell",
+      "command": "deno",
+      "args": ["test", "--inspect-brk=9229", "--watch", "test"],
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^(.*)$",
+          "file": 1
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^.*Debugger listening.*$",
+          "endsPattern": "^.*test.*$"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Start MCP Server",
+      "type": "shell",
+      "command": "chrome-devtools-mcp",
+      "args": [
+        "ws://127.0.0.1:9229"
+      ],
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Start Complete Debug Environment",
+      "dependsOn": ["Start Deno Tests Only", "Start MCP Server"],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    }
+  ]
+}

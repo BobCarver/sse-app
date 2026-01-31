@@ -1,0 +1,63 @@
+# .github/workflows/e2e.yml
+name: E2E Tests
+
+on: [push, pull_request]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: denoland/setup-deno@v1
+        with:
+          deno-version: v1.x
+
+      - name: Install psql client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Wait for Postgres to be ready
+        env:
+          DATABASE_URL: postgres://postgres:test@localhost:5432/test_db
+        run: |
+          set -e
+          for i in $(seq 1 30); do
+            if psql "$DATABASE_URL" -c 'SELECT 1;' >/dev/null 2>&1; then
+              echo "Postgres is ready"
+              exit 0
+            fi
+            echo "Waiting for Postgres... ($i)"
+            sleep 1
+          done
+          echo "Postgres did not become ready" >&2
+          exit 1
+
+      - name: Apply schema
+        env:
+          DATABASE_URL: postgres://postgres:test@localhost:5432/test_db
+        run: psql "$DATABASE_URL" -f src/schema2.sql
+
+      - name: Apply seed data
+        env:
+          DATABASE_URL: postgres://postgres:test@localhost:5432/test_db
+        run: psql "$DATABASE_URL" -f docker/db-init/02_seed.sql
+
+      - name: Run E2E tests
+        run: deno test --allow-run --allow-net --allow-env --allow-read --no-check test/e2e_harness_test.ts
+        env:
+          DATABASE_URL: postgres://postgres:test@localhost:5432/test_db
