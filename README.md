@@ -24,13 +24,13 @@ E2E with Docker Compose:
 - Run the E2E test harness (will use the DB):
 
   ```sh
-  deno task test:e2e
+  make e2e-run
   ```
 
 - One-liner: bring DB up, init, run tests, and teardown:
 
   ```sh
-  deno task init-db:all && deno task test:e2e && deno task docker:postgres:compose:down
+  make e2e-full
   ```
 
 - Convenience script (includes teardown by default):

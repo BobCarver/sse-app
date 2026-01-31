@@ -1,5 +1,5 @@
 // src/serve.ts
-import appDef, {app} from "../src/main.ts";
+import appDef, {app} from "../app/src/main.ts";
 
 const port = appDef.port || 3000;
 console.log(`Starting server on port ${port} (via serve.ts)`);

@@ -1,4 +1,3 @@
-# .github/workflows/e2e.yml
 name: E2E Tests
 
 on: [push, pull_request]
@@ -22,9 +21,9 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - uses: denoland/setup-deno@v1
+      - uses: actions/setup-node@v4
         with:
-          deno-version: v1.x
+          node-version: "18"
 
       - name: Install psql client
         run: |
@@ -47,17 +46,16 @@ jobs:
           echo "Postgres did not become ready" >&2
           exit 1
 
-      - name: Apply schema
+      - name: Apply schema and seed
         env:
           DATABASE_URL: postgres://postgres:test@localhost:5432/test_db
-        run: psql "$DATABASE_URL" -f src/schema2.sql
+        run: |
+          psql "$DATABASE_URL" -f app/src/schema2.sql
+          psql "$DATABASE_URL" -f docker/db-init/02_seed.sql
 
-      - name: Apply seed data
-        env:
-          DATABASE_URL: postgres://postgres:test@localhost:5432/test_db
-        run: psql "$DATABASE_URL" -f docker/db-init/02_seed.sql
-
-      - name: Run E2E tests
-        run: deno test --allow-run --allow-net --allow-env --allow-read --no-check test/e2e_harness_test.ts
-        env:
-          DATABASE_URL: postgres://postgres:test@localhost:5432/test_db
+      - name: Install Playwright & run tests
+        working-directory: tests
+        run: |
+          npm ci
+          npx playwright install --with-deps
+          npx playwright test --reporter=dot

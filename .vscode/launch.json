@@ -8,7 +8,7 @@
       "cwd": "${workspaceFolder}",
       "runtimeExecutable": "deno",
       "experimentalNetworking": "off",
-      "runtimeArgs": ["run", "--inspect-brk", "--allow-all", "src/server.ts"],
+      "runtimeArgs": ["run", "--inspect-brk", "--allow-all", "app/src/main.ts"],
       "attachSimplePort": 9229
     },
     {
@@ -22,7 +22,7 @@
         "--inspect-brk",
         "--allow-all",
         "--trace-leaks",
-        "src/test/webSocket-test.ts"
+        "app/src/test/webSocket-test.ts"
       ],
       "attachSimplePort": 9229,
       "console": "integratedTerminal",

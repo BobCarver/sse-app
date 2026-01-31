@@ -1,4 +1,4 @@
-!/usr/bin/env sh
+#!/usr/bin/env sh
 set -eu
 TEARDOWN=${TEARDOWN:-1}
 echo "[run-e2e] Bringing up DB..."
@@ -8,7 +8,7 @@ echo "[run-e2e] Running one-shot DB init..."
 docker compose run --rm db-init
 
 echo "[run-e2e] Running e2e tests..."
-cd tests && npm ci && npx playwright test
+cd tests && npm ci && npx playwright install --with-deps && npx playwright test
 RESULT=$?
 
 if [ "$TEARDOWN" -eq 1 ]; then
