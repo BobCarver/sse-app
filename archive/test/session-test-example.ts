@@ -1,8 +1,8 @@
 // tests/session.test.ts
 import { assertEquals } from "std/assert";
-import { Session } from "../src/session.ts";
-import { clearAllResolvers } from "../src/resolveTag.ts";
-import type { Competition } from "../src/types.ts";
+import { Session } from "../app/src/session.ts";
+import { clearAllResolvers } from "../app/src/resolveTag.ts";
+import type { Competition } from "../app/src/types.ts";
 import {
   connectAsUnassigned,
   createDependencies,

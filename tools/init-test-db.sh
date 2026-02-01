@@ -30,7 +30,7 @@ echo "[init-test-db] DB_NAME=$DB_NAME"
 # Test connectivity to target DB
 if psql "$DATABASE_URL_ESCAPED" -c "SELECT 1;" >/dev/null 2>&1; then
   echo "[init-test-db] Target DB reachable — applying schema and seed"
-  psql "$DATABASE_URL_ESCAPED" -f src/schema2.sql
+  psql "$DATABASE_URL_ESCAPED" -f app/src/schema2.sql
   psql "$DATABASE_URL_ESCAPED" -f test/seed_db.sql
   echo "[init-test-db] Done"
   exit 0

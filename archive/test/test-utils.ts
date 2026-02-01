@@ -21,7 +21,6 @@
  */
 
 import { resolveTag } from "../src/resolveTag.ts";
-import { Session } from "../src/session.ts";
 import type { Competition, Scores, ScoreSubmission } from "../src/types.ts";
 
 /**
