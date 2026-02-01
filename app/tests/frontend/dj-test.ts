@@ -397,7 +397,7 @@ Deno.test("DjClient plays correct audio sources", async () => {
   const mockAudio = new MockAudio();
 
   // Prevent outbound network calls during the performance flow
-  const noopFetch = stubFetchNoop();
+  stubFetchNoop();
 
   new DjClient({
     document: doc,

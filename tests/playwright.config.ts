@@ -15,7 +15,7 @@ export default defineConfig({
             "PORT=8000 deno run --allow-net --allow-env --allow-read ../app/src/main.ts",
         url: "http://localhost:8000/_health",
         timeout: 60_000,
-        reuseExistingServer: false,
+        reuseExistingServer: false, // always start server using Playwright's env (ensures DB env is set for e2e)
         env: {
             DATABASE_URL: "postgres://postgres:test@localhost:5432/test_db",
             JUDGE_SCORE_TIMEOUT_MS: "5000",

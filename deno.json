@@ -1,11 +1,11 @@
 {
   "tasks": {
-    "dev": "deno run --allow-net --allow-env --allow-read server.ts",
-    "start": "deno run --allow-net --allow-env --allow-read server.ts",
+    "dev": "deno run --allow-net --allow-env --allow-read app/src/main.ts",
+    "start": "deno run --allow-net --allow-env --allow-read app/src/main.ts",
     "check": "deno check --quiet",
     "fmt": "deno fmt",
     "lint": "deno lint",
-    "test": "deno test",
+    "test": "deno test tests",
     "init-test-db": "sh tools/init-test-db.sh",
     "docker:postgres:compose:up": "docker compose up -d db",
     "docker:postgres:compose:down": "docker compose down",
@@ -13,7 +13,7 @@
     "docker:postgres:reinit": "docker compose down -v && docker compose up -d db && deno task docker:postgres:db-init",
     "init-db:all": "deno task docker:postgres:compose:up && deno task docker:postgres:db-init",
     "test:unit": "deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost",
-    "test:frontend": "deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost test/frontend",
+    "test:frontend": "deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost tests/frontend",
     "test:all": "deno test -A"
   },
   "imports": {

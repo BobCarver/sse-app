@@ -37,7 +37,7 @@ import type { Competition, Scores, ScoreSubmission } from "../src/types.ts";
  * Example:
  *   connectAsUnassigned(deps, session, createMockClient("judge2"));
  */
-export function connectAsUnassigned(deps: any, session: any, client: any) {
+export function connectAsUnassigned(deps: any, session: Session, client: any) {
   deps.unassignedClients.set(client.id, client);
   session.connectClient(client);
 }
@@ -117,7 +117,7 @@ export function delay(ms: number) {
  *   // do other actions, then await sessionPromise when ready
  */
 export async function startSession(
-  session: any,
+  session: Session,
   competitions: Competition[],
   permanentClientIds: string[] = ["dj0"],
   waitMs = 50,

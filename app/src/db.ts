@@ -5,12 +5,21 @@ import { Competition, Competitor, Rubric, ScoreSubmission } from "./types.ts";
 const DATABASE_URL = Deno.env.get("DATABASE_URL") || "";
 
 export const sql = DATABASE_URL ? postgres(DATABASE_URL) : undefined;
+if (!sql) {
+  console.warn(
+    "DB not configured - DATABASE_URL not set; running in memory/disabled DB mode",
+  );
+} else {
+  console.log("DB configured, connecting to", DATABASE_URL);
+}
 
 export const db = {
   saveScore({ scores, ...rest }: ScoreSubmission): Promise<void> {
     const values = scores.map((s) => ({ ...rest, ...s }));
     if (!sql) return Promise.resolve();
-    return (sql as any)`INSERT INTO scores ${sql(values)}` as unknown as Promise<void>;
+    return (sql as any)`INSERT INTO scores ${
+      sql(values)
+    }` as unknown as Promise<void>;
   },
 };
 
@@ -30,6 +39,9 @@ export async function getSessionCompetitionsWithRubrics(
     competitors: Competitor[];
   };
 
+  console.log(
+    `getSessionCompetitionsWithRubrics: sessionId=${sessionId} sqlDefined=${!!sql}`,
+  );
   const competitions = await (sql as any)<CompetitionRow[]>`
     SELECT comp.id, comp.name, comp.rubric_id,
       json_agg(
@@ -45,6 +57,9 @@ export async function getSessionCompetitionsWithRubrics(
     HAVING COUNT(cc.competitor_id) > 0;
 `;
 
+  console.log(
+    `getSessionCompetitionsWithRubrics: sessionId=${sessionId} => competitions=${competitions.length}`,
+  );
   if (competitions.length === 0) return [];
 
   // Extract unique rubric IDs

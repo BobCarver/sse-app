@@ -22,10 +22,10 @@ export class Session {
   running: boolean = false;
 
   // Track current state for recovery
-  private currentCompetition: Competition | null = null;
-  private currentPosition: number = -1;
-  private currentPhase: "idle" | "performing" | "scoring" = "idle";
-  private submittedScores: Set<string> = new Set(); // "competitionId:position:judgeId"
+  currentCompetition: Competition | null = null;
+  currentPosition: number = -1;
+  currentPhase: "idle" | "performing" | "scoring" = "idle";
+  submittedScores: Set<string> = new Set(); // "competitionId:position:judgeId"
 
   constructor(
     public id: number,

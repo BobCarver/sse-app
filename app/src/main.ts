@@ -59,7 +59,24 @@ app.get("/", (c: Context<{ Variables: Variables }>) => c.text("Hello Hono"));
 // Health/readiness endpoint for e2e harness and external checks
 app.get(
   "/_health",
-  (c: Context<{ Variables: Variables }>) => c.json({ ok: true }),
+  async (c: Context<{ Variables: Variables }>) => {
+    // If the app is expected to rely on a database for e2e tests, verify DB is configured
+    const dbUrl = Deno.env.get("DATABASE_URL");
+    if (!dbUrl) {
+      return c.json({ ok: false, error: "DATABASE_URL not set" }, 500);
+    }
+
+    try {
+      // Quick check: ensure at least one competition exists (seeded in e2e)
+      const comps = await getSessionCompetitionsWithRubrics(1);
+      if (!comps || comps.length === 0) {
+        return c.json({ ok: false, error: "No competitions found" }, 500);
+      }
+      return c.json({ ok: true });
+    } catch (err) {
+      return c.json({ ok: false, error: String(err) }, 500);
+    }
+  },
 );
 
 // ============================================================================
@@ -155,6 +172,9 @@ app.post(
     }
 
     if (!competitions || competitions.length === 0) {
+      return c.json({
+        error: `No competitions provided for session ${sessionId}`,
+      }, 400);
     }
 
     const session = SessionManager.createSession(sessionId, {
@@ -232,12 +252,10 @@ Deno.addSignalListener("SIGTERM", () => {
 // START SERVER
 // ============================================================================
 
-const port = parseInt(Deno.env.get("PORT") || "3000");
+export const port = parseInt(Deno.env.get("PORT") || "3000");
 
-export default {
-  port,
-  fetch: app.fetch,
-};
+// Default export is the fetch handler so `deno serve` can use it directly.
+export default app.fetch;
 
 // When run directly, start an HTTP listener to allow real network e2e tests.
 if (import.meta.main) {

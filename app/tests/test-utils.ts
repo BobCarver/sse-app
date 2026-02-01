@@ -1,11 +1,23 @@
 /*
  * Test utilities for simulating SSE behavior and common session test patterns.
  */
+// deno-lint-ignore-file require-await
 
-import { resolveTag } from "../../src/resolveTag.ts";
-import type { Competition, Scores, ScoreSubmission } from "../../src/types.ts";
+import { resolveTag } from "../src/resolveTag.ts";
+import { Session } from "../src/session.ts";
+import type {
+  Competition,
+  Scores,
+  ScoreSubmission,
+  SSEClient,
+} from "../src/types.ts";
 
-export function connectAsUnassigned(deps: any, session: any, client: any) {
+export function connectAsUnassigned(
+// deno-lint-ignore no-explicit-any
+  deps: any,
+  session: Session,
+  client: SSEClient,
+) {
   deps.unassignedClients.set(client.id, client);
   session.connectClient(client);
 }
@@ -19,17 +31,19 @@ export function createMockClient(id: string) {
         messages.push(msg);
       },
     },
-  } as any;
+    // Expose captured messages for tests
+    __messages: messages,
+  } as unknown as SSEClient & { __messages: string[] };
 }
 
 export function createDependencies() {
-  const deps: any = {
-    unassignedClients: new Map<string, any>(),
-    scores: [] as any[],
+  const deps = {
+    unassignedClients: new Map<string, SSEClient>(),
+    scores: [] as ScoreSubmission[],
     saveScore: async (submission: ScoreSubmission) => {
       deps.scores.push(submission);
     },
-  } as any;
+  };
 
   return deps;
 }
@@ -39,7 +53,7 @@ export function delay(ms: number) {
 }
 
 export async function startSession(
-  session: any,
+  session: Session,
   competitions: Competition[],
   permanentClientIds: string[] = ["dj0"],
   waitMs = 50,
