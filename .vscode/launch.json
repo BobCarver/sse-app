@@ -9,7 +9,7 @@
       "runtimeExecutable": "deno",
       "runtimeArgs": [
         "run",
-        "--inspect-brk",
+        "--inspect-brk=127.0.0.1:9229",
         "--config=app/deno.json",
         "--allow-net",
         "--allow-env",
