@@ -17,6 +17,7 @@ fi
 
 DATABASE_URL="postgres://postgres:test@localhost:5432/test_db" \
 JWT_SECRET="test-secret" \
+DEBUG=1 \
 JUDGE_SCORE_TIMEOUT_MS="5000" \
 PORT=8000 nohup deno run --allow-net --allow-env --allow-read app/src/main.ts > /tmp/deno-8000.log 2>&1 &
 

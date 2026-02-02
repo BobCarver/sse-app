@@ -17,7 +17,7 @@ export const db = {
   saveScore({ scores, ...rest }: ScoreSubmission): Promise<void> {
     const values = scores.map((s) => ({ ...rest, ...s }));
     if (!sql) return Promise.resolve();
-    return (sql as any)`INSERT INTO scores ${
+    return sql `INSERT INTO scores ${
       sql(values)
     }` as unknown as Promise<void>;
   },
@@ -42,7 +42,7 @@ export async function getSessionCompetitionsWithRubrics(
   console.log(
     `getSessionCompetitionsWithRubrics: sessionId=${sessionId} sqlDefined=${!!sql}`,
   );
-  const competitions = await (sql as any)<CompetitionRow[]>`
+  const competitions = await sql<CompetitionRow[]>`
     SELECT comp.id, comp.name, comp.rubric_id,
       json_agg(
         json_build_object('id', c.id, 'name', c.name, 'duration', cc.duration)
@@ -53,8 +53,8 @@ export async function getSessionCompetitionsWithRubrics(
     LEFT JOIN competitors c ON c.id = cc.competitor_id
     WHERE comp.session_id = ${sessionId}
     GROUP BY comp.id
-    ORDER BY comp.order_number
-    HAVING COUNT(cc.competitor_id) > 0;
+    HAVING COUNT(cc.competitor_id) > 0
+    ORDER BY comp.order_number;
 `;
 
   console.log(
@@ -69,7 +69,7 @@ export async function getSessionCompetitionsWithRubrics(
 
   // Get rubric definition
 
-  const rubrics = await (sql as any)<Rubric[]>`
+  const rubrics = await sql<Rubric[]>`
     SELECT r.id,
       ( SELECT json_agg( json_build_object( 'id', cr.id, 'name', cr.name, 'weight', rc.weight))
         FROM rubric_criteria rc
@@ -90,7 +90,7 @@ export async function getSessionCompetitionsWithRubrics(
         WHERE rj.rubric_id = r.id
       ) AS judges
     FROM rubrics r
-    WHERE r.id IN ${(sql as any)(rubricIds)}
+    WHERE r.id IN ${sql(rubricIds)}
   `;
 
   // Create rubric lookup map

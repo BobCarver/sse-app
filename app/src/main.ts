@@ -177,13 +177,54 @@ app.post(
       }, 400);
     }
 
-    const session = SessionManager.createSession(sessionId, {
-      unassignedClients,
-      saveScore: async (scoreData: ScoreSubmission) => {
-        // Implement score saving logic here, e.g., insert into DB
-        dlog("Saving score data:", scoreData);
-      },
-    });
+    let session;
+    try {
+      session = SessionManager.createSession(sessionId, {
+        unassignedClients,
+        saveScore: async (scoreData: ScoreSubmission) => {
+          // Implement score saving logic here, e.g., insert into DB
+          dlog("Saving score data:", scoreData);
+        },
+      });
+    } catch (err) {
+      // If session already exists, try to recover if it's stale (not running)
+      const msg = String(err);
+      console.warn(`createSession error for ${sessionId}:`, msg);
+      const existing = SessionManager.getSession(sessionId);
+      if (existing && existing.isRunning()) {
+        // Already running: idempotent start
+        return c.json({
+          success: true,
+          message: "Session already running",
+          sessionId,
+        });
+      }
+
+      if (existing && !existing.isRunning()) {
+        // Stale session detected: delete and retry creating session
+        console.warn(
+          `Session ${sessionId} exists but not running; deleting stale session and retrying start`,
+        );
+        SessionManager.deleteSession(sessionId);
+        try {
+          session = SessionManager.createSession(sessionId, {
+            unassignedClients,
+            saveScore: async (scoreData: ScoreSubmission) => {
+              dlog("Saving score data:", scoreData);
+            },
+          });
+        } catch (err2) {
+          console.error(
+            `Retry createSession failed for ${sessionId}:`,
+            String(err2),
+          );
+          return c.json({ error: String(err2) }, 500);
+        }
+      } else {
+        // No existing session info, surface original error
+        return c.json({ error: msg }, 500);
+      }
+    }
 
     if (session === undefined) {
       return c.json({ error: "Invalid session ID" }, 400);
@@ -193,12 +234,15 @@ app.post(
     if (session.isRunning()) {
       return c.json({ error: "Session already running" }, 409);
     }
+
     try {
       // Run session asynchronously (don't wait for completion)
       session.runSession(competitions).catch((error: unknown) => {
         console.error(`Session ${sessionId} error:`, error);
         SessionManager.deleteSession(sessionId);
       }).finally(() => {
+        // Ensure the session is removed from the manager when it finishes (success or error)
+        SessionManager.deleteSession(sessionId);
         console.log(`Session ${sessionId} completed`);
       });
 
