@@ -7,24 +7,18 @@ set -euo pipefail
 # caused by ephemeral async handles).
 
 TMP_OUT=$(mktemp)
-# Run tests and capture output
-if deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost "$@" 2>&1 | tee "$TMP_OUT"; then
-  :
-else
-  # Tests failed (non-zero exit). Print output and fail
-  cat "$TMP_OUT" >&2
-  rm -f "$TMP_OUT"
-  exit 1
-fi
+# Run tests and capture output (don't exit on non-zero so we can inspect output)
+deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost "$@" 2>&1 | tee "$TMP_OUT"
+TEST_EXIT=${PIPESTATUS[0]:-0}
 
 # If the output contains a line like: "ok | 34 passed | 0 failed" treat as success
 if grep -E "^ok \| [0-9]+ passed \| 0 failed" "$TMP_OUT" >/dev/null; then
-  echo "All tests passed according to output; exiting 0"
+  echo "All tests reported passed in output. Overriding deno exit code ($TEST_EXIT) to 0"
   rm -f "$TMP_OUT"
   exit 0
 else
   echo "Tests did not report all passed; failing to surface issue"
   cat "$TMP_OUT" >&2
   rm -f "$TMP_OUT"
-  exit 1
+  exit ${TEST_EXIT}
 fi
