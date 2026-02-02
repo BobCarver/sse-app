@@ -10,6 +10,7 @@
       "runtimeArgs": [
         "run",
         "--inspect-brk",
+        "--config=app/deno.json",
         "--allow-net",
         "--allow-env",
         "--allow-read",
