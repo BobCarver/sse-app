@@ -2,12 +2,18 @@
   "deno.enable": true,
   "deno.lint": true,
   "deno.unstable": [],
-  "deno.config": "./deno.json",
+  "deno.config": "app/deno.json",
   "deno.testing": true,
   "editor.formatOnSave": true,
   "editor.defaultFormatter": "denoland.vscode-deno",
   "editor.codeLens": true,
   "deno.codeLens.test": true,
+  "files.exclude": {
+    "**/archive/**": true
+  },
+  "search.exclude": {
+    "**/archive/**": true
+  },
   "[javascript]": {
     "editor.defaultFormatter": "denoland.vscode-deno"
   },

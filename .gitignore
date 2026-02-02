@@ -1,3 +1,32 @@
+# Deno cache
 .denocache
+.deno/
+
+# OS / Editor
 .DS_Store
-node_modules
+.idea/
+.vscode/*?.local
+
+# Node / Playwright
+node_modules/
+tests/node_modules/
+tests/test-results/
+playwright-report/
+.playwright/
+
+# Logs, build and coverage
+*.log
+.cache/
+coverage/
+.nyc_output/
+dist/
+build/
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Archives / artifacts
+*.zip
+*.tar.gz
