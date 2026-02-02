@@ -470,7 +470,7 @@ export class Session {
    */
   async runSession(
     competitions: Competition[],
-    permanentClientIds: string[] = ["dj0"], // Default: DJ only
+    permanentClientIds: string[] = ["dj0", "sb10"], // Default: DJ and scoreboard
   ): Promise<void> {
     if (this.running) {
       throw new Error(`Session ${this.id} already running`);

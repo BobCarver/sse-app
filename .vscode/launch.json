@@ -2,31 +2,34 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Deno",
-      "type": "node",
-      "request": "launch",
-      "cwd": "${workspaceFolder}",
-      "runtimeExecutable": "deno",
-      "experimentalNetworking": "off",
-      "runtimeArgs": ["run", "--inspect-brk", "--allow-all", "app/src/main.ts"],
-      "attachSimplePort": 9229
-    },
-    {
-      "name": "Debug WebSocket Test",
+      "name": "Launch Deno Server",
       "type": "node",
       "request": "launch",
       "cwd": "${workspaceFolder}",
       "runtimeExecutable": "deno",
       "runtimeArgs": [
-        "test",
+        "run",
         "--inspect-brk",
-        "--allow-all",
-        "--trace-leaks",
-        "app/src/test/webSocket-test.ts"
+        "--allow-net",
+        "--allow-env",
+        "--allow-read",
+        "app/src/main.ts"
       ],
-      "attachSimplePort": 9229,
       "console": "integratedTerminal",
-      "internalConsoleOptions": "neverOpen"
+      "env": {
+        "PORT": "8000",
+        "DATABASE_URL": "postgres://postgres:test@localhost:5432/test_db",
+        "JWT_SECRET": "test-secret"
+      }
+    },
+    {
+      "name": "Attach to Deno Server",
+      "type": "node",
+      "request": "attach",
+      "address": "localhost",
+      "port": 9229,
+      "restart": false,
+      "timeout": 30000
     },
     {
       "name": "Debug Deno Tests + MCP",
