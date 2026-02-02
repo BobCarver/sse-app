@@ -1,0 +1,34 @@
+{
+  "tasks": {
+    "dev": "deno run --allow-net --allow-env --allow-read src/main.ts",
+    "start": "deno run --allow-net --allow-env --allow-read src/main.ts",
+    "check": "deno check --quiet",
+    "fmt": "deno fmt",
+    "lint": "deno lint",
+    "test": "deno test ../tests",
+    "init-test-db": "sh ../tools/init-test-db.sh",
+    "docker:postgres:compose:up": "docker compose up -d db",
+    "docker:postgres:compose:down": "docker compose down",
+    "docker:postgres:db-init": "docker compose run --rm db-init",
+    "docker:postgres:reinit": "docker compose down -v && docker compose up -d db && deno task docker:postgres:db-init",
+    "init-db:all": "deno task docker:postgres:compose:up && deno task docker:postgres:db-init",
+    "test:unit": "deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost ../tests/unit",
+    "test:frontend": "deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost ../tests/frontend",
+    "test:all": "deno test -A ../tests"
+  },
+  "imports": {
+    "std/": "jsr:@std/",
+    "std/testing": "jsr:@std/testing",
+    "std/assert": "jsr:@std/assert",
+    "hono": "jsr:@hono/hono@^4",
+    "hono/cors": "jsr:@hono/hono/cors",
+    "hono/jwt": "jsr:@hono/hono/jwt",
+    "hono/streaming": "jsr:@hono/hono/streaming",
+    "hono/http-exception": "jsr:@hono/hono/http-exception",
+    "postgres": "https://deno.land/x/postgresjs@v3.4.5/mod.js",
+    "b-fuze/deno-dom": "jsr:@b-fuze/deno-dom"
+  },
+  "compilerOptions": {
+    "lib": ["deno.window", "dom"]
+  }
+}

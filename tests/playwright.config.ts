@@ -12,10 +12,11 @@ export default defineConfig({
     },
     webServer: {
         command:
-            "DEBUG=1 PORT=8000 deno run --allow-net --allow-env --allow-read ../app/src/main.ts",
+            "DEBUG=1 PORT=8000 deno run --config=deno.json --allow-net --allow-env --allow-read src/main.ts",
+        cwd: "../app",
         url: "http://localhost:8000/_health",
         timeout: 60_000,
-        reuseExistingServer: true, // attach to the server started by the run-e2e helper
+        reuseExistingServer: true,
         env: {
             DATABASE_URL: "postgres://postgres:test@localhost:5432/test_db",
             JUDGE_SCORE_TIMEOUT_MS: "5000",
