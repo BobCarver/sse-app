@@ -1,0 +1,3 @@
+{
+  "note": "This file has been deprecated. Use the project root deno.json as the canonical Deno configuration (../deno.json)."
+}

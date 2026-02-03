@@ -106,59 +106,6 @@ var sseClient = class {
     }
   }
 };
-
-// src/frontend/sb.ts
-var ScoreboardClient = class extends sseClient {
-  cId2Row = /* @__PURE__ */ new Map();
-  jId2Col = /* @__PURE__ */ new Map();
-  scoreboard;
-  scoreForCompetitor = void 0;
-  doc;
-  constructor(deps = {}) {
-    super(deps);
-    this.doc = deps.document || document;
-    this.scoreboard = this.doc.querySelector("#scoreboard");
-    const sse = deps.sse || new EventSource("/events");
-    sse.addEventListener("competition_start", ({ data }) => {
-      const msg = JSON.parse(data);
-      this.makeScoreboard(msg.competition.rubric);
-    });
-    sse.addEventListener("score_update", ({ data }) => {
-      const msg = JSON.parse(data);
-      if (msg.competitor_id != this.scoreForCompetitor) {
-        this.scoreForCompetitor = msg.competitor_id;
-        this.clearTable();
-      }
-      this.updateScores(msg);
-    });
-  }
-  makeScoreboard({ judges, criteria }) {
-    const cells = `<td></td>
-`.repeat(judges.length);
-    this.scoreboard.innerHTML = `<thead><tr><th>Criteria</th>${judges.reduce((s, j) => s + `<th>${j.name}</th>`, "")}
-      </tr></thead>
-      <tbody>${criteria.reduce((s, c) => s + `<tr><th>${c.name}</th>${cells}</tr>`, "")}
-      </tbody>`;
-    this.jId2Col.clear();
-    this.cId2Row.clear();
-    judges.forEach((j, i) => this.jId2Col.set(j.id, i));
-    criteria.forEach((c, i) => this.cId2Row.set(c.id, i));
-  }
-  clearTable() {
-    this.scoreboard.querySelectorAll("td").forEach((cell) => cell.textContent = "");
-  }
-  updateScores({ competition_id, competitor_id, judge_id, scores }) {
-    if (competition_id !== this.competition.id || competitor_id !== this.competition.competitors[this.position].id) return;
-    scores.forEach(({ criteria_id, score }) => {
-      const row = this.cId2Row.get(criteria_id);
-      const col = this.jId2Col.get(judge_id);
-      if (row !== void 0 && col !== void 0) {
-        const cell = this.scoreboard.rows[1 + row].cells[1 + col];
-        cell.textContent = score.toString();
-      }
-    });
-  }
-};
 export {
-  ScoreboardClient
+  sseClient
 };

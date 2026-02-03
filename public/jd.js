@@ -106,6 +106,97 @@ var sseClient = class {
     }
   }
 };
-export {
-  sseClient
-};
+
+// src/frontend/jd.ts
+var JudgeClient = class extends sseClient {
+  judge_id;
+  alert;
+  sliders;
+  submit;
+  doc;
+  nav;
+  timerFn;
+  clearTimerFn;
+  constructor(judge_id, deps = {}) {
+    super(deps), this.judge_id = judge_id, this.alert = void 0;
+    this.doc = deps.document || document;
+    this.nav = deps.navigator || navigator;
+    this.timerFn = deps.setTimeout ?? globalThis.setTimeout;
+    this.clearTimerFn = deps.clearTimeout ?? globalThis.clearTimeout;
+    this.judge_id = judge_id;
+    this.sliders = this.doc.querySelector("#sliders");
+    this.submit = this.doc.querySelector("#submit");
+    this.sliders.addEventListener("input", (e) => {
+      const target = e.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      const scoreDisplay = target.nextElementSibling;
+      if (!scoreDisplay) return;
+      const val = target.value === "" ? "0" : target.value;
+      scoreDisplay.textContent = parseFloat(val).toFixed(1);
+    });
+    this.submit.onclick = this.submitScores.bind(this);
+    this.submit.disabled = true;
+    const sse = deps.sse || new EventSource("/events");
+    sse.addEventListener("competition_start", ({ data }) => {
+      const { competition } = JSON.parse(data);
+      this.competition = competition;
+      this.updateCriteria(competition.rubric);
+    });
+    sse.addEventListener("enable_scoring", () => {
+      this.enableSubmit();
+    });
+  }
+  updateCriteria(rubric) {
+    const judge = rubric.judges.find(({ id }) => id === this.judge_id);
+    if (!judge) {
+      this.sliders.innerHTML = "";
+      return;
+    }
+    const criteria = rubric.criteria.filter(({ id }) => judge.criteria.includes(id));
+    this.sliders.innerHTML = criteria.reduce((acc, c) => acc + `<div class="slider-group">
+                <label>${c.name}</label>
+                <input type="range" class="slider"
+                    data-criterion-id="${c.id}"
+                    min="1" max="10" step="0.1">
+                <span class="score">5.0</span>
+            </div>`, "");
+  }
+  alarm() {
+    this.nav.vibrate?.(1e3);
+    this.doc.body.style.backgroundColor = "#ff0000";
+    this.timerFn(() => {
+      this.doc.body.style.backgroundColor = "";
+    }, 500);
+  }
+  enableSubmit() {
+    this.sliders.querySelectorAll("input").forEach((s) => {
+      s.value = "5";
+      s.nextElementSibling.textContent = "5.0";
+    });
+    this.submit.disabled = false;
+    this.alert = this.timerFn(this.alarm.bind(this), 3e4);
+  }
+  submitScores() {
+    if (!this.competition || this.position === void 0) return;
+    this.submit.disabled = true;
+    if (this.alert !== void 0) {
+      this.clearTimerFn(this.alert);
+      this.alert = void 0;
+    }
+    const scores = [];
+    this.sliders.querySelectorAll("input").forEach((slider) => {
+      scores.push({
+        criteria_id: Number(slider.dataset.criterionId),
+        score: Number(slider.value)
+      });
+    });
+    const competitionId = this.competition.id;
+    const competitorId = this.competition.competitors[this.position].id;
+    const base = globalThis.location?.origin ?? "http://localhost";
+    if (!this.sessionId) {
+      console.warn("JudgeClient: sessionId not specified; submit aborted");
+      return;
+    }
+    fetch(`${base}/response`, {
+      method: "POST",
+I will finish creating the file...

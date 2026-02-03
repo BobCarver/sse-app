@@ -25,7 +25,7 @@
       "command": "deno",
       "args": [
         "test",
-        "--config=app/deno.json",
+        "--config=deno.json",
         "--inspect-brk=127.0.0.1:9229",
         "--watch",
         "../tests"

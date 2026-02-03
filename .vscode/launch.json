@@ -10,7 +10,7 @@
       "runtimeArgs": [
         "run",
         "--inspect-brk=127.0.0.1:9229",
-        "--config=app/deno.json",
+        "--config=deno.json",
         "--allow-net",
         "--allow-env",
         "--allow-read",

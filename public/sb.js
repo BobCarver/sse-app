@@ -107,115 +107,58 @@ var sseClient = class {
   }
 };
 
-// src/frontend/jd.ts
-var JudgeClient = class extends sseClient {
-  judge_id;
-  alert;
-  sliders;
-  submit;
+// src/frontend/sb.ts
+var ScoreboardClient = class extends sseClient {
+  cId2Row = /* @__PURE__ */ new Map();
+  jId2Col = /* @__PURE__ */ new Map();
+  scoreboard;
+  scoreForCompetitor = void 0;
   doc;
-  nav;
-  timerFn;
-  clearTimerFn;
-  constructor(judge_id, deps = {}) {
-    super(deps), this.judge_id = judge_id, this.alert = void 0;
+  constructor(deps = {}) {
+    super(deps);
     this.doc = deps.document || document;
-    this.nav = deps.navigator || navigator;
-    this.timerFn = deps.setTimeout ?? globalThis.setTimeout;
-    this.clearTimerFn = deps.clearTimeout ?? globalThis.clearTimeout;
-    this.judge_id = judge_id;
-    this.sliders = this.doc.querySelector("#sliders");
-    this.submit = this.doc.querySelector("#submit");
-    this.sliders.addEventListener("input", (e) => {
-      const target = e.target;
-      if (!(target instanceof HTMLInputElement)) return;
-      const scoreDisplay = target.nextElementSibling;
-      if (!scoreDisplay) return;
-      const val = target.value === "" ? "0" : target.value;
-      scoreDisplay.textContent = parseFloat(val).toFixed(1);
-    });
-    this.submit.onclick = this.submitScores.bind(this);
-    this.submit.disabled = true;
+    this.scoreboard = this.doc.querySelector("#scoreboard");
     const sse = deps.sse || new EventSource("/events");
     sse.addEventListener("competition_start", ({ data }) => {
-      const { competition } = JSON.parse(data);
-      this.competition = competition;
-      this.updateCriteria(competition.rubric);
+      const msg = JSON.parse(data);
+      this.makeScoreboard(msg.competition.rubric);
     });
-    sse.addEventListener("enable_scoring", () => {
-      this.enableSubmit();
+    sse.addEventListener("score_update", ({ data }) => {
+      const msg = JSON.parse(data);
+      if (msg.competitor_id != this.scoreForCompetitor) {
+        this.scoreForCompetitor = msg.competitor_id;
+        this.clearTable();
+      }
+      this.updateScores(msg);
     });
   }
-  updateCriteria(rubric) {
-    const judge = rubric.judges.find(({ id }) => id === this.judge_id);
-    if (!judge) {
-      this.sliders.innerHTML = "";
-      return;
-    }
-    const criteria = rubric.criteria.filter(({ id }) => judge.criteria.includes(id));
-    this.sliders.innerHTML = criteria.reduce((acc, c) => acc + `<div class="slider-group">
-                <label>${c.name}</label>
-                <input type="range" class="slider"
-                    data-criterion-id="${c.id}"
-                    min="1" max="10" step="0.1">
-                <span class="score">5.0</span>
-            </div>`, "");
+  makeScoreboard({ judges, criteria }) {
+    const cells = `<td></td>
+`.repeat(judges.length);
+    this.scoreboard.innerHTML = `<thead><tr><th>Criteria</th>${judges.reduce((s, j) => s + `<th>${j.name}</th>`, "")}
+      </tr></thead>
+      <tbody>${criteria.reduce((s, c) => s + `<tr><th>${c.name}</th>${cells}</tr>`, "")}
+      </tbody>`;
+    this.jId2Col.clear();
+    this.cId2Row.clear();
+    judges.forEach((j, i) => this.jId2Col.set(j.id, i));
+    criteria.forEach((c, i) => this.cId2Row.set(c.id, i));
   }
-  alarm() {
-    this.nav.vibrate?.(1e3);
-    this.doc.body.style.backgroundColor = "#ff0000";
-    this.timerFn(() => {
-      this.doc.body.style.backgroundColor = "";
-    }, 500);
+  clearTable() {
+    this.scoreboard.querySelectorAll("td").forEach((cell) => cell.textContent = "");
   }
-  enableSubmit() {
-    this.sliders.querySelectorAll("input").forEach((s) => {
-      s.value = "5";
-      s.nextElementSibling.textContent = "5.0";
+  updateScores({ competition_id, competitor_id, judge_id, scores }) {
+    if (competition_id !== this.competition.id || competitor_id !== this.competition.competitors[this.position].id) return;
+    scores.forEach(({ criteria_id, score }) => {
+      const row = this.cId2Row.get(criteria_id);
+      const col = this.jId2Col.get(judge_id);
+      if (row !== void 0 && col !== void 0) {
+        const cell = this.scoreboard.rows[1 + row].cells[1 + col];
+        cell.textContent = score.toString();
+      }
     });
-    this.submit.disabled = false;
-    this.alert = this.timerFn(this.alarm.bind(this), 3e4);
-  }
-  submitScores() {
-    if (!this.competition || this.position === void 0) return;
-    this.submit.disabled = true;
-    if (this.alert !== void 0) {
-      this.clearTimerFn(this.alert);
-      this.alert = void 0;
-    }
-    const scores = [];
-    this.sliders.querySelectorAll("input").forEach((slider) => {
-      scores.push({
-        criteria_id: Number(slider.dataset.criterionId),
-        score: Number(slider.value)
-      });
-    });
-    const competitionId = this.competition.id;
-    const competitorId = this.competition.competitors[this.position].id;
-    const base = globalThis.location?.origin ?? "http://localhost";
-    if (!this.sessionId) {
-      console.warn("JudgeClient: sessionId not specified; submit aborted");
-      return;
-    }
-    fetch(`${base}/response`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        tag: `score:${competitionId}:${competitorId}:${this.judge_id}`,
-        scores
-      })
-    });
-    this.submit.disabled = true;
-  }
-  destroy() {
-    if (this.alert !== void 0) {
-      this.clearTimerFn(this.alert);
-      this.alert = void 0;
-    }
   }
 };
 export {
-  JudgeClient
+  ScoreboardClient
 };

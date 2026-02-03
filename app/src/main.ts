@@ -3,6 +3,16 @@ import { jwt, type JwtVariables, sign } from "hono/jwt";
 import { streamSSE } from "hono/streaming";
 import { serveStatic } from "hono/deno";
 
+// Minimal content-type helper (avoid additional import map resolution complexities)
+function getContentType(path: string) {
+  if (path.endsWith('.js')) return 'application/javascript';
+  if (path.endsWith('.css')) return 'text/css';
+  if (path.endsWith('.html')) return 'text/html';
+  if (path.endsWith('.json')) return 'application/json';
+  if (path.endsWith('.wasm')) return 'application/wasm';
+  return 'application/octet-stream';
+}
+
 // ============================================================================
 // TYPES
 // ============================================================================
@@ -150,7 +160,18 @@ app.get("/events", jwtMiddleware, (c) => {
 // ============================================================================
 // SESSION ENDPOINTS
 // ============================================================================
-const publicRoot = new URL("../public", import.meta.url).pathname;
+const publicRoot = new URL("../../public", import.meta.url).pathname;
+
+// Explicitly serve known frontend bundles from top-level public (keeps serve behavior deterministic)
+app.get("/sessions/dj.js", async (c) => {
+  try {
+    const fp = new URL("../../public/dj.js", import.meta.url).pathname;
+    const data = await Deno.readFile(fp);
+    return new Response(data, { headers: { "content-type": "application/javascript" } });
+  } catch (_err) {
+    return c.notFound();
+  }
+});
 
 app.use("/sessions/*", serveStatic({ root: publicRoot }));
 
