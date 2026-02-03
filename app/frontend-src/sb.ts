@@ -1,10 +1,10 @@
 /// <reference lib="dom" />
-import { CompetitorId, Rubric } from "../types.ts";
+import { CompetitorId, Rubric } from "../src/types.ts";
 import { sseClient } from "./sseClient.ts";
 import type {
   CompetitionStartMessage,
   ScoreUpdateMessage,
-} from "../protocol.ts";
+} from "../src/protocol.ts";
 
 export interface ScoreboardDependencies {
   document?: Document;

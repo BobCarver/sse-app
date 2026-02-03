@@ -1,7 +1,7 @@
 import { Context, Hono } from "hono";
 import { jwt, type JwtVariables, sign } from "hono/jwt";
 import { streamSSE } from "hono/streaming";
-//import { serveStatic } from "hono/serve-static";
+import { serveStatic } from "hono/deno";
 
 // ============================================================================
 // TYPES
@@ -119,10 +119,6 @@ app.get("/register", async (c: Context<{ Variables: Variables }>) => {
 });
 
 // ============================================================================
-// STATIC FILE ROUTES
-// ============================================================================
-
-// ============================================================================
 // SSE ENDPOINT
 // ============================================================================
 
@@ -154,6 +150,9 @@ app.get("/events", jwtMiddleware, (c) => {
 // ============================================================================
 // SESSION ENDPOINTS
 // ============================================================================
+const publicRoot = new URL("../public", import.meta.url).pathname;
+
+app.use("/sessions/*", serveStatic({ root: publicRoot }));
 
 // Start a session - queries DB, builds session, and runs it
 app.post(

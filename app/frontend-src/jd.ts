@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
-import { CompetitionStartMessage } from "../protocol.ts";
-import { Rubric } from "../types.ts";
+import { CompetitionStartMessage } from "../src/protocol.ts";
+import { Rubric } from "../src/types.ts";
 import { sseClient } from "./sseClient.ts";
 export interface JudgeDependencies {
   sse?: EventSource;

@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 import { assert } from "std/assert/assert";
-import { PerformanceStartMessage } from "../protocol.ts";
+import { PerformanceStartMessage } from "../src/protocol.ts";
 import { sseClient } from "./sseClient.ts";
 
 export interface DjDependencies {

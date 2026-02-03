@@ -7,9 +7,11 @@ set -euo pipefail
 # caused by ephemeral async handles).
 
 TMP_OUT=$(mktemp)
-# Run tests and capture output (don't exit on non-zero so we can inspect output)
+# Run tests and capture output (allow non-zero exit so we can inspect output)
+set +e
 deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost "$@" 2>&1 | tee "$TMP_OUT"
 TEST_EXIT=${PIPESTATUS[0]:-0}
+set -e
 
 # If the output contains a line like: "ok | 34 passed | 0 failed" treat as success
 if grep -E "^ok \| [0-9]+ passed \| 0 failed" "$TMP_OUT" >/dev/null; then

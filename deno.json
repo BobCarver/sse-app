@@ -5,16 +5,18 @@
     "check": "deno check --quiet",
     "fmt": "deno fmt",
     "lint": "deno lint",
-    "test": "deno test ../tests",
+    "test": "deno test tests",
     "init-test-db": "sh ../tools/init-test-db.sh",
     "docker:postgres:compose:up": "docker compose up -d db",
     "docker:postgres:compose:down": "docker compose down",
     "docker:postgres:db-init": "docker compose run --rm db-init",
     "docker:postgres:reinit": "docker compose down -v && docker compose up -d db && deno task docker:postgres:db-init",
     "init-db:all": "deno task docker:postgres:compose:up && deno task docker:postgres:db-init",
-    "test:unit": "deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost ../tests/unit",
-    "test:frontend": "deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost ../tests/frontend",
-    "test:all": "deno test -A ../tests"
+    "test:unit": "deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost tests/unit",
+    "test:frontend": "deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost tests/frontend",
+    "test:all": "deno test -A tests",
+
+    "build:frontend": "mkdir -p public &&  deno bundle src/frontend/dj.ts -o public/dj.js && deno bundle src/frontend/jd.ts -o public/jd.js && deno bundle src/frontend/sb.ts -o public/sb.js && deno bundle src/frontend/sseClient.ts -o public/sseClient.js"
   },
   "imports": {
     "std/": "jsr:@std/",

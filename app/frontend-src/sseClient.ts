@@ -1,11 +1,11 @@
 /// <reference lib="dom" />
-import { Competition } from "../types.ts";
+import { Competition } from "../src/types.ts";
 
 import type {
   ClientStatusMessage,
   CompetitionStartMessage,
   PerformanceStartMessage,
-} from "../protocol.ts";
+} from "../src/protocol.ts";
 import { assert } from "std/assert";
 
 export interface sseClientDependencies {
