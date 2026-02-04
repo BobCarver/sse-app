@@ -1,7 +1,6 @@
 // A festival can have multiple sessions
 // This class coordinates directing clients to the correct session
 
-import { dlog } from "./main.ts";
 import { Session, SessionDependencies } from "./session.ts";
 
 // ============================================================================
@@ -24,7 +23,7 @@ export class SessionManager {
     sessionId: number,
     dependencies: SessionDependencies,
   ): Session {
-    dlog("SessionManager: createSession", { sessionId });
+    console.log("SessionManager: createSession", { sessionId });
 
     let session = sessions.get(sessionId);
     if (session) {
@@ -67,7 +66,7 @@ export class SessionManager {
    * @param sessionId - Session identifier
    */
   static deleteSession(sessionId: number): void {
-    dlog("SessionManager: deleteSession", { sessionId });
+    console.log("SessionManager: deleteSession", { sessionId });
     sessions.delete(sessionId);
   }
 
@@ -105,7 +104,7 @@ export class SessionManager {
    * Clear all sessions (useful for testing)
    */
   static clearAll(): void {
-    dlog("SessionManager: clearAll", { count: sessions.size });
+    console.log("SessionManager: clearAll", { count: sessions.size });
     sessions.clear();
   }
 }

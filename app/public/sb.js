@@ -13,34 +13,29 @@ var AssertionError = class extends Error {
 
 // deno:https://jsr.io/@std/assert/1.0.16/equal.ts
 var Temporal = globalThis.Temporal ?? /* @__PURE__ */ Object.create(null);
-var stringComparablePrototypes = new Set(
-  [
-    Intl.Locale,
-    RegExp,
-    Temporal.Duration,
-    Temporal.Instant,
-    Temporal.PlainDate,
-    Temporal.PlainDateTime,
-    Temporal.PlainTime,
-    Temporal.PlainYearMonth,
-    Temporal.PlainMonthDay,
-    Temporal.ZonedDateTime,
-    URL,
-    URLSearchParams,
-  ].filter((x) => x != null).map((x) => x.prototype),
-);
+var stringComparablePrototypes = new Set([
+  Intl.Locale,
+  RegExp,
+  Temporal.Duration,
+  Temporal.Instant,
+  Temporal.PlainDate,
+  Temporal.PlainDateTime,
+  Temporal.PlainTime,
+  Temporal.PlainYearMonth,
+  Temporal.PlainMonthDay,
+  Temporal.ZonedDateTime,
+  URL,
+  URLSearchParams
+].filter((x) => x != null).map((x) => x.prototype));
 var TypedArray = Object.getPrototypeOf(Uint8Array);
 
 // deno:https://jsr.io/@std/internal/1.0.12/styles.ts
 var { Deno } = globalThis;
 var noColor = typeof Deno?.noColor === "boolean" ? Deno.noColor : false;
-var ANSI_PATTERN = new RegExp(
-  [
-    "[\\u001B\\u009B][[\\]()#;?]*(?:(?:(?:(?:;[-a-zA-Z\\d\\/#&.:=?%@~_]+)*|[a-zA-Z\\d]+(?:;[-a-zA-Z\\d\\/#&.:=?%@~_]*)*)?\\u0007)",
-    "(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PR-TXZcf-nq-uy=><~]))",
-  ].join("|"),
-  "g",
-);
+var ANSI_PATTERN = new RegExp([
+  "[\\u001B\\u009B][[\\]()#;?]*(?:(?:(?:(?:;[-a-zA-Z\\d\\/#&.:=?%@~_]+)*|[a-zA-Z\\d]+(?:;[-a-zA-Z\\d\\/#&.:=?%@~_]*)*)?\\u0007)",
+  "(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PR-TXZcf-nq-uy=><~]))"
+].join("|"), "g");
 
 // deno:https://jsr.io/@std/assert/1.0.16/assert.ts
 function assert(expr, msg = "") {
@@ -88,16 +83,15 @@ var sseClient = class {
   }
   buildCompetitorTable() {
     if (this.tbody) {
-      this.tbody.innerHTML =
-        this.competition.competitors.reduce(([html, ms], c) => [
-          html + `<tr>
+      this.tbody.innerHTML = this.competition.competitors.reduce(([html, ms], c) => [
+        html + `<tr>
           <td class="time-col">${formatTime(new Date(ms))}</td>
           <td>${c.name}</td></tr>`,
-          ms + c.duration,
-        ], [
-          "",
-          Date.now(),
-        ])[0];
+        ms + c.duration
+      ], [
+        "",
+        Date.now()
+      ])[0];
     }
   }
   updateTimes() {
@@ -141,13 +135,9 @@ var ScoreboardClient = class extends sseClient {
   makeScoreboard({ judges, criteria }) {
     const cells = `<td></td>
 `.repeat(judges.length);
-    this.scoreboard.innerHTML = `<thead><tr><th>Criteria</th>${
-      judges.reduce((s, j) => s + `<th>${j.name}</th>`, "")
-    }
+    this.scoreboard.innerHTML = `<thead><tr><th>Criteria</th>${judges.reduce((s, j) => s + `<th>${j.name}</th>`, "")}
       </tr></thead>
-      <tbody>${
-      criteria.reduce((s, c) => s + `<tr><th>${c.name}</th>${cells}</tr>`, "")
-    }
+      <tbody>${criteria.reduce((s, c) => s + `<tr><th>${c.name}</th>${cells}</tr>`, "")}
       </tbody>`;
     this.jId2Col.clear();
     this.cId2Row.clear();
@@ -155,15 +145,10 @@ var ScoreboardClient = class extends sseClient {
     criteria.forEach((c, i) => this.cId2Row.set(c.id, i));
   }
   clearTable() {
-    this.scoreboard.querySelectorAll("td").forEach((cell) =>
-      cell.textContent = ""
-    );
+    this.scoreboard.querySelectorAll("td").forEach((cell) => cell.textContent = "");
   }
   updateScores({ competition_id, competitor_id, judge_id, scores }) {
-    if (
-      competition_id !== this.competition.id ||
-      competitor_id !== this.competition.competitors[this.position].id
-    ) return;
+    if (competition_id !== this.competition.id || competitor_id !== this.competition.competitors[this.position].id) return;
     scores.forEach(({ criteria_id, score }) => {
       const row = this.cId2Row.get(criteria_id);
       const col = this.jId2Col.get(judge_id);
@@ -174,4 +159,6 @@ var ScoreboardClient = class extends sseClient {
     });
   }
 };
-export { ScoreboardClient };
+export {
+  ScoreboardClient
+};

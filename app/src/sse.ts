@@ -1,5 +1,5 @@
 // src/sse/handlers.ts
-import type { SSEStreamingApi } from "hono/streaming";
+import type { SSEStreamingApi } from "@hono/hono/streaming";
 import type { ClientType, SSEClient } from "./types.ts";
 import { SessionManager } from "./sessionManager.ts";
 

@@ -1,4 +1,4 @@
-import { assertEquals } from "std/assert";
+import { assertEquals } from "@std/assert";
 
 // Diagnostic test that runs last (zzz prefix) to surface leftover timers/resources
 Deno.test("zzz: diagnostics - pending tags & resources", async () => {

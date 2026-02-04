@@ -1,9 +1,9 @@
 // test/scoreboard-di-test.ts
 // deno-lint-ignore-file no-explicit-any
-import { assert, assertEquals } from "std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { DOMParser } from "b-fuze/deno-dom";
 
-import { ScoreboardClient } from "../../src/frontend/sb.ts";
+import { ScoreboardClient } from "../../frontend-src/sb.ts";
 
 // Guidance: This test uses the shared mock WebSocket clients exported from
 // `src/test/websocket-mocks.ts`. Import the scoreboard-specific mock

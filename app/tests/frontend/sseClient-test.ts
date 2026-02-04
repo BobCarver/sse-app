@@ -1,8 +1,8 @@
 // test/frontend/sseClient-test.ts
 // deno-lint-ignore-file no-explicit-any
-import { assertEquals, assertExists } from "std/assert";
+import { assertEquals, assertExists } from "@std/assert";
 import { DOMParser } from "b-fuze/deno-dom";
-import { sseClient } from "../../src/frontend/sseClient.ts";
+import { sseClient } from "../../frontend-src/sseClient.ts";
 import { MockEventSource } from "./sse-mocks.ts";
 import { applyStyleShim, applyTableShims } from "./test-utils.ts";
 import { Competition } from "../../src/types.ts";

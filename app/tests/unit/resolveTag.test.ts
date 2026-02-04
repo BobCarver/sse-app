@@ -1,7 +1,6 @@
 // tests/resolveTag.test.ts
 
-import { assertEquals } from "std/assert/equals";
-import { assertRejects } from "std/assert/rejects";
+import { assertEquals, assertRejects } from "@std/assert";
 import {
   clearAllResolvers,
   getPendingTags,

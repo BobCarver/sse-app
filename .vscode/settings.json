@@ -2,12 +2,12 @@
   "deno.enable": true,
   "deno.lint": true,
   "deno.unstable": [],
-  "deno.config": "deno.json",
-  "deno.testing": true,
   "editor.formatOnSave": true,
   "editor.defaultFormatter": "denoland.vscode-deno",
   "editor.codeLens": true,
   "deno.codeLens.test": true,
+  "deno.testing.args": ["--allow-all", "--no-check"],
+  "deno.trace.server": "verbose",
   "files.exclude": {
     "**/archive/**": true
   },

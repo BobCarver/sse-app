@@ -1,6 +1,5 @@
 // deno-lint-ignore-file no-explicit-any
-import { assertEquals } from "std/assert/equals";
-import { assertThrows } from "std/assert/throws";
+import { assertEquals, assertThrows } from "@std/assert";
 import { SessionManager, sessions } from "../../src/sessionManager.ts";
 
 const makeDeps = () => {

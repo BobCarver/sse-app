@@ -1,4 +1,3 @@
-import { dlog } from "./main.ts";
 import type { ClientStatusMessage, ServerToClientMessage } from "./protocol.ts";
 import { resolveTag, waitForTag } from "./resolveTag.ts";
 import { type Competition, type ScoreSubmission, SSEClient } from "./types.ts";
@@ -7,7 +6,7 @@ import { type Competition, type ScoreSubmission, SSEClient } from "./types.ts";
 // SESSION
 // ============================================================================
 
-const timeOut = Number(Deno.env.get("JUDGE_SCORE_TIMEOUT_MS") || 30000);
+const timeOut = 30000;
 
 /**
  * Dependencies for Session
@@ -42,7 +41,7 @@ export class Session {
    * This is called when an SSE connection is established
    */
   connectClient(client: SSEClient): void {
-    dlog("Session: connectClient", {
+    console.log("Session: connectClient", {
       sessionId: this.id,
       clientId: client.id,
     });
@@ -118,7 +117,7 @@ export class Session {
    * This is called when SSE connection is closed
    */
   disconnectClient(clientId: string): void {
-    dlog("Session: disconnectClient", { sessionId: this.id, clientId });
+    console.log("Session: disconnectClient", { sessionId: this.id, clientId });
 
     // Keep the client slot but mark as disconnected
     if (this.clients.has(clientId)) {
@@ -132,7 +131,7 @@ export class Session {
    * During a competition, use disconnectClient() instead
    */
   removeClient(clientId: string): void {
-    dlog("Session: removeClient", { sessionId: this.id, clientId });
+    console.log("Session: removeClient", { sessionId: this.id, clientId });
     this.clients.delete(clientId);
     this.broadcastClientStatus();
   }
@@ -141,7 +140,7 @@ export class Session {
    * Register permanent clients (DJ, scoreboards) that stay for entire session
    */
   registerPermanentClients(clientIds: string[]): void {
-    dlog("Session: registerPermanentClients", {
+    console.log("Session: registerPermanentClients", {
       sessionId: this.id,
       clientIds,
     });
@@ -180,7 +179,7 @@ export class Session {
    * Checks unassigned pool for already-connected clients
    */
   registerRequiredClients(competition: Competition): void {
-    dlog("Session: registerRequiredClients", {
+    console.log("Session: registerRequiredClients", {
       sessionId: this.id,
       competitionId: competition.id,
       requiredClients: competition.rubric.judges.map((j) => `judge${j.id}`),
@@ -281,11 +280,11 @@ export class Session {
     }
 
     if (disconnectedClients.length > 0) {
-      dlog("Session: waiting for clients", { disconnectedClients });
+      console.log("Session: waiting for clients", { disconnectedClients });
       await Promise.all(
         disconnectedClients.map((id) => waitForTag(`required:${id}`)),
       );
-      dlog("Session: all clients connected", { disconnectedClients });
+      console.log("Session: all clients connected", { disconnectedClients });
     }
   }
 
@@ -298,11 +297,11 @@ export class Session {
     );
 
     if (missing.length > 0) {
-      dlog("Session: waiting for required clients", { missing });
+      console.log("Session: waiting for required clients", { missing });
       await Promise.all(
         missing.map((id) => waitForTag(`required:${id}`)),
       );
-      dlog("Session: required clients connected", { missing });
+      console.log("Session: required clients connected", { missing });
     }
   }
 
@@ -316,7 +315,7 @@ export class Session {
         .filter(([_, client]) => client !== undefined)
         .map(([id]) => id),
     };
-    dlog("broadcastClientStatus", message);
+    console.log("broadcastClientStatus", message);
     this.broadcast(message);
   }
 

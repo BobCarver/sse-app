@@ -1,6 +1,6 @@
 {
   "tasks": {
-    "dev": "deno run --allow-net --allow-env --allow-read src/main.ts",
+    "dev": "deno run --allow-net --allow-env --allow-read app/src/main.ts",
     "start": "deno run --allow-net --allow-env --allow-read src/main.ts",
     "check": "deno check --quiet",
     "fmt": "deno fmt",
@@ -20,16 +20,12 @@
     "build": "deno task build:artifacts"
   },
   "imports": {
-    "std/": "jsr:@std/",
-    "std/testing": "jsr:@std/testing",
-    "std/assert": "jsr:@std/assert",
-    "hono": "jsr:@hono/hono@^4",
-    "hono/cors": "jsr:@hono/hono/cors",
-    "hono/jwt": "jsr:@hono/hono/jwt",
-    "hono/streaming": "jsr:@hono/hono/streaming",
-    "hono/http-exception": "jsr:@hono/hono/http-exception",
-    "postgres": "https://deno.land/x/postgresjs@v3.4.5/mod.js",
-    "b-fuze/deno-dom": "jsr:@b-fuze/deno-dom"
+    "@hono/hono": "jsr:@hono/hono@^4.11.7",
+    "@std/assert": "jsr:@std/assert@^1.0.18",
+    "@std/testing": "jsr:@std/testing@^1.0.17",
+    "b-fuze/deno-dom": "jsr:@b-fuze/deno-dom@0.1.56",
+
+    "postgres": "https://deno.land/x/postgresjs@v3.4.5/mod.js"
   },
   "compilerOptions": {
     "lib": ["deno.window", "dom"]

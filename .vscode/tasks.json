@@ -27,6 +27,9 @@
         "test",
         "--config=deno.json",
         "--inspect-brk=127.0.0.1:9229",
+        "--allow-env",
+        "--allow-net",
+        "--allow-read",
         "--watch",
         "../tests"
       ],

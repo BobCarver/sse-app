@@ -1,8 +1,8 @@
 // test/dj-test.ts
 // deno-lint-ignore-file no-explicit-any
-import { assert, assertEquals, assertExists } from "std/assert";
+import { assert, assertEquals, assertExists } from "@std/assert";
 import { DOMParser } from "b-fuze/deno-dom";
-import { DjClient } from "../../src/frontend/dj.ts";
+import { DjClient } from "../../frontend-src/dj.ts";
 
 // Guidance: This test uses the shared mock WebSocket clients available in
 // `src/test/websocket-mocks.ts`. We import the DJ-specific mock

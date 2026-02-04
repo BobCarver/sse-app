@@ -6,7 +6,7 @@ import type {
   CompetitionStartMessage,
   PerformanceStartMessage,
 } from "../src/protocol.ts";
-import { assert } from "std/assert";
+import { assert } from "@std/assert";
 
 export interface sseClientDependencies {
   document?: Document;

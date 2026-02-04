@@ -1,5 +1,5 @@
 // tests/sse.test.ts
-import { assertEquals } from "std/assert";
+import { assertEquals } from "@std/assert";
 import { SessionManager, sessions } from "../../src/sessionManager.ts";
 import type { SSEClient } from "../../src/types.ts";
 import { clearAllResolvers } from "../../src/resolveTag.ts";

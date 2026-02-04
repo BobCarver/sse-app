@@ -1,17 +1,7 @@
-import { Context, Hono } from "hono";
-import { jwt, type JwtVariables, sign } from "hono/jwt";
-import { streamSSE } from "hono/streaming";
-import { serveStatic } from "hono/deno";
-
-// Minimal content-type helper (avoid additional import map resolution complexities)
-function getContentType(path: string) {
-  if (path.endsWith('.js')) return 'application/javascript';
-  if (path.endsWith('.css')) return 'text/css';
-  if (path.endsWith('.html')) return 'text/html';
-  if (path.endsWith('.json')) return 'application/json';
-  if (path.endsWith('.wasm')) return 'application/wasm';
-  return 'application/octet-stream';
-}
+import { Context, Hono } from "@hono/hono";
+import { jwt, type JwtVariables, sign } from "@hono/hono/jwt";
+import { streamSSE } from "@hono/hono/streaming";
+import { serveStatic } from "@hono/hono/deno";
 
 // ============================================================================
 // TYPES
@@ -96,6 +86,7 @@ app.get(
 // JWT middleware for protected routes
 const jwtMiddleware = jwt({
   secret: Deno.env.get("JWT_SECRET") || "your-secret-key",
+  alg: "HS256", // Required: specify the JWT algorithm explicitly
   cookie: "session_token", // The name of the cookie containing the JWT
 });
 
@@ -112,7 +103,7 @@ app.get("/register", async (c: Context<{ Variables: Variables }>) => {
   const exp = Math.floor(Date.now() / 1000) + 60 * 60; // 1 hour expiry
   const payload: JWTPayload = { sub, exp };
   const secret = Deno.env.get("JWT_SECRET") || "your-secret-key";
-  const token = await sign(payload as Record<string, unknown>, secret);
+  const token = await sign(payload as Record<string, unknown>, secret, "HS256");
 
   const maxAge = 60 * 60; // 1 hour
   const cookie = `session_token=${
@@ -167,7 +158,9 @@ app.get("/sessions/dj.js", async (c) => {
   try {
     const fp = new URL("../../public/dj.js", import.meta.url).pathname;
     const data = await Deno.readFile(fp);
-    return new Response(data, { headers: { "content-type": "application/javascript" } });
+    return new Response(data, {
+      headers: { "content-type": "application/javascript" },
+    });
   } catch (_err) {
     return c.notFound();
   }
