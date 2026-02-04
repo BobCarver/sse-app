@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="./lib/styles.css">
+    <style>
+      /* General Reset */
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+        font-family: Arial, sans-serif;
+      }
+
+      /* Body Styling */
+      body {
+        background-color: #111;
+        color: white;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        overflow: hidden;
+      }
+
+      table {
+        border-collapse: collapse;
+        /* Ensures no extra space between cells */
+      }
+
+      table th,
+      table td {
+        padding: 10px;
+        /* Adds padding around the table */
+      }
+
+      #upcoming {
+        padding: auto;
+        flex: 0 0 15%;
+        /* Takes up 15% of the width */
+        border: 1px solid white;
+        /* Optional: adds a border for visibility */
+      }
+
+      #upcoming th {
+        background-color: #3c3b3b;
+        /* Optional: adds a background color for headers */
+        color: white;
+        /* Ensures header text is white for contrast */
+        border-bottom: solid 1px white;
+        /* Optional: adds a bottom border for headers */
+      }
+
+      #scoreboard {
+        flex: 0 0 85%;
+        /* Takes up 85% of the width */
+        margin-left: 40px;
+        /* Adds space between the two tables */
+        width: auto;
+        /* Allows flexibility for square cells */
+      }
+
+      #scoreboard td {
+        width: 100px;
+        /* Sets a fixed width */
+        height: 100px;
+        /* Matches height to width for square cells */
+        text-align: center;
+        /* Horizontally centers text */
+        vertical-align: middle;
+        /* Vertically centers text */
+        border: 1px solid white;
+        /* Optional: adds a border for visibility */
+      }
+
+      /* Score Display */
+      .score {
+        font-size: 18px;
+        font-weight: bold;
+        margin-left: 15px;
+        color: orange;
+      }
+    </style>
+    <title>Document</title>
+  </head>
+
+  <body>
+    <div>
+      <p id="currentCompetition" class="control">Competition</p>
+      <div id="currentCompetitor" class="control">Competitor 1</div>
+
+      <table id="upcoming">
+        <thead>
+          <tr>
+            <th>name</th>
+            <th>time</th>
+          </tr>
+        </thead>
+        <tbody id="competitorList" class="control"></tbody>
+      </table>
+    </div>
+    <div>
+      <table id="scoreboard" class="control"></table>
+    </div>
+  </body>
+  <script type="module" src="./lib/sb.js"></script>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const trackId = params.get("trackId") || "1";
+
+    const sb = new Scoreboard(trackId);
+
+    // Cleanup on page unload
+    globalThis.addEventListener("unload", () => sb.destroy());
+  </script>
+</html>

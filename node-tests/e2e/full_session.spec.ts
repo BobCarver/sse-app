@@ -68,7 +68,7 @@ test("E2E - Full session flow with DJ and judges", async ({ browser }) => {
                     });
                 });
             }
-            (window as any).waitForEvent = (type, timeout = 15000) =>
+            (window as any).waitForEvent = (type:string, timeout = 15000) =>
                 new Promise((resolve, reject) => {
                     const start = Date.now();
                     (function poll() {
@@ -133,6 +133,7 @@ test("E2E - Full session flow with DJ and judges", async ({ browser }) => {
         const comp = await dj.page.evaluate(() =>
             (window as any).waitForEvent("competition_start")
         );
+        window
         expect(comp.competition.id).toBeDefined();
         const perf = await dj.page.evaluate(() =>
             (window as any).waitForEvent("performance_start")

@@ -207,7 +207,7 @@ Deno.test("Session - runSession end-to-end should process performance and scorin
   };
 
   // Start the session and let helpers register clients
-  const sessionPromise = await startSession(session, [competition], ["dj0"]);
+  const sessionPromise = startSession(session, [competition], ["dj0"]);
 
   // Trigger performance and scoring quickly
   schedulePerf(10, 0, 20);
@@ -255,7 +255,7 @@ Deno.test("Session - skipped performance should not trigger scoring", async () =
     },
   };
 
-  const sessionPromise = await startSession(session, [competition], ["dj0"]);
+  const sessionPromise = startSession(session, [competition], ["dj0"]);
 
   // Resolve performance as false (skipped)
   setTimeout(() => resolveTag("perf:11:0", false), 20);
@@ -294,7 +294,7 @@ Deno.test("Session - saveScore errors are handled and session continues", async 
     },
   };
 
-  const sessionPromise = await startSession(session, [competition], ["dj0"]);
+  const sessionPromise = startSession(session, [competition], ["dj0"]);
 
   // Trigger normal perf and score
   schedulePerf(12, 0, 20);

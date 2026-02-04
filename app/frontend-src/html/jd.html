@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>
+      Judge Panel - <%= it.competition.name %>
+    </title>
+    <!-- <link rel="stylesheet" href="./lib/styles.css"> -->
+    <style>
+      body {
+        background-color: #333;
+        color: white;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        overflow: hidden;
+        margin: 1em;
+      }
+
+      p {
+        font-size: 1.5em;
+        text-align: center;
+        margin: 0.5em;
+      }
+
+      .score {
+        font-size: 2em;
+        color: orange;
+        text-align: center;
+      }
+
+      /* Sliders */
+      .slider-group {
+        padding: 0.8em;
+      }
+
+      .slider-group label {
+        color: rgb(192, 192, 106);
+        display: block;
+        font-size: small;
+      }
+
+      #currentCompetitor {
+        font-size: 2em;
+        padding: 0.5em;
+      }
+
+      /* Custom Slider */
+      .slider {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 80%;
+        height: 6px;
+        background: #555;
+        border-radius: 5px;
+        outline: none;
+      }
+
+      .slider::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 18px;
+        height: 18px;
+        background: orange;
+        border-radius: 50%;
+        cursor: pointer;
+      }
+
+      .slider::-moz-range-thumb {
+        width: 18px;
+        height: 18px;
+        background: orange;
+        border-radius: 50%;
+        cursor: pointer;
+      }
+
+      button {
+        padding: 0.6em;
+        color: white;
+        font-size: medium;
+        border-radius: 10px;
+        margin: 20px;
+        background-color: #5c5957;
+      }
+    </style>
+  </head>
+
+  <body>
+    <p id="judge" class="control">Judge</p>
+    <p id="currentCompetition" class="control">Competition</p>
+
+    <div id="currentCompetitor" class="control">Competitor 1</div>
+
+    <div id="sliders" class="control">
+      <div class="slider-group">
+        <label>Technical Difficulty</label>
+        <input
+          type="range"
+          class="slider"
+          data-criterion-id="1"
+          min="1"
+          max="10"
+          step="0.1"
+        >
+      </div>
+
+      <div class="slider-group">
+        <label>Artistic Impression</label>
+        <input
+          type="range"
+          class="slider"
+          data-criterion-id="2"
+          min="1"
+          max="10"
+          step="0.1"
+        >
+      </div>
+    </div>
+
+    <button id="submit" class="control">Submit</button>
+  </body>
+  <script type="module" src="./lib/jd.js"></script>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const jd = new JudgeController(params);
+
+    // Cleanup on page unload
+    window.addEventListener("unload", () => jd.destroy());
+  </script>
+</html>
