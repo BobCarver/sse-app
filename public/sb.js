@@ -224,6 +224,9 @@ function formatTime(date) {
   const minutes = date.getMinutes().toString().padStart(2, "0");
   return `${hours}:${minutes}`;
 }
+function durationMs(c) {
+  return (c.duration ?? 0) * 1e3;
+}
 var sseClient = class {
   competition = null;
   position = void 0;
@@ -286,7 +289,7 @@ var sseClient = class {
         html + `<tr>
           <td class="time-col">${formatTime(new Date(ms))}</td>
           <td>${escapeHtml(c.name)}</td></tr>`,
-        ms + c.duration
+        ms + durationMs(c)
       ], [
         "",
         Date.now()
@@ -297,7 +300,7 @@ var sseClient = class {
     if (this.tbody?.rows.length) {
       let t = new Date(Date.now());
       for (let i = this.position; i < this.tbody.rows.length; i++) {
-        const duration = this.competition.competitors[i].duration;
+        const duration = durationMs(this.competition.competitors[i]);
         const cell = this.tbody.rows[i].cells[0];
         cell.textContent = formatTime(t);
         t = new Date(t.getTime() + duration);

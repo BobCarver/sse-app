@@ -25,6 +25,11 @@ function formatTime(date: Date): string {
   return `${hours}:${minutes}`;
 }
 
+/** A competitor's performance length in milliseconds (durations are stored in seconds). */
+function durationMs(c: { duration?: number | null }): number {
+  return (c.duration ?? 0) * 1000;
+}
+
 /**
  * Collapse top visible row
  */
@@ -115,7 +120,7 @@ export class sseClient {
             html + `<tr>
           <td class="time-col">${formatTime(new Date(ms))}</td>
           <td>${escapeHtml(c.name)}</td></tr>`,
-            ms + c.duration,
+            ms + durationMs(c),
           ],
           ["", Date.now()],
         )[0];
@@ -125,7 +130,7 @@ export class sseClient {
     if (this.tbody?.rows.length) {
       let t = new Date(Date.now());
       for (let i = this.position!; i < this.tbody.rows.length; i++) {
-        const duration = this.competition!.competitors[i].duration;
+        const duration = durationMs(this.competition!.competitors[i]);
         const cell = this.tbody.rows[i].cells[0];
         cell.textContent = formatTime(t);
         t = new Date(t.getTime() + duration); // Add duration to total time

@@ -149,7 +149,7 @@ CREATE TABLE IF NOT EXISTS rubric_judge_criteria (
 CREATE TABLE IF NOT EXISTS competition_competitors (
     competition_id INT NOT NULL REFERENCES competitions(id) ON DELETE CASCADE,
     competitor_id INT NOT NULL REFERENCES competitors(id) ON DELETE RESTRICT,
-    duration INT,
+    duration INT,  -- length of the performance, in SECONDS
     score FLOAT,
     order_number INT NOT NULL,
     PRIMARY KEY (competition_id, competitor_id)

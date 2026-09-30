@@ -7,6 +7,7 @@ export type RubricId = number;
 export type Competitor = {
   id: CompetitorId;
   name: string;
+  /** Length of the performance in seconds (competition_competitors.duration). */
   duration: number;
 };
 export type Competitors = Competitor[];
