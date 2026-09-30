@@ -103,3 +103,11 @@ Deno.test("resolveTag - clearAllResolvers should clear pending", () => {
 
   assertEquals(getPendingTags().length, 0);
 });
+
+Deno.test("waitForTag rejects a second concurrent waiter instead of replacing the first", async () => {
+  clearAllResolvers();
+  const first = waitForTag("required:dup");
+  await assertRejects(() => waitForTag("required:dup"), Error, "Already waiting");
+  resolveTag("required:dup", undefined);
+  await first;
+});

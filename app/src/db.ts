@@ -103,3 +103,13 @@ export async function getSessionCompetitionsWithRubrics(
     rubric: rubricMap.get(row.rubric_id)!,
   }));
 }
+
+/** Track a session runs on, or undefined if the session doesn't exist. */
+export async function getSessionTrackId(
+  sessionId: number,
+): Promise<number | undefined> {
+  if (!sql) return undefined;
+  const rows = await sql<{ track_id: number }[]>`
+    SELECT track_id FROM sessions WHERE id = ${sessionId}`;
+  return rows[0]?.track_id;
+}

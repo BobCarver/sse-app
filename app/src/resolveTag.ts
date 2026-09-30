@@ -68,6 +68,11 @@ export function waitForTag<T extends TagKey>(
 ): Promise<PayloadForTag<T>> {
   let timer: ReturnType<typeof setTimeout> | undefined = undefined;
 
+  if (resolvers.has(tag)) {
+    // A second waiter would silently replace the first, which would hang forever.
+    return Promise.reject(new Error(`Already waiting for tag: ${tag}`));
+  }
+
   return new Promise<PayloadForTag<T>>((resolve, reject) => {
     resolvers.set(tag, (payload) => {
       resolve(payload as PayloadForTag<T>);

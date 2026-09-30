@@ -15,6 +15,10 @@ const timeOut = 30000;
 export interface SessionDependencies {
   unassignedClients: Map<string, SSEClient>;
   saveScore: (submission: ScoreSubmission) => Promise<void>;
+  /** Track this session runs on (one running session per track). */
+  trackId?: number;
+  /** Client ids held by this session until it ends (judges for every competition). */
+  claimedClients?: string[];
 }
 
 export class Session {
@@ -35,6 +39,15 @@ export class Session {
 
   isRunning(): boolean {
     return this.running;
+  }
+
+  get trackId(): number | undefined {
+    return this.deps.trackId;
+  }
+
+  /** Clients this session holds until it finishes (a judge can't leave mid-session). */
+  get claimedClients(): ReadonlySet<string> {
+    return new Set(this.deps.claimedClients ?? []);
   }
 
   /**

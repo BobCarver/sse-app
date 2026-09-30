@@ -12,7 +12,10 @@ import { resolvers } from "./resolveTag.ts";
 import { parseTag, validatePayload } from "./contract.ts";
 import { handleSSEConnection } from "./sse.ts";
 import { SessionManager } from "./sessionManager.ts";
-import { getSessionCompetitionsWithRubrics } from "./db.ts";
+import {
+  getSessionCompetitionsWithRubrics,
+  getSessionTrackId,
+} from "./db.ts";
 
 export type JWTPayload = {
   sub: string; // subject representing client (e.g. "dj0" or "judge2")
@@ -169,32 +172,74 @@ app.get("/sessions/dj.js", async (c) => {
 
 app.use("/sessions/*", serveStatic({ root: publicRoot }));
 
-// Start a session - queries DB, builds session, and runs it
+// Start a session - queries DB, builds session, and runs it.
+// Rules: one running session per track; the track's DJ (dj<trackId>) and
+// scoreboard (sb<trackId>) are permanent clients; judges are held by the
+// session until it completes.
 app.post(
   "/sessions/:sessionId/start",
   // public for tests; in prod you may want to protect this route
   async (c: Context<{ Variables: Variables }>) => {
     const sessionId = Number(c.req.param("sessionId"));
+    if (!Number.isInteger(sessionId)) {
+      return c.json({ error: "Invalid session ID" }, 400);
+    }
 
-    // Fetch competitions from DB
-    let competitions = [];
+    // Idempotent start: already running is success.
+    const existing = SessionManager.getSession(sessionId);
+    if (existing?.isRunning()) {
+      return c.json({
+        success: true,
+        message: "Session already running",
+        sessionId,
+      });
+    }
+
+    let competitions;
+    let trackId;
     try {
-      // DB uses numeric sessionId
       competitions = await getSessionCompetitionsWithRubrics(sessionId);
+      trackId = await getSessionTrackId(sessionId);
     } catch (_err) {
       return c.json({ error: "No competitions found for session" }, 400);
     }
-
     if (!competitions || competitions.length === 0) {
       return c.json({
         error: `No competitions provided for session ${sessionId}`,
       }, 400);
+    }
+    if (trackId === undefined) {
+      return c.json({ error: `Session ${sessionId} has no track` }, 404);
+    }
+
+    const judgeClients = [
+      ...new Set(
+        competitions.flatMap((comp) =>
+          comp.rubric.judges.map((j) => `judge${j.id}`)
+        ),
+      ),
+    ];
+    const permanentClientIds = [`dj${trackId}`, `sb${trackId}`];
+
+    // No await between this check and createSession: the claim is atomic.
+    const conflict = SessionManager.findConflict(
+      sessionId,
+      trackId,
+      judgeClients,
+    );
+    if (conflict) return c.json({ error: conflict }, 409);
+
+    if (existing) {
+      console.warn(`Session ${sessionId} is stale (not running); replacing`);
+      SessionManager.deleteSession(sessionId);
     }
 
     let session;
     try {
       session = SessionManager.createSession(sessionId, {
         unassignedClients,
+        trackId,
+        claimedClients: judgeClients,
         saveScore: (scoreData: ScoreSubmission) => {
           // TODO(phase 3): persist via db.saveScore
           dlog("Saving score data:", scoreData);
@@ -202,79 +247,29 @@ app.post(
         },
       });
     } catch (err) {
-      // If session already exists, try to recover if it's stale (not running)
-      const msg = String(err);
-      console.warn(`createSession error for ${sessionId}:`, msg);
-      const existing = SessionManager.getSession(sessionId);
-      if (existing && existing.isRunning()) {
-        // Already running: idempotent start
-        return c.json({
-          success: true,
-          message: "Session already running",
-          sessionId,
-        });
-      }
-
-      if (existing && !existing.isRunning()) {
-        // Stale session detected: delete and retry creating session
-        console.warn(
-          `Session ${sessionId} exists but not running; deleting stale session and retrying start`,
-        );
-        SessionManager.deleteSession(sessionId);
-        try {
-          session = SessionManager.createSession(sessionId, {
-            unassignedClients,
-            saveScore: (scoreData: ScoreSubmission) => {
-              dlog("Saving score data:", scoreData);
-              return Promise.resolve();
-            },
-          });
-        } catch (err2) {
-          console.error(
-            `Retry createSession failed for ${sessionId}:`,
-            String(err2),
-          );
-          return c.json({ error: String(err2) }, 500);
-        }
-      } else {
-        // No existing session info, surface original error
-        return c.json({ error: msg }, 500);
-      }
+      return c.json({ error: String(err) }, 500);
     }
 
-    if (session === undefined) {
-      return c.json({ error: "Invalid session ID" }, 400);
-    }
-
-    // Check if session is already running
-    if (session.isRunning()) {
-      return c.json({ error: "Session already running" }, 409);
-    }
-
-    try {
-      // Run session asynchronously (don't wait for completion)
-      session.runSession(competitions).catch((error: unknown) => {
+    // Run asynchronously; the session is removed when it finishes or fails.
+    session.runSession(competitions, permanentClientIds)
+      .catch((error: unknown) => {
         console.error(`Session ${sessionId} error:`, error);
-        SessionManager.deleteSession(sessionId);
-      }).finally(() => {
-        // Ensure the session is removed from the manager when it finishes (success or error)
-        SessionManager.deleteSession(sessionId);
+      })
+      .finally(() => {
+        // Only delete our own session (a restart may have replaced it).
+        if (SessionManager.getSession(sessionId) === session) {
+          SessionManager.deleteSession(sessionId);
+        }
         console.log(`Session ${sessionId} completed`);
       });
 
-      return c.json({
-        success: true,
-        message: "Session started",
-        sessionId,
-      });
-    } catch (error) {
-      console.error("Failed to start session:", error);
-      return c.json({
-        error: error instanceof Error
-          ? error.message
-          : "Failed to start session",
-      }, 500);
-    }
+    return c.json({
+      success: true,
+      message: "Session started",
+      sessionId,
+      trackId,
+      clients: { permanent: permanentClientIds, judges: judgeClients },
+    });
   },
 );
 

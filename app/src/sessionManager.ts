@@ -85,6 +85,31 @@ export class SessionManager {
   }
 
   /**
+   * Check whether a new session can start without stealing another session's
+   * track or clients. Returns a human-readable reason, or undefined if clear.
+   * Rules: one running session per track; a judge stays in their session until
+   * it completes; DJ/scoreboard ids are per-track so they cannot overlap.
+   */
+  static findConflict(
+    sessionId: number,
+    trackId: number,
+    requiredClients: string[],
+  ): string | undefined {
+    for (const s of sessions.values()) {
+      if (s.id === sessionId || !s.isRunning()) continue;
+      if (s.trackId === trackId) {
+        return `Track ${trackId} already has running session ${s.id}`;
+      }
+      const claimed = s.claimedClients;
+      const taken = requiredClients.filter((id) => claimed.has(id));
+      if (taken.length > 0) {
+        return `${taken.join(", ")} already in running session ${s.id}`;
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * Get all active sessions
    * @returns Array of all sessions
    */
