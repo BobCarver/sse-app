@@ -218,9 +218,8 @@ Working style (owner): analysis only when asked to analyse; commit only when ask
    already-scored competitors?
 3. Missing-judge-score records are in memory only; persist if results/audit need them.
 4. Single-instance assumption: the revocation cache is in process memory.
-5. Never run on GitHub: `ci.yml` was validated (YAML + running each job's commands
-   locally) but not executed there. `tools/run-e2e.sh` (Docker) is unverified because
-   Docker wasn't running. `.vscode/tasks.json` references a missing
-   `start-debug-session.sh`. `ci.yml`'s e2e job has not been checked against the
-   audio changes (needs `--allow-write`/`AUDIO_DIR`, done in the Playwright config).
-   Suggested next step: do this item first, it verifies everything on a clean machine.
+5. CI: `ci.yml` has run on GitHub and is green (run for `9b4409a`: static, tests,
+   browser tests; browser job ~7 min). Still open: `tools/run-e2e.sh` (Docker) is
+   unverified because Docker wasn't running; `.vscode/tasks.json` references a missing
+   `start-debug-session.sh`; Actions warns that `actions/checkout@v4` targets Node 20
+   and that `ubuntu-latest` moves to Ubuntu 26 on 2026-10-19 (bump/pin when convenient).
