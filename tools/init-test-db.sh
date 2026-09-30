@@ -30,8 +30,8 @@ echo "[init-test-db] DB_NAME=$DB_NAME"
 # Test connectivity to target DB
 if psql "$DATABASE_URL_ESCAPED" -c "SELECT 1;" >/dev/null 2>&1; then
   echo "[init-test-db] Target DB reachable — applying schema and seed"
-  psql "$DATABASE_URL_ESCAPED" -f app/src/schema2.sql
-  psql "$DATABASE_URL_ESCAPED" -f test/seed_db.sql
+  psql "$DATABASE_URL_ESCAPED" -f docker/postgres/db-init/01_schema.sql
+  psql "$DATABASE_URL_ESCAPED" -f docker/postgres/db-init/02_seed.sql
   echo "[init-test-db] Done"
   exit 0
 fi
@@ -96,7 +96,7 @@ fi
 
 # Apply schema and seed
 echo "[init-test-db] Applying schema and seed to $DB_NAME"
-psql "$DATABASE_URL_ESCAPED" -f src/schema2.sql
-psql "$DATABASE_URL_ESCAPED" -f test/seed_db.sql
+psql "$DATABASE_URL_ESCAPED" -f docker/postgres/db-init/01_schema.sql
+psql "$DATABASE_URL_ESCAPED" -f docker/postgres/db-init/02_seed.sql
 
 echo "[init-test-db] Completed successfully"
