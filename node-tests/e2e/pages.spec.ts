@@ -82,3 +82,74 @@ test("real pages: full session through the UI", async ({ browser, request }) => 
         await Promise.all([dj, j2, j3, sb].map((c) => c.context.close()));
     }
 });
+
+test("real pages: a judge whose connection drops mid-scoring recovers and can still submit", async ({ browser, request }) => {
+    const wav = silentWav();
+    const pageErrors: string[] = [];
+    async function open(url: string) {
+        const context = await browser.newContext();
+        // Keep a handle on every EventSource so the test can kill the live one.
+        await context.addInitScript(() => {
+            const Native = window.EventSource;
+            (window as any).__eventSources = [];
+            (window as any).EventSource = class extends Native {
+                constructor(url: string | URL, init?: EventSourceInit) {
+                    super(url, init);
+                    (window as any).__eventSources.push(this);
+                }
+            };
+        });
+        await context.route(/-(announce|music)$/, (r) =>
+            r.fulfill({ status: 200, contentType: "audio/wav", body: wav }));
+        const page = await context.newPage();
+        page.on("pageerror", (e) => pageErrors.push(`${url}: ${e.message}`));
+        await page.goto(url);
+        return { context, page };
+    }
+
+    const dj = await open("/dj?track=1");
+    const j2 = await open("/judge?judge=2");
+    const j3 = await open("/judge?judge=3");
+    const sb = await open("/scoreboard?track=1");
+
+    try {
+        await new Promise((r) => setTimeout(r, 1000));
+        expect((await request.post("/sessions/1/start")).status()).toBe(200);
+
+        for (const j of [j2, j3]) {
+            await expect(j.page.locator("#submit")).toBeEnabled({ timeout: 20_000 });
+        }
+
+        // Judge 2 starts scoring, then loses the network.
+        await j2.page.locator("#sliders input").evaluate((el) => {
+            (el as HTMLInputElement).value = "9";
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        // The connection dies the way a browser reports it when it gives up:
+        // closed + error event.
+        await j2.page.evaluate(() => {
+            const es = (window as any).__eventSources.at(-1) as EventSource;
+            es.close();
+            es.dispatchEvent(new Event("error"));
+        });
+        await expect(j2.page.locator("#connection")).toContainText("reconnecting");
+
+        // The page reopens by itself (fresh token) and the server replays state.
+        await expect(j2.page.locator("#connection")).toHaveText("", { timeout: 15_000 });
+        expect(await j2.page.evaluate(() => (window as any).__eventSources.length)).toBe(2);
+
+        // The judge's in-progress slider survived the replay, and submitting works.
+        await expect(j2.page.locator("#sliders input")).toHaveValue("9");
+        await expect(j2.page.locator("#submit")).toBeEnabled();
+        await j2.page.locator("#submit").click();
+        await expect(j2.page.locator("#status")).toHaveText("Scores submitted");
+
+        await j3.page.locator("#submit").click();
+        await expect(j3.page.locator("#status")).toHaveText("Scores submitted");
+
+        await expect(sb.page.locator("#scoreboard tbody td")).toHaveText(["9", "5"]);
+        expect(pageErrors).toEqual([]);
+    } finally {
+        await Promise.all([dj, j2, j3, sb].map((c) => c.context.close()));
+    }
+});

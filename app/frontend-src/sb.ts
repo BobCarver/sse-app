@@ -1,5 +1,6 @@
 /// <reference lib="dom" />
 import { CompetitorId, Rubric } from "../src/types.ts";
+import type { SseLike } from "./connect.ts";
 import { escapeHtml } from "./html.ts";
 import { sseClient } from "./sseClient.ts";
 import type {
@@ -9,7 +10,7 @@ import type {
 
 export interface ScoreboardDependencies {
   document?: Document;
-  sse?: EventSource;
+  sse?: SseLike;
 }
 
 export class ScoreboardClient extends sseClient {
@@ -40,6 +41,12 @@ export class ScoreboardClient extends sseClient {
     //       );
     //       this.clearTable(); // update competitor info
     //     });
+    // A new performance starts with an empty board (also on replay: the scores
+    // so far follow as score_update events).
+    this.sse.addEventListener("performance_start", () => {
+      this.scoreForCompetitor = undefined;
+      this.clearTable();
+    });
     this.sse.addEventListener("score_update", ({ data }) => {
       const msg = JSON.parse(data) as ScoreUpdateMessage;
       if (msg.competitor_id != this.scoreForCompetitor) {
@@ -76,6 +83,7 @@ export class ScoreboardClient extends sseClient {
   updateScores(
     { competition_id, competitor_id, judge_id, scores }: ScoreUpdateMessage,
   ): void {
+    if (!this.competition || this.position === undefined) return;
     if (
       competition_id !== this.competition!.id ||
       competitor_id !== this.competition!.competitors[this.position!].id

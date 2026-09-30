@@ -1,6 +1,9 @@
-import { registerAndConnect, requireParam } from "./connect.ts";
+import { registerAndConnect, requireParam, showConnection } from "./connect.ts";
 import { ScoreboardClient } from "./sb.ts";
 
-new ScoreboardClient({
-  sse: await registerAndConnect(`sb${requireParam("track")}`),
-});
+const sse = await registerAndConnect(
+  `sb${requireParam("track")}`,
+  showConnection,
+);
+new ScoreboardClient({ sse });
+globalThis.addEventListener("pagehide", () => sse.close());

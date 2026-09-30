@@ -355,7 +355,7 @@ Deno.test("Session - handleClientReconnect sends recovery messages", async () =>
   );
 
   // If judge already submitted, no enable_scoring should be sent
-  session.submittedScores.add("14:0:judge2");
+  session.submittedScores.add("14:0:2"); // competitionId:position:judgeId
   const judge2 = createMockClient("judge2") as unknown as SSEClient;
   await session.handleClientReconnect(judge2);
   await delay(10);

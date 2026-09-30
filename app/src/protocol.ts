@@ -85,6 +85,12 @@ export interface PingMessage {
   event: "ping";
 }
 
+// SERVER -> CLIENT: another connection with the same client id replaced this
+// one (e.g. a second tab). The client should stop reconnecting.
+export interface SupersededMessage extends BaseMessage {
+  event: "superseded";
+}
+
 interface ErrorMessage extends BaseMessage {
   event: "error";
   error_code: string;
@@ -105,6 +111,7 @@ export type ServerToClientMessage =
   | EnableScoringMessage
   | ScoreUpdateMessage
   | PingMessage
+  | SupersededMessage
   | ErrorMessage;
 
 // ============================================================================

@@ -1,12 +1,15 @@
 /// <reference lib="dom" />
 import { assert } from "@std/assert";
-import { PerformanceStartMessage } from "../src/protocol.ts";
+import {
+  PerformanceRecoveryMessage,
+  PerformanceStartMessage,
+} from "../src/protocol.ts";
 import { perfTag } from "../src/contract.ts";
-import { postResponse } from "./connect.ts";
+import { postResponse, type SseLike } from "./connect.ts";
 import { sseClient } from "./sseClient.ts";
 
 export interface DjDependencies {
-  sse?: EventSource; //EventSource;
+  sse?: SseLike;
   document?: Document;
   audio?: HTMLAudioElement;
 }
@@ -47,6 +50,8 @@ export class DjClient extends sseClient {
   private startPauseButton: HTMLButtonElement;
   private skipButton: HTMLButtonElement;
   private audio: HTMLAudioElement;
+  /** Position of the performance this page is currently handling, if any. */
+  private activePosition: number | undefined = undefined;
 
   constructor(deps: DjDependencies = {}) {
     super({
@@ -71,6 +76,15 @@ export class DjClient extends sseClient {
         this.handlePerformanceStart(position);
       },
     );
+    // Sent when this DJ (re)connects mid-performance. If this page is already
+    // handling that performance (a network blip) do nothing; if the page was
+    // reloaded, resume without repeating the announcement or auto-playing.
+    this.sse.addEventListener("performance_recovery", ({ data }) => {
+      const { position } = JSON.parse(data) as PerformanceRecoveryMessage;
+      assert(typeof position === "number");
+      if (this.activePosition === position) return;
+      this.handlePerformanceStart(position, { resume: true });
+    });
   }
 
   private setupAudioControls(): void {
@@ -96,26 +110,35 @@ export class DjClient extends sseClient {
     this.skipButton.onclick = null;
   }
 
-  private async handlePerformanceStart(position: number): Promise<void> {
+  private async handlePerformanceStart(
+    position: number,
+    { resume = false } = {},
+  ): Promise<void> {
+    this.activePosition = position;
     try {
       const competitorId = this.competition!.competitors[position].id;
 
-      // Play announcement
-      await this.playAudio(
-        `${this.competition!.id}-${competitorId}-announce`,
-      );
+      // Play announcement (skipped when resuming after a reload)
+      if (!resume) {
+        await this.playAudio(
+          `${this.competition!.id}-${competitorId}-announce`,
+        );
+      }
 
       // Play music
       this.audio.src = `${this.competition!.id}-${competitorId}-music`;
       this.startPauseButton.disabled = false;
       this.skipButton.disabled = false;
 
-      const completed = await this.playMusicWithControls();
+      // When resuming, wait for the DJ to press play: browsers block autoplay
+      // without a user gesture, and a rejected play() would skip the act.
+      const completed = await this.playMusicWithControls(!resume);
       await this.report(position, completed);
     } catch (_err) {
       // playback failed: report the performance as not completed (skipped)
       await this.report(position, false);
     } finally {
+      this.activePosition = undefined;
       this.initialState();
     }
   }
@@ -141,12 +164,12 @@ export class DjClient extends sseClient {
     });
   }
 
-  private playMusicWithControls(): Promise<boolean> {
+  private playMusicWithControls(autoplay = true): Promise<boolean> {
     return new Promise<boolean>((resolve, reject) => {
       this.audio.onended = () => resolve(true);
       this.audio.onerror = () => reject(new Error("audio_error"));
       this.skipButton.onclick = () => resolve(false);
-      this.audio.play().catch((err) => reject(err));
+      if (autoplay) this.audio.play().catch((err) => reject(err));
     });
   }
 

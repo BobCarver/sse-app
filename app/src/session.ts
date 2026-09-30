@@ -49,6 +49,8 @@ export class Session {
   submittedScores: Set<string> = new Set(); // "competitionId:position:judgeId"
   /** Submissions that could not be saved after retries (kept for recovery/audit). */
   unsavedScores: ScoreSubmission[] = [];
+  /** Scores accepted for the current competitor (replayed to scoreboards that connect late). */
+  currentScores: ScoreSubmission[] = [];
 
   constructor(
     public id: number,
@@ -128,6 +130,13 @@ export class Session {
       return;
     }
 
+    // A different live connection already holds this slot (second tab, or a
+    // reconnect that beat the old stream's abort): tell the old one to stop.
+    const previous = this.clients.get(client.id);
+    if (previous && previous !== client) {
+      this.sendToClient(previous, { event: "superseded" });
+    }
+
     // Update the client slot with the SSE connection
     this.clients.set(client.id, client);
 
@@ -144,43 +153,61 @@ export class Session {
   }
 
   /**
-   * Handle client reconnection during an active session
-   * Sends appropriate recovery messages based on current phase
+   * Bring a (re)connecting client up to date by replaying the current state as
+   * the same events it would have received live. Handlers on the client are
+   * idempotent, so a brief network blip and a full page reload both recover.
+   *
+   *  - everyone: competition_start (if a competition is underway)
+   *  - DJ: performance_recovery while performing (NOT performance_start: that
+   *    would replay the announcement)
+   *  - judges/scoreboards: performance_start; judges also enable_scoring if
+   *    they have not submitted; scoreboards also the scores so far
    */
   // deno-lint-ignore require-await
   async handleClientReconnect(client: SSEClient): Promise<void> {
-    if (this.currentPhase === "idle") {
+    const competition = this.currentCompetition;
+    if (!competition) return;
+
+    console.log(
+      `Client ${client.id} connected during phase: ${this.currentPhase}`,
+    );
+    this.sendToClient(client, { event: "competition_start", competition });
+
+    const active = this.currentPosition >= 0 &&
+      (this.currentPhase === "performing" || this.currentPhase === "scoring");
+    if (!active) return;
+
+    const isDj = client.id.startsWith("dj");
+    const isJudge = client.id.startsWith("judge");
+    const isScoreboard = client.id.startsWith("sb");
+    const at = {
+      competition_id: competition.id,
+      position: this.currentPosition,
+    };
+
+    if (isDj) {
+      if (this.currentPhase === "performing") {
+        this.sendToClient(client, { event: "performance_recovery", ...at });
+      }
       return;
     }
 
-    console.log(
-      `Client ${client.id} reconnected during phase: ${this.currentPhase}`,
-    );
+    this.sendToClient(client, { event: "performance_start", ...at });
 
-    // DJ reconnecting during performance - send recovery message
-    if (client.id[0] === "d" && this.currentPhase === "performing") {
-      this.sendToClient(client, {
-        event: "performance_recovery",
-        competition_id: this.currentCompetition!.id,
-        position: this.currentPosition,
-      });
+    if (isJudge && this.currentPhase === "scoring") {
+      const judgeId = Number(client.id.slice("judge".length));
+      const submitted = this.submittedScores.has(
+        `${competition.id}:${this.currentPosition}:${judgeId}`,
+      );
+      if (!submitted) {
+        console.log(`Resending enable_scoring to ${client.id}`);
+        this.sendToClient(client, { event: "enable_scoring", ...at });
+      }
     }
 
-    // Judge reconnecting during scoring - resend enable_scoring if not submitted
-    if (client.id[0] === "j" && this.currentPhase === "scoring") {
-      const scoreKey = `${
-        this.currentCompetition!.id
-      }:${this.currentPosition}:${client.id}`;
-
-      if (!this.submittedScores.has(scoreKey)) {
-        console.log(`Resending enable_scoring to judge ${client.id}`);
-        this.sendToClient(client, {
-          event: "enable_scoring",
-          competition_id: this.currentCompetition!.id,
-          position: this.currentPosition,
-        });
-      } else {
-        console.log(`Judge ${client.id} already submitted, no recovery needed`);
+    if (isScoreboard) {
+      for (const submission of this.currentScores) {
+        this.sendToClient(client, { event: "score_update", ...submission });
       }
     }
   }
@@ -189,8 +216,12 @@ export class Session {
    * Mark client as disconnected (but keep the slot)
    * This is called when SSE connection is closed
    */
-  disconnectClient(clientId: string): void {
+  disconnectClient(clientId: string, client?: SSEClient): void {
     console.log("Session: disconnectClient", { sessionId: this.id, clientId });
+
+    // A stale stream closing after its replacement connected must not clear
+    // the replacement's slot: only act if this is still the connection held.
+    if (client && this.clients.get(clientId) !== client) return;
 
     // Keep the client slot but mark as disconnected
     if (this.clients.has(clientId)) {
@@ -446,6 +477,7 @@ export class Session {
     this.currentPhase = "performing";
     this.currentCompetition = competition;
     this.currentPosition = position;
+    this.currentScores = [];
 
     // Send performance start to DJ and all clients
     this.broadcast({
@@ -523,7 +555,8 @@ export class Session {
         };
         await this.saveWithRetry(submission);
 
-        // Broadcast to scoreboards
+        // Remember for scoreboards that connect late, then broadcast
+        this.currentScores.push(submission);
         this.broadcast({
           event: "score_update",
           ...submission,
@@ -554,6 +587,9 @@ export class Session {
    * Announce competition start to all clients
    */
   competitionStart(competition: Competition): void {
+    this.currentCompetition = competition;
+    this.currentPosition = -1;
+    this.currentScores = [];
     this.broadcast({
       event: "competition_start",
       competition,
@@ -632,6 +668,12 @@ export class Session {
           }
         }
 
+        // Competition over: nothing to replay to clients connecting between
+        // competitions
+        this.currentCompetition = null;
+        this.currentPosition = -1;
+        this.currentScores = [];
+
         // Clean up clients not needed for next competition
         const nextCompetition = competitions[index + 1];
         this.clearUnneededClients(nextCompetition, permanentClientIds);
@@ -655,6 +697,7 @@ export class Session {
     this.currentPhase = "idle";
     this.currentCompetition = null;
     this.currentPosition = -1;
+    this.currentScores = [];
     this.submittedScores.clear();
 
     // Move all connected clients (including DJ) back to unassigned pool

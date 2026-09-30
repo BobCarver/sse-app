@@ -8,10 +8,11 @@ import type {
 } from "../src/protocol.ts";
 import { assert } from "@std/assert";
 import { escapeHtml } from "./html.ts";
+import type { SseLike } from "./connect.ts";
 
 export interface sseClientDependencies {
   document?: Document;
-  sse?: EventSource; //EventSource;
+  sse?: SseLike;
 }
 
 /**
@@ -32,7 +33,7 @@ export class sseClient {
   position: number | undefined = undefined;
   protected doc: Document;
   /** The single SSE connection for this page; subclasses add listeners to it. */
-  protected sse: EventSource;
+  protected sse: SseLike;
   private tbody: HTMLTableSectionElement | null;
 
   constructor(deps: sseClientDependencies = {}) {
@@ -67,6 +68,13 @@ export class sseClient {
         this.tbody?.style.setProperty("--hide-count", String(position));
       },
     );
+    sse.addEventListener("superseded", () => {
+      // Another window took over this client id. Stop; do not fight for it.
+      this.setStatus(
+        "This page was opened in another window and is now inactive",
+      );
+      sse.close();
+    });
     sse.addEventListener("client_status", ({ data }) => {
       // TODO: render connected clients (roster) in the UI
       JSON.parse(data) as ClientStatusMessage;

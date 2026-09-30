@@ -2,11 +2,11 @@
 import { CompetitionStartMessage } from "../src/protocol.ts";
 import { Rubric } from "../src/types.ts";
 import { scoreTag } from "../src/contract.ts";
-import { postResponse } from "./connect.ts";
+import { postResponse, type SseLike } from "./connect.ts";
 import { escapeHtml } from "./html.ts";
 import { sseClient } from "./sseClient.ts";
 export interface JudgeDependencies {
-  sse?: EventSource;
+  sse?: SseLike;
   document?: Document;
   navigator?: Navigator;
   setTimeout?: typeof setTimeout;
@@ -15,6 +15,10 @@ export interface JudgeDependencies {
 
 export class JudgeClient extends sseClient {
   private alert: ReturnType<typeof setTimeout> | undefined = undefined;
+  /** Which competition the sliders were built for (replays must not rebuild them). */
+  private renderedCompetitionId: number | undefined = undefined;
+  /** "competitionId:position" of the scoring window currently open, if any. */
+  private scoringKey: string | undefined = undefined;
   private sliders: HTMLElement;
   private submit: HTMLButtonElement;
   protected override doc: Document;
@@ -54,13 +58,21 @@ export class JudgeClient extends sseClient {
       ({ data }) => {
         const { competition } = JSON.parse(data) as CompetitionStartMessage;
         this.competition = competition;
-        // set up rubric criteria sliders
+        // Replayed on reconnect: keep sliders (and anything the judge already
+        // set) if they are for this same competition.
+        if (this.renderedCompetitionId === competition.id) return;
+        this.renderedCompetitionId = competition.id;
         this.updateCriteria(competition.rubric);
       },
     );
 
-    this.sse.addEventListener("enable_scoring", () => {
-      // nothing to do except enable the submit button
+    this.sse.addEventListener("enable_scoring", ({ data }) => {
+      // Replayed on reconnect while a window is already open: don't reset the
+      // judge's sliders or restart the alarm.
+      const msg = JSON.parse(data || "{}");
+      const key = `${msg.competition_id}:${msg.position}`;
+      if (this.scoringKey === key && !this.submit.disabled) return;
+      this.scoringKey = key;
       this.enableSubmit();
     });
   }

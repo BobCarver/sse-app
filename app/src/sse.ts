@@ -38,7 +38,7 @@ export async function handleSSEConnection(
     console.error(`SSE error for client ${clientId}:`, error);
     throw error;
   } finally {
-    cleanup(clientId, pingInterval, dependencies);
+    cleanup(client, clientId, pingInterval, dependencies);
   }
 }
 
@@ -81,6 +81,10 @@ function registerClient(
     console.log(
       `Client ${client.id} not assigned to session, adding to unassigned pool`,
     );
+    const previous = unassignedClients.get(client.id);
+    if (previous && previous !== client) {
+      previous.controller.enqueue("event: superseded\ndata: {}\n\n");
+    }
     unassignedClients.set(client.id, client);
   }
 }
@@ -99,7 +103,9 @@ function startPing(
       return;
     }
 
-    stream.write(": ping\n\n").catch((err) => {
+    // A real event (not a ": comment") so browser clients can see it and use it
+    // as a liveness signal.
+    stream.write("event: ping\ndata: {}\n\n").catch((err) => {
       console.warn(`Ping failed for client ${clientId}:`, err);
     });
   }, 30000);
@@ -112,6 +118,7 @@ function startPing(
  */
 function waitForDisconnect(signal: AbortSignal): Promise<void> {
   return new Promise<void>((resolve) => {
+    if (signal.aborted) return resolve();
     signal.addEventListener("abort", () => resolve(), { once: true });
   });
 }
@@ -121,6 +128,7 @@ function waitForDisconnect(signal: AbortSignal): Promise<void> {
  * IMPORTANT: This marks client as disconnected but keeps the slot
  */
 function cleanup(
+  client: SSEClient | null,
   clientId: string,
   pingInterval: ReturnType<typeof setInterval> | undefined,
   { SessionManager, unassignedClients }: SSEDependencies,
@@ -130,14 +138,17 @@ function cleanup(
   try {
     const session = SessionManager.findSessionForClient(clientId);
     if (session) {
-      // Mark client as disconnected (keep the slot)
-      session.disconnectClient(clientId);
+      // Mark client as disconnected (keep the slot) - only if this stream
+      // still owns it; a newer connection may have replaced it already.
+      session.disconnectClient(clientId, client ?? undefined);
     }
   } catch (err) {
     console.warn(`Cleanup: couldn't find session for ${clientId}:`, err);
   }
 
-  // Remove from unassigned pool
-  unassignedClients.delete(clientId);
+  // Remove from unassigned pool - only our own entry, never a replacement's
+  if (!client || unassignedClients.get(clientId) === client) {
+    unassignedClients.delete(clientId);
+  }
   console.log(`SSE: cleaned up client ${clientId}`);
 }
