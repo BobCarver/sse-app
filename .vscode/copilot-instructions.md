@@ -21,7 +21,7 @@ public/             built bundles dj.js jd.js sb.js (generated, tracked in git)
 node-tests/         Playwright (Node)
 docker/             docker-compose.yml, postgres/db-init/01_schema.sql, 02_seed.sql
 scripts/            build_artifacts.ts, issue-links.ts
-tools/              e2e.sh, run-e2e.sh, init-test-db.sh
+tools/              e2e.sh, run-e2e.sh
 ```
 
 ## Rules

@@ -18,7 +18,7 @@ deno task test:e2e      # Playwright, needs DATABASE_URL with schema AND seed (s
 ./tools/run-e2e.sh      # same, with Docker providing Postgres
 deno task build         # rebuild public/*.js (tracked in git; deno bundle)
 deno task fmt           # fix formatting (covers app/ and scripts/ only)
-deno task dev           # run the server (needs ADMIN_TOKEN, DATABASE_URL to be useful)
+deno task dev           # run the server, restarting on file changes (needs ADMIN_TOKEN, DATABASE_URL to be useful)
 ADMIN_TOKEN=... deno task links issue --tracks 1,2 --judges 2,3   # see "Operating"
 ```
 
@@ -52,7 +52,7 @@ app/tests/          unit/ frontend/ contract/ integration/ + auth-utils.ts test-
 node-tests/         Playwright (Node only): e2e/pages.spec.ts, playwright.config.ts
 docker/             docker-compose.yml, postgres/db-init/{01_schema,02_seed}.sql
 scripts/            build_artifacts.ts, issue-links.ts (operator CLI)
-tools/              e2e.sh, run-e2e.sh, init-test-db.sh
+tools/              e2e.sh, run-e2e.sh
 .github/workflows/ci.yml   static / tests / e2e jobs
 ```
 
