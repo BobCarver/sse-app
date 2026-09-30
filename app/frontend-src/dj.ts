@@ -2,6 +2,7 @@
 import { assert } from "@std/assert";
 import { PerformanceStartMessage } from "../src/protocol.ts";
 import { perfTag } from "../src/contract.ts";
+import { postResponse } from "./connect.ts";
 import { sseClient } from "./sseClient.ts";
 
 export interface DjDependencies {
@@ -61,9 +62,7 @@ export class DjClient extends sseClient {
 
     this.setupAudioControls();
     this.initialState();
-    // open an SSE connection (use injected `sse` for tests)
-    const sse = (deps.sse) || new EventSource("/events");
-    sse.addEventListener(
+    this.sse.addEventListener(
       "performance_start",
       ({ data }) => {
         const msg = JSON.parse(data) as PerformanceStartMessage;
@@ -112,32 +111,24 @@ export class DjClient extends sseClient {
       this.skipButton.disabled = false;
 
       const completed = await this.playMusicWithControls();
-      const base = typeof location !== "undefined"
-        ? location.origin
-        : "http://localhost";
-      fetch(`${base}/response`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tag: perfTag(this.competition!.id, position),
-          payload: completed,
-        }),
-      });
+      await this.report(position, completed);
     } catch (_err) {
-      const base = typeof location !== "undefined"
-        ? location.origin
-        : "http://localhost";
-      fetch(`${base}/response`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        // playback failed: report the performance as not completed (skipped)
-        body: JSON.stringify({
-          tag: perfTag(this.competition!.id, position),
-          payload: false,
-        }),
-      });
+      // playback failed: report the performance as not completed (skipped)
+      await this.report(position, false);
     } finally {
       this.initialState();
+    }
+  }
+
+  /** Tell the server how the performance ended; never throws. */
+  private async report(position: number, completed: boolean): Promise<void> {
+    const { ok, status } = await postResponse({
+      tag: perfTag(this.competition!.id, position),
+      payload: completed,
+    });
+    // 404 = the server already moved on; nothing more to do.
+    if (!ok && status !== 404) {
+      this.setStatus("Could not reach server - performance result not sent");
     }
   }
 

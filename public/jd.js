@@ -1,4 +1,66 @@
-// deno:https://jsr.io/@std/assert/1.0.16/assertion_error.ts
+// app/frontend-src/connect.ts
+async function registerAndConnect(sub) {
+  const res = await fetch(`/register?sub=${encodeURIComponent(sub)}`);
+  if (!res.ok) throw new Error(`register failed: ${res.status}`);
+  return new EventSource("/events");
+}
+var RETRY_DELAYS_MS = [
+  500,
+  1e3,
+  2e3
+];
+async function postResponse(body) {
+  const base = globalThis.location?.origin ?? "http://localhost";
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await fetch(`${base}/response`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+      });
+      if (res.status < 500 || attempt >= RETRY_DELAYS_MS.length) {
+        return {
+          ok: res.ok,
+          status: res.status
+        };
+      }
+    } catch (_err) {
+      if (attempt >= RETRY_DELAYS_MS.length) return {
+        ok: false,
+        status: 0
+      };
+    }
+    await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+  }
+}
+function requireParam(name) {
+  const v = new URLSearchParams(globalThis.location?.search).get(name);
+  if (!v || !/^\d+$/.test(v)) {
+    const msg = `Missing or invalid ?${name}= in URL`;
+    const el = document.getElementById("status");
+    if (el) el.textContent = msg;
+    throw new Error(msg);
+  }
+  return v;
+}
+
+// app/src/contract.ts
+var scoreTag = (competitionId, competitorId, judgeId2) => `score:${competitionId}:${competitorId}:${judgeId2}`;
+
+// app/frontend-src/html.ts
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[c]);
+}
+
+// deno:https://jsr.io/@std/assert/1.0.18/assertion_error.ts
 var AssertionError = class extends Error {
   /** Constructs a new instance.
    *
@@ -11,7 +73,7 @@ var AssertionError = class extends Error {
   }
 };
 
-// deno:https://jsr.io/@std/assert/1.0.16/equal.ts
+// deno:https://jsr.io/@std/assert/1.0.18/equal.ts
 var Temporal = globalThis.Temporal ?? /* @__PURE__ */ Object.create(null);
 var stringComparablePrototypes = new Set([
   Intl.Locale,
@@ -37,14 +99,14 @@ var ANSI_PATTERN = new RegExp([
   "(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PR-TXZcf-nq-uy=><~]))"
 ].join("|"), "g");
 
-// deno:https://jsr.io/@std/assert/1.0.16/assert.ts
+// deno:https://jsr.io/@std/assert/1.0.18/assert.ts
 function assert(expr, msg = "") {
   if (!expr) {
     throw new AssertionError(msg);
   }
 }
 
-// src/frontend/sseClient.ts
+// app/frontend-src/sseClient.ts
 function formatTime(date) {
   const hours = date.getHours().toString().padStart(2, "0");
   const minutes = date.getMinutes().toString().padStart(2, "0");
@@ -54,39 +116,48 @@ var sseClient = class {
   competition = null;
   position = void 0;
   doc;
-  sessionId = void 0;
+  /** The single SSE connection for this page; subclasses add listeners to it. */
+  sse;
   tbody;
   constructor(deps = {}) {
     this.doc = deps.document || document;
     this.tbody = this.doc.querySelector("#compTable tbody");
-    const status = this.doc.getElementById("status");
-    const sse = deps.sse || new EventSource("/events");
+    const sse = this.sse = deps.sse || new EventSource("/events");
     sse.addEventListener("competition_start", ({ data }) => {
       const { competition } = JSON.parse(data);
       this.competition = competition;
       this.position = 0;
       this.tbody?.style.setProperty("--hide-count", String(0));
       this.buildCompetitorTable();
+      this.setText("currentCompetition", competition.name);
     });
     sse.addEventListener("performance_start", ({ data }) => {
       const { position } = JSON.parse(data);
       assert(typeof position === "number");
       this.position = position;
+      this.setText("currentCompetitor", this.competition?.competitors[position]?.name ?? "");
       this.updateTimes();
       this.tbody?.style.setProperty("--hide-count", String(position));
     });
     sse.addEventListener("client_status", ({ data }) => {
-      const { connected_clients } = JSON.parse(data);
-      connected_clients.forEach((client) => {
-      });
+      JSON.parse(data);
     });
+  }
+  /** Set textContent of #id if the page has it. */
+  setText(id, text) {
+    const el = this.doc.getElementById(id);
+    if (el) el.textContent = text;
+  }
+  /** Show a message in #status (empty string clears it). */
+  setStatus(message) {
+    this.setText("status", message);
   }
   buildCompetitorTable() {
     if (this.tbody) {
       this.tbody.innerHTML = this.competition.competitors.reduce(([html, ms], c) => [
         html + `<tr>
           <td class="time-col">${formatTime(new Date(ms))}</td>
-          <td>${c.name}</td></tr>`,
+          <td>${escapeHtml(c.name)}</td></tr>`,
         ms + c.duration
       ], [
         "",
@@ -107,7 +178,7 @@ var sseClient = class {
   }
 };
 
-// src/frontend/jd.ts
+// app/frontend-src/jd.ts
 var JudgeClient = class extends sseClient {
   judge_id;
   alert;
@@ -121,8 +192,8 @@ var JudgeClient = class extends sseClient {
     super(deps), this.judge_id = judge_id, this.alert = void 0;
     this.doc = deps.document || document;
     this.nav = deps.navigator || navigator;
-    this.timerFn = deps.setTimeout ?? globalThis.setTimeout;
-    this.clearTimerFn = deps.clearTimeout ?? globalThis.clearTimeout;
+    this.timerFn = deps.setTimeout ?? globalThis.setTimeout.bind(globalThis);
+    this.clearTimerFn = deps.clearTimeout ?? globalThis.clearTimeout.bind(globalThis);
     this.judge_id = judge_id;
     this.sliders = this.doc.querySelector("#sliders");
     this.submit = this.doc.querySelector("#submit");
@@ -136,13 +207,12 @@ var JudgeClient = class extends sseClient {
     });
     this.submit.onclick = this.submitScores.bind(this);
     this.submit.disabled = true;
-    const sse = deps.sse || new EventSource("/events");
-    sse.addEventListener("competition_start", ({ data }) => {
+    this.sse.addEventListener("competition_start", ({ data }) => {
       const { competition } = JSON.parse(data);
       this.competition = competition;
       this.updateCriteria(competition.rubric);
     });
-    sse.addEventListener("enable_scoring", () => {
+    this.sse.addEventListener("enable_scoring", () => {
       this.enableSubmit();
     });
   }
@@ -154,7 +224,7 @@ var JudgeClient = class extends sseClient {
     }
     const criteria = rubric.criteria.filter(({ id }) => judge.criteria.includes(id));
     this.sliders.innerHTML = criteria.reduce((acc, c) => acc + `<div class="slider-group">
-                <label>${c.name}</label>
+                <label>${escapeHtml(c.name)}</label>
                 <input type="range" class="slider"
                     data-criterion-id="${c.id}"
                     min="1" max="10" step="0.1">
@@ -192,11 +262,32 @@ var JudgeClient = class extends sseClient {
     });
     const competitionId = this.competition.id;
     const competitorId = this.competition.competitors[this.position].id;
-    const base = globalThis.location?.origin ?? "http://localhost";
-    if (!this.sessionId) {
-      console.warn("JudgeClient: sessionId not specified; submit aborted");
-      return;
+    this.setStatus("Submitting...");
+    postResponse({
+      tag: scoreTag(competitionId, competitorId, this.judge_id),
+      payload: scores
+    }).then(({ ok, status }) => {
+      if (ok) {
+        this.setStatus("Scores submitted");
+      } else if (status === 404) {
+        this.setStatus("Too late - scoring for this competitor has closed");
+      } else {
+        this.setStatus("Submit failed - tap Submit to retry");
+        this.submit.disabled = false;
+      }
+    });
+  }
+  destroy() {
+    if (this.alert !== void 0) {
+      this.clearTimerFn(this.alert);
+      this.alert = void 0;
     }
-    fetch(`${base}/response`, {
-      method: "POST",
-I will finish creating the file...
+  }
+};
+
+// app/frontend-src/main-jd.ts
+var judgeId = requireParam("judge");
+var client = new JudgeClient(Number(judgeId), {
+  sse: await registerAndConnect(`judge${judgeId}`)
+});
+globalThis.addEventListener("pagehide", () => client.destroy());

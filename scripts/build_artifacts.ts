@@ -1,19 +1,20 @@
-// Simple artifact bundler for frontend files.
-// Bundles app/src/frontend/* -> public/*.js
+// Bundles browser entry points -> public/*.js (served at /js/*.js).
+// Usage: deno task build
 
 const entries = [
-  { src: "app/frontend-src/dj.ts", out: "public/dj.js" },
-  { src: "app/frontend-src/jd.ts", out: "public/jd.js" },
-  { src: "app/frontend-src/sb.ts", out: "public/sb.js" },
-  { src: "app/frontend-src/sseClient.ts", out: "public/sseClient.js" },
+  { src: "app/frontend-src/main-dj.ts", out: "public/dj.js" },
+  { src: "app/frontend-src/main-jd.ts", out: "public/jd.js" },
+  { src: "app/frontend-src/main-sb.ts", out: "public/sb.js" },
 ];
 
 await Deno.mkdir("public", { recursive: true });
-for (const e of entries) {
-  console.log(`Bundling ${e.src} -> ${e.out}`);
-  const result = await Deno.emit(e.src, { bundle: "module" });
-  const js = result.files["deno:///bundle.js"];
-  if (!js) throw new Error(`bundle missing for ${e.src}`);
-  await Deno.writeTextFile(e.out, js);
+for (const { src, out } of entries) {
+  console.log(`Bundling ${src} -> ${out}`);
+  const { success } = await new Deno.Command(Deno.execPath(), {
+    args: ["bundle", "--platform=browser", "--output", out, src],
+    stdout: "inherit",
+    stderr: "inherit",
+  }).output();
+  if (!success) throw new Error(`bundle failed for ${src}`);
 }
 console.log("Artifacts built to ./public/");

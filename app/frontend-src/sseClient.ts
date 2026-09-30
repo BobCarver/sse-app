@@ -7,6 +7,7 @@ import type {
   PerformanceStartMessage,
 } from "../src/protocol.ts";
 import { assert } from "@std/assert";
+import { escapeHtml } from "./html.ts";
 
 export interface sseClientDependencies {
   document?: Document;
@@ -30,7 +31,8 @@ export class sseClient {
   competition: Competition | null = null;
   position: number | undefined = undefined;
   protected doc: Document;
-  protected sessionId: number | undefined = undefined;
+  /** The single SSE connection for this page; subclasses add listeners to it. */
+  protected sse: EventSource;
   private tbody: HTMLTableSectionElement | null;
 
   constructor(deps: sseClientDependencies = {}) {
@@ -39,7 +41,7 @@ export class sseClient {
       "#compTable tbody",
     ) as HTMLTableSectionElement;
 
-    const sse = deps.sse || (new EventSource("/events") as EventSource);
+    const sse = this.sse = deps.sse || new EventSource("/events");
     sse.addEventListener(
       "competition_start",
       ({ data }) => {
@@ -48,6 +50,7 @@ export class sseClient {
         this.position = 0;
         this.tbody?.style.setProperty("--hide-count", String(0));
         this.buildCompetitorTable();
+        this.setText("currentCompetition", competition.name);
       },
     );
     sse.addEventListener(
@@ -56,6 +59,10 @@ export class sseClient {
         const { position } = JSON.parse(data) as PerformanceStartMessage;
         assert(typeof position === "number");
         this.position = position;
+        this.setText(
+          "currentCompetitor",
+          this.competition?.competitors[position]?.name ?? "",
+        );
         this.updateTimes();
         this.tbody?.style.setProperty("--hide-count", String(position));
       },
@@ -66,6 +73,17 @@ export class sseClient {
     });
   }
 
+  /** Set textContent of #id if the page has it. */
+  protected setText(id: string, text: string): void {
+    const el = this.doc.getElementById(id);
+    if (el) el.textContent = text;
+  }
+
+  /** Show a message in #status (empty string clears it). */
+  protected setStatus(message: string): void {
+    this.setText("status", message);
+  }
+
   buildCompetitorTable(): void {
     if (this.tbody) {
       this.tbody.innerHTML =
@@ -73,7 +91,7 @@ export class sseClient {
           ([html, ms], c) => [
             html + `<tr>
           <td class="time-col">${formatTime(new Date(ms))}</td>
-          <td>${c.name}</td></tr>`,
+          <td>${escapeHtml(c.name)}</td></tr>`,
             ms + c.duration,
           ],
           ["", Date.now()],

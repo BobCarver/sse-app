@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>
-      Judge Panel - <%= it.competition.name %>
+      Judge Panel
     </title>
     <!-- <link rel="stylesheet" href="./lib/styles.css"> -->
     <style>
@@ -92,40 +92,10 @@
 
     <div id="currentCompetitor" class="control">Competitor 1</div>
 
-    <div id="sliders" class="control">
-      <div class="slider-group">
-        <label>Technical Difficulty</label>
-        <input
-          type="range"
-          class="slider"
-          data-criterion-id="1"
-          min="1"
-          max="10"
-          step="0.1"
-        >
-      </div>
+    <div id="sliders" class="control"></div>
 
-      <div class="slider-group">
-        <label>Artistic Impression</label>
-        <input
-          type="range"
-          class="slider"
-          data-criterion-id="2"
-          min="1"
-          max="10"
-          step="0.1"
-        >
-      </div>
-    </div>
-
+    <p id="status"></p>
     <button id="submit" class="control">Submit</button>
   </body>
-  <script type="module" src="./lib/jd.js"></script>
-  <script>
-    const params = new URLSearchParams(window.location.search);
-    const jd = new JudgeController(params);
-
-    // Cleanup on page unload
-    window.addEventListener("unload", () => jd.destroy());
-  </script>
+  <script type="module" src="/js/jd.js"></script>
 </html>

@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title></title>
+    <title>DJ</title>
     <style>
         /* Modal styles */
         .modal {
-            display: block;
+            display: none;
             position: fixed;
             z-index: 1;
             left: 0;
@@ -46,13 +46,13 @@
     <h2 id="currentCompetitor" class="control"></h2>
     <div>
     <button id="start" class="control">Start</button>
-    <button id="next" class="control">Next</button>
     <button id="skip" class="control">Skip</button>
     </div>
+    <p id="status"></p>
     <h3 id="clients" class="control"></h3>
     <h3>Upcoming</h3>
     <div>
-        <table>
+        <table id="compTable">
             <thead>
                 <tr><th>name</th><th>time</th></tr>
             </thead>
@@ -68,6 +68,6 @@
         </div>
     </div>
 
-    <script type="module" src="./lib/dj.js"></script>
+    <script type="module" src="/js/dj.js"></script>
 </body>
 </html>

@@ -2,6 +2,8 @@
 import { CompetitionStartMessage } from "../src/protocol.ts";
 import { Rubric } from "../src/types.ts";
 import { scoreTag } from "../src/contract.ts";
+import { postResponse } from "./connect.ts";
+import { escapeHtml } from "./html.ts";
 import { sseClient } from "./sseClient.ts";
 export interface JudgeDependencies {
   sse?: EventSource;
@@ -27,8 +29,11 @@ export class JudgeClient extends sseClient {
     super(deps);
     this.doc = deps.document || document;
     this.nav = deps.navigator || navigator;
-    this.timerFn = deps.setTimeout ?? globalThis.setTimeout;
-    this.clearTimerFn = deps.clearTimeout ?? globalThis.clearTimeout;
+    // Bind to globalThis: browsers throw "Illegal invocation" when these are
+    // called as methods of another object (this.timerFn(...)).
+    this.timerFn = deps.setTimeout ?? globalThis.setTimeout.bind(globalThis);
+    this.clearTimerFn = deps.clearTimeout ??
+      globalThis.clearTimeout.bind(globalThis);
     this.judge_id = judge_id;
 
     this.sliders = this.doc.querySelector("#sliders")! as HTMLElement;
@@ -44,8 +49,7 @@ export class JudgeClient extends sseClient {
     });
     this.submit.onclick = this.submitScores.bind(this);
     this.submit.disabled = true;
-    const sse = deps.sse || new EventSource("/events");
-    sse.addEventListener(
+    this.sse.addEventListener(
       "competition_start",
       ({ data }) => {
         const { competition } = JSON.parse(data) as CompetitionStartMessage;
@@ -55,7 +59,7 @@ export class JudgeClient extends sseClient {
       },
     );
 
-    sse.addEventListener("enable_scoring", () => {
+    this.sse.addEventListener("enable_scoring", () => {
       // nothing to do except enable the submit button
       this.enableSubmit();
     });
@@ -74,7 +78,7 @@ export class JudgeClient extends sseClient {
     this.sliders.innerHTML = criteria.reduce((acc: string, c) =>
       acc +
       `<div class="slider-group">
-                <label>${c.name}</label>
+                <label>${escapeHtml(c.name)}</label>
                 <input type="range" class="slider"
                     data-criterion-id="${c.id}"
                     min="1" max="10" step="0.1">
@@ -116,21 +120,23 @@ export class JudgeClient extends sseClient {
       });
     const competitionId = this.competition!.id;
     const competitorId = this.competition!.competitors[this.position!].id;
-    // derive base URL from location or default to localhost for testing
-    const base = globalThis.location?.origin ?? "http://localhost";
 
-    fetch(
-      `${base}/response`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tag: scoreTag(competitionId, competitorId, this.judge_id),
-          payload: scores,
-        }),
-      },
-    );
-    this.submit.disabled = true;
+    this.setStatus("Submitting...");
+    postResponse({
+      tag: scoreTag(competitionId, competitorId, this.judge_id),
+      payload: scores,
+    }).then(({ ok, status }) => {
+      if (ok) {
+        this.setStatus("Scores submitted");
+      } else if (status === 404) {
+        // Scoring window closed (timed out) or already recorded.
+        this.setStatus("Too late - scoring for this competitor has closed");
+      } else {
+        // Network/server failure after retries: let the judge try again.
+        this.setStatus("Submit failed - tap Submit to retry");
+        this.submit.disabled = false;
+      }
+    });
   }
 
   destroy(): void {

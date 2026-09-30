@@ -99,10 +99,10 @@ test("E2E - Full session flow with DJ and judges", async ({ browser }) => {
         return { context, page };
     }
 
-    const dj = await createClient("dj0");
+    const dj = await createClient("dj1");
     const judge1 = await createClient("judge2");
     const judge2 = await createClient("judge3");
-    const sb = await createClient("sb10");
+    const sb = await createClient("sb1");
 
     console.log("clients created, attempting to start session");
 

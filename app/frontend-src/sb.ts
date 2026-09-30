@@ -1,5 +1,6 @@
 /// <reference lib="dom" />
 import { CompetitorId, Rubric } from "../src/types.ts";
+import { escapeHtml } from "./html.ts";
 import { sseClient } from "./sseClient.ts";
 import type {
   CompetitionStartMessage,
@@ -23,8 +24,7 @@ export class ScoreboardClient extends sseClient {
     super(deps);
     this.doc = deps.document || document;
     this.scoreboard = this.doc.querySelector("#scoreboard") as HTMLTableElement;
-    const sse = deps.sse || new EventSource("/events");
-    sse.addEventListener(
+    this.sse.addEventListener(
       "competition_start",
       ({ data }) => {
         const msg = JSON.parse(data) as CompetitionStartMessage;
@@ -40,7 +40,7 @@ export class ScoreboardClient extends sseClient {
     //       );
     //       this.clearTable(); // update competitor info
     //     });
-    sse.addEventListener("score_update", ({ data }) => {
+    this.sse.addEventListener("score_update", ({ data }) => {
       const msg = JSON.parse(data) as ScoreUpdateMessage;
       if (msg.competitor_id != this.scoreForCompetitor) {
         this.scoreForCompetitor = msg.competitor_id;
@@ -53,12 +53,12 @@ export class ScoreboardClient extends sseClient {
   makeScoreboard({ judges, criteria }: Rubric): void {
     const cells = `<td></td>\n`.repeat(judges.length);
     this.scoreboard.innerHTML = `<thead><tr><th>Criteria</th>${
-      judges.reduce((s: string, j) => s + `<th>${j.name}</th>`, "")
+      judges.reduce((s: string, j) => s + `<th>${escapeHtml(j.name)}</th>`, "")
     }
       </tr></thead>
       <tbody>${
       criteria.reduce((s: string, c) =>
-        s + `<tr><th>${c.name}</th>${cells}</tr>`, "")
+        s + `<tr><th>${escapeHtml(c.name)}</th>${cells}</tr>`, "")
     }
       </tbody>`;
 

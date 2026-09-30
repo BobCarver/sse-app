@@ -17,7 +17,7 @@
     "test:contract": "deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost app/tests/contract",
     "test:all": "deno test -A app/tests",
 
-    "build:artifacts": "deno run --unstable --allow-read --allow-write --allow-net scripts/build_artifacts.ts",
+    "build:artifacts": "deno run --allow-read --allow-write --allow-run scripts/build_artifacts.ts",
     "build": "deno task build:artifacts"
   },
   "imports": {

@@ -3,7 +3,6 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="./lib/styles.css">
     <style>
       /* General Reset */
       * {
@@ -35,7 +34,7 @@
         /* Adds padding around the table */
       }
 
-      #upcoming {
+      .upcoming {
         padding: auto;
         flex: 0 0 15%;
         /* Takes up 15% of the width */
@@ -43,7 +42,7 @@
         /* Optional: adds a border for visibility */
       }
 
-      #upcoming th {
+      .upcoming th {
         background-color: #3c3b3b;
         /* Optional: adds a background color for headers */
         color: white;
@@ -82,15 +81,16 @@
         color: orange;
       }
     </style>
-    <title>Document</title>
+    <title>Scoreboard</title>
   </head>
 
   <body>
     <div>
-      <p id="currentCompetition" class="control">Competition</p>
-      <div id="currentCompetitor" class="control">Competitor 1</div>
+      <p id="currentCompetition" class="control"></p>
+      <div id="currentCompetitor" class="control"></div>
+      <p id="status"></p>
 
-      <table id="upcoming">
+      <table id="compTable" class="upcoming">
         <thead>
           <tr>
             <th>name</th>
@@ -104,14 +104,5 @@
       <table id="scoreboard" class="control"></table>
     </div>
   </body>
-  <script type="module" src="./lib/sb.js"></script>
-  <script>
-    const params = new URLSearchParams(window.location.search);
-    const trackId = params.get("trackId") || "1";
-
-    const sb = new Scoreboard(trackId);
-
-    // Cleanup on page unload
-    globalThis.addEventListener("unload", () => sb.destroy());
-  </script>
+  <script type="module" src="/js/sb.js"></script>
 </html>

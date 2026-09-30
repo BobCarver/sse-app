@@ -1,7 +1,6 @@
 import { Context, Hono } from "@hono/hono";
 import { jwt, type JwtVariables, sign } from "@hono/hono/jwt";
 import { streamSSE } from "@hono/hono/streaming";
-import { serveStatic } from "@hono/hono/deno";
 
 // ============================================================================
 // TYPES
@@ -155,22 +154,42 @@ app.get("/events", jwtMiddleware, (c) => {
 // ============================================================================
 // SESSION ENDPOINTS
 // ============================================================================
-const publicRoot = new URL("../../public", import.meta.url).pathname;
-
-// Explicitly serve known frontend bundles from top-level public (keeps serve behavior deterministic)
-app.get("/sessions/dj.js", async (c) => {
+// Frontend pages and their bundles (build with `deno task build`).
+async function serveFile(path: URL, contentType: string): Promise<Response> {
   try {
-    const fp = new URL("../../public/dj.js", import.meta.url).pathname;
-    const data = await Deno.readFile(fp);
-    return new Response(data, {
-      headers: { "content-type": "application/javascript" },
+    return new Response(await Deno.readFile(path), {
+      headers: { "content-type": contentType, "cache-control": "no-cache" },
     });
   } catch (_err) {
-    return c.notFound();
+    return new Response("Not found", { status: 404 });
   }
-});
+}
 
-app.use("/sessions/*", serveStatic({ root: publicRoot }));
+const pages: Record<string, string> = {
+  "/dj": "dj.html",
+  "/judge": "jd.html",
+  "/scoreboard": "sb.html",
+};
+for (const [route, file] of Object.entries(pages)) {
+  app.get(
+    route,
+    () =>
+      serveFile(
+        new URL(`../frontend-src/${file}`, import.meta.url),
+        "text/html; charset=utf-8",
+      ),
+  );
+}
+
+const bundles = new Set(["dj.js", "jd.js", "sb.js"]);
+app.get("/js/:file", (c) => {
+  const file = c.req.param("file");
+  if (!bundles.has(file)) return c.notFound();
+  return serveFile(
+    new URL(`../../public/${file}`, import.meta.url),
+    "application/javascript",
+  );
+});
 
 // Start a session - queries DB, builds session, and runs it.
 // Rules: one running session per track; the track's DJ (dj<trackId>) and
