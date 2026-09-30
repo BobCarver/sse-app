@@ -150,26 +150,3 @@ export type ServerToClientMessage =
   | PerformanceSkippedMessage
   | AudioAvailableMessage
   | ErrorMessage;
-
-// ============================================================================
-// MESSAGE VALIDATION HELPERS
-// ============================================================================
-
-export function validateMessage(
-  // deno-lint-ignore no-explicit-any
-  msg: any,
-): { valid: boolean; error?: string } {
-  if (!msg || typeof msg !== "object") {
-    return { valid: false, error: "Message must be an object" };
-  }
-
-  if (typeof msg.event !== "string") {
-    return { valid: false, error: "Message event must be a string" };
-  }
-
-  if (msg.event === "ping") {
-    return { valid: true };
-  }
-
-  return { valid: true };
-}

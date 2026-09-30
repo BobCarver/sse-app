@@ -1,6 +1,8 @@
-# Hono Starter
+# Dance competition scoring
 
-Quick Hono + Deno starter.
+A Deno server (Hono) that runs dance-competition sessions for DJs, judges and
+scoreboards over SSE (server to client) and `fetch` POST (client to server).
+Architecture, decisions and open items: see `CLAUDE.md`.
 
 Run locally:
 

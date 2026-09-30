@@ -80,9 +80,6 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-// Basic root for tests
-app.get("/", (c: Ctx) => c.text("Hello Hono"));
-
 // Health/readiness endpoint for e2e harness and external checks
 app.get(
   "/_health",

@@ -124,8 +124,6 @@ Deno.test("Session - registerPermanentClients should check unassigned pool", () 
   const deps = createDependencies();
   const session = new Session(1, deps);
 
-  // deno-lint-ignore no-unused-vars
-  const djClient = createMockClient("dj0") as unknown as SSEClient;
   const scoreboardClient = createMockClient("sb10") as unknown as SSEClient;
 
   // Add scoreboard to unassigned pool

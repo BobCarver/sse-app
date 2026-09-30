@@ -55,10 +55,8 @@ Deno.test("resolveTag - should timeout when not resolved", async () => {
 Deno.test("resolveTag - should track pending tags", () => {
   clearAllResolvers();
 
-  // deno-lint-ignore no-unused-vars
-  const promise1 = waitForTag("required:1");
-  // deno-lint-ignore no-unused-vars
-  const promise2 = waitForTag("perf:1:2");
+  waitForTag("required:1");
+  waitForTag("perf:1:2");
 
   assertEquals(hasWaiter("required:1"), true);
   assertEquals(hasWaiter("perf:1:2"), true);

@@ -23,7 +23,8 @@ centralizing timing logic.
   `true` via `resolveTag`.
 - `scheduleScore(competitionId, competitorId, judgeId, payload, delay = 150)` —
   Schedule a `score:` resolver. After `delay` ms this resolves
-  `score:<competitionId>:<competitorId>:<judgeId>` with the provided `payload`.
+  `score:<competitionId>:<competitorId>:<judgeId>` with the provided `payload`
+  (a `Scores` array: `[{ criteria_id, score }]`).
 
 ---
 
@@ -90,21 +91,18 @@ schedulePerf(10); // resolves 'perf:10:0' to true after 100ms
 
 Schedules a resolver that will call
 `resolveTag(`score:${competitionId}:${competitorId}:${judgeId}`, payload)` after
-`delay` ms. The `payload` matches the `Scores` type used by the implementation
-(e.g., an object containing `competition_id`, `competitor_id`, `judge_id`, and
-`scores`).
+`delay` ms. The `payload` is a `Scores` array (`[{ criteria_id, score }]`), the
+same shape a judge POSTs.
 
 ```ts
-scheduleScore(10, 100, 2, {
-  competition_id: 10,
-  competitor_id: 100,
-  judge_id: 2,
-  scores: [{ criteria_id: 1, score: 8.5 }],
-});
+scheduleScore(10, 100, 2, [{ criteria_id: 1, score: 8.5 }]);
 ```
 
-This mirrors the resolver key format used in `app/tests/test-utils.ts`:
-`score:<competitionId>:<competitorId>:<judgeId>` and the default delay is 150ms.
+### `app/tests/auth-utils.ts`
+
+Helpers for tests that go through the real auth path: `adminHeaders` (the admin
+bearer token), `secretFor(clientId)` (issues a credential and returns its
+secret) and `cookieFor(clientId)` (a ready `cookie:` header value for requests).
 
 ---
 

@@ -93,8 +93,7 @@ Deno.test("SessionManager - findSessionForClient should search all sessions", ()
 
   const deps = makeDeps();
 
-  // deno-lint-ignore no-unused-vars
-  const session1 = SessionManager.createSession(1, deps);
+  SessionManager.createSession(1, deps);
   const session2 = SessionManager.createSession(2, deps);
 
   const mockClient = {

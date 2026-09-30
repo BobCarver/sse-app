@@ -45,23 +45,6 @@ export class SessionManager {
   }
 
   /**
-   * Get an existing session or create a new one
-   * @param sessionId - Session identifier
-   * @param dependencies - Session dependencies (required if creating)
-   * @returns Session instance
-   */
-  static getOrCreateSession(
-    sessionId: number,
-    dependencies: SessionDependencies,
-  ): Session {
-    let session = sessions.get(sessionId);
-    if (!session) {
-      session = this.createSession(sessionId, dependencies);
-    }
-    return session;
-  }
-
-  /**
    * Delete a session
    * @param sessionId - Session identifier
    */
@@ -131,13 +114,5 @@ export class SessionManager {
    */
   static getRunningSessions(): Session[] {
     return Array.from(sessions.values()).filter((s) => s.isRunning());
-  }
-
-  /**
-   * Clear all sessions (useful for testing)
-   */
-  static clearAll(): void {
-    console.log("SessionManager: clearAll", { count: sessions.size });
-    sessions.clear();
   }
 }

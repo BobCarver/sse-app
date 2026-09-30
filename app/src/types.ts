@@ -31,10 +31,6 @@ export type Scores = Array<{ criteria_id: number; score: number }>;
 // ClientType describes the kind of SSE client (DJ, judge, scoreboard)
 export type ClientType = "dj" | "judge" | "sb";
 
-export type ScoresPayload = {
-  scores: Scores;
-};
-
 export type ScoreSubmission = {
   competition_id: number;
   competitor_id: number;

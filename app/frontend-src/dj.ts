@@ -26,35 +26,30 @@ export interface DjDependencies {
 }
 
 /*
-This is a music player client that communicates with a server via WebSocket to receive and play audio tracks sequentially.
+The DJ page. It plays each competitor's announcement and music on the server's
+cue and reports back whether the performance finished or was skipped.
 
-Architecture
-WebSocket Connection:
+Connection:
+  Extends sseClient, which owns the page's single SSE connection. Listens for
+  "performance_start" (play) and "performance_recovery" (the page reconnected or
+  reloaded mid-performance: resume without repeating the announcement),
+  "performance_skipped" (an operator skipped it: stop), and "audio_available"
+  (the session's audio set is final: download it).
 
-Creats a sseClient to manage SSE connection and listens for "performance_start" events.
-Event Handling:
-  On receiving a "performance_start" event, it triggers the handlePerformanceStart method.
+Audio:
+  Files are fetched over HTTP ahead of the session by AudioPrefetcher
+  (audioCache.ts), verified and cached in the browser; playback uses the local copy
+  and falls back to the network URL. The page tells the server when it holds the
+  whole set (POST /audio-ready), which releases the session's start.
+  Playback uses one HTMLAudioElement with start/pause and skip controls. Browsers
+  block audio until a click, so the DJ presses "Enable audio" once.
 
-Audio Playback:
-
-Uses HTMLAudioElement to play audio tracks.
-Provides controls for starting/pausing and skipping tracks.
-
-Key Components
-UI State Management
-Button handlers:
-
-Audio Playback Flow
-  1. Receive perform event with derives URL from competition and competitor IDs.
-  2. Set up cleanup function that:
-      Pauses audio
-      Disables buttons during playback
-      Clears event listeners
-  3. Wait for playback to complete via Promise:
-      Resolves when audio.onended fires (normal completion) returning true
-      Resolves when user clicks skip button returning false
-      Rejects on playback error
-  4. Restore buttons after playback completes
+Performance flow (handlePerformanceStart):
+  1. Wait for audio to be enabled.
+  2. Play the announcement (skipped when resuming), then the music.
+  3. Wait for playback: resolves true when the audio ends, false when the DJ
+     skips, and rejects on a playback error.
+  4. POST the result to /response for tag perf:<competition>:<position>.
 */
 
 export class DjClient extends sseClient {

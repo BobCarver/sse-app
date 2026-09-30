@@ -183,13 +183,11 @@ client only.
 
 ## Repo conventions
 
-`.vscode/copilot-instructions.md` and `.vscode/system.md` describe the intended
-structure (public/ is the only served directory; DB access via an adapter layer; no
-business logic in route handlers; Node only for Playwright). The repo differs in
-places: source dir is `app/frontend-src` (not `artifacts-src`), compose file is
-`docker/docker-compose.yml`, and the server serves the three HTML pages from
-`app/frontend-src` through an explicit allowlist of routes (not a static mount).
-Keep new code within the spirit of those rules; ask before restructuring.
+`.vscode/copilot-instructions.md` states the rules to keep (public/ and the HTML
+allowlist are all that is served; DB access via `db.ts`; thin route handlers; Node
+only for Playwright) and matches the current layout. The server serves the three
+HTML pages from `app/frontend-src` through an explicit allowlist of routes (not a
+static mount). Keep new code within the spirit of those rules; ask before restructuring.
 
 ## Status
 
