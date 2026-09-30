@@ -245,6 +245,18 @@ Deno.test({
       assert(
         SessionManager.findConflict(2, 1, ["judge2", "judge3"]) === undefined,
       );
+
+      // Progress was persisted: everything completed, no dangling pointers.
+      const [ses] = await db`
+        SELECT status, current_competition, current_competitor
+        FROM sessions WHERE id = 1`;
+      assertEquals(ses.status, "completed");
+      assertEquals(ses.current_competition, null);
+      assertEquals(ses.current_competitor, null);
+      const [comp] = await db`SELECT status FROM competitions WHERE id = 10`;
+      assertEquals(comp.status, "completed");
+      const [track] = await db`SELECT current_session FROM tracks WHERE id = 1`;
+      assertEquals(track.current_session, null);
     } finally {
       await Promise.all(streams.map((s) => s.close()));
       await delay(50); // let SSE cleanup clear its ping timers
@@ -575,6 +587,57 @@ Deno.test({
       await delay(50);
       SessionManager.deleteSession(1);
       clearAllResolvers();
+      await unseed(db);
+    }
+  },
+});
+
+Deno.test({
+  name: "Issuing a credential checks that the judge or track exists",
+  ignore: !sql,
+  fn: async () => {
+    const db = sql!;
+    await seed(db);
+    try {
+      const issue = async (client_id: string) => {
+        const res = await app.fetch(
+          new Request("http://localhost/admin/credentials", {
+            method: "POST",
+            headers: { ...adminHeaders, "content-type": "application/json" },
+            body: JSON.stringify({ client_id }),
+          }),
+        );
+        await res.body?.cancel();
+        return res.status;
+      };
+      assertEquals(await issue("judge2"), 201);
+      assertEquals(await issue("dj1"), 201);
+      assertEquals(await issue("sb1"), 201);
+      assertEquals(await issue("judge999"), 404);
+      assertEquals(await issue("dj999"), 404);
+    } finally {
+      await unseed(db);
+    }
+  },
+});
+
+Deno.test({
+  name: "Schema: rubric_judge_criteria rows must reference real rubric links",
+  ignore: !sql,
+  fn: async () => {
+    const db = sql!;
+    await seed(db);
+    try {
+      let rejected = false;
+      try {
+        // Judge 99 is not attached to rubric 1.
+        await db`INSERT INTO rubric_judge_criteria (rubric_id, judge_id, criteria_id)
+          VALUES (1, 99, 1)`;
+      } catch {
+        rejected = true;
+      }
+      assert(rejected, "insert with an unlinked judge should be refused");
+    } finally {
       await unseed(db);
     }
   },

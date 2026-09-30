@@ -142,8 +142,32 @@ CREATE TABLE IF NOT EXISTS rubric_judge_criteria (
     rubric_id INT NOT NULL,
     judge_id INT NOT NULL,
     criteria_id INT NOT NULL,
-    PRIMARY KEY (rubric_id, judge_id, criteria_id)
+    PRIMARY KEY (rubric_id, judge_id, criteria_id),
+    CONSTRAINT fk_rjc_rubric_judge FOREIGN KEY (rubric_id, judge_id)
+        REFERENCES rubric_judges(rubric_id, judge_id) ON DELETE CASCADE,
+    CONSTRAINT fk_rjc_rubric_criteria FOREIGN KEY (rubric_id, criteria_id)
+        REFERENCES rubric_criteria(rubric_id, criteria_id) ON DELETE CASCADE
 );
+
+-- Databases created before the foreign keys existed get them here.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_rjc_rubric_judge'
+  ) THEN
+    ALTER TABLE rubric_judge_criteria
+      ADD CONSTRAINT fk_rjc_rubric_judge FOREIGN KEY (rubric_id, judge_id)
+        REFERENCES rubric_judges(rubric_id, judge_id) ON DELETE CASCADE;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_rjc_rubric_criteria'
+  ) THEN
+    ALTER TABLE rubric_judge_criteria
+      ADD CONSTRAINT fk_rjc_rubric_criteria FOREIGN KEY (rubric_id, criteria_id)
+        REFERENCES rubric_criteria(rubric_id, criteria_id) ON DELETE CASCADE;
+  END IF;
+END
+$$;
 
 -- Competition Competitors Junction Table
 CREATE TABLE IF NOT EXISTS competition_competitors (

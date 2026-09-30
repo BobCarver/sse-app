@@ -13,10 +13,10 @@ import {
 const competition: Competition = {
   id: 10,
   name: "C",
-  competitors: [{ id: 100, name: "A", duration: 1 }, {
+  competitors: [{ id: 100, name: "A", duration: 60 }, {
     id: 101,
     name: "B",
-    duration: 1,
+    duration: 60,
   }],
   rubric: {
     id: 1,

@@ -2,7 +2,7 @@
 // Auth contract: admin-issued links, cookies, revocation, admin-only routes,
 // and who may answer which /response tag.
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { app, credentials } from "../../src/main.ts";
+import { app, clientCheck, credentials } from "../../src/main.ts";
 import { Session } from "../../src/session.ts";
 import { sessions } from "../../src/sessionManager.ts";
 import { clearAllResolvers } from "../../src/resolveTag.ts";
@@ -10,6 +10,9 @@ import { perfTag, scoreTag } from "../../src/contract.ts";
 import type { Competition } from "../../src/types.ts";
 import { createMockClient, delay } from "../test-utils.ts";
 import { adminHeaders, secretFor } from "../auth-utils.ts";
+
+// Contract tests run against an empty schema: don't require real tracks/judges.
+clientCheck.exists = () => Promise.resolve(true);
 
 const req = (path: string, init: RequestInit = {}) =>
   app.request(path, { redirect: "manual", ...init });
@@ -245,7 +248,7 @@ Deno.test("SSE identity comes from the credential, not from anything the client 
 const competition: Competition = {
   id: 10,
   name: "C",
-  competitors: [{ id: 100, name: "A", duration: 1 }],
+  competitors: [{ id: 100, name: "A", duration: 60 }],
   rubric: {
     id: 1,
     criteria: [{ id: 1, name: "T" }],

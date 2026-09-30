@@ -23,10 +23,10 @@ const text = (d: Document, id: string) => d.getElementById(id)!.textContent;
 const competition = {
   id: 10,
   name: "Comp",
-  competitors: [{ id: 100, name: "A", duration: 1 }, {
+  competitors: [{ id: 100, name: "A", duration: 60 }, {
     id: 101,
     name: "B",
-    duration: 1,
+    duration: 60,
   }],
   rubric: {
     criteria: [{ id: 1, name: "Technique" }],

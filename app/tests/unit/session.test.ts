@@ -202,7 +202,7 @@ Deno.test("Session - runSession end-to-end should process performance and scorin
   const competition: Competition = {
     id: 10,
     name: "E2E Competition",
-    competitors: [{ id: 100, name: "Alice", duration: 50 }],
+    competitors: [{ id: 100, name: "Alice", duration: 60 }],
     rubric: {
       id: 1,
       criteria: [{ id: 1, name: "Technique" }],
@@ -251,7 +251,7 @@ Deno.test("Session - skipped performance should not trigger scoring", async () =
   const competition: Competition = {
     id: 11,
     name: "Skip Competition",
-    competitors: [{ id: 200, name: "Bob", duration: 50 }],
+    competitors: [{ id: 200, name: "Bob", duration: 60 }],
     rubric: {
       id: 1,
       criteria: [{ id: 1, name: "Technique" }],
@@ -290,7 +290,7 @@ Deno.test("Session - saveScore errors are handled and session continues", async 
   const competition: Competition = {
     id: 12,
     name: "Error Competition",
-    competitors: [{ id: 300, name: "Carol", duration: 50 }],
+    competitors: [{ id: 300, name: "Carol", duration: 60 }],
     rubric: {
       id: 1,
       criteria: [{ id: 1, name: "Technique" }],
@@ -320,7 +320,7 @@ Deno.test("Session - handleClientReconnect sends recovery messages", async () =>
   session.currentCompetition = {
     id: 13,
     name: "X",
-    competitors: [{ id: 400, name: "Diana", duration: 50 }],
+    competitors: [{ id: 400, name: "Diana", duration: 60 }],
     rubric: { id: 1, criteria: [], judges: [] },
   };
   session.currentPosition = 0;
@@ -341,7 +341,7 @@ Deno.test("Session - handleClientReconnect sends recovery messages", async () =>
   session.currentCompetition = {
     id: 14,
     name: "Y",
-    competitors: [{ id: 500, name: "Eve", duration: 50 }],
+    competitors: [{ id: 500, name: "Eve", duration: 60 }],
     rubric: {
       id: 1,
       criteria: [],

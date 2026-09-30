@@ -42,6 +42,18 @@ export type ScoreSubmission = {
   scores: Scores;
 };
 
+/** Session progress, persisted so the database shows where a session is. */
+export type ProgressEvent =
+  | { kind: "session_started" }
+  | { kind: "competition_started"; competitionId: number }
+  | {
+    kind: "competitor_started";
+    competitionId: number;
+    competitorId: number;
+  }
+  | { kind: "competition_completed"; competitionId: number }
+  | { kind: "session_ended"; reason: "completed" | "aborted" | "error" };
+
 interface EnqueueController {
   enqueue(chunk: string): void;
 }

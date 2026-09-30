@@ -156,8 +156,8 @@ Deno.test("DjClient handles performance_start with announcement and music", asyn
     id: 100,
     name: "Test Competition",
     competitors: [
-      { id: 10, name: "Competitor 1", duration: 120000 },
-      { id: 11, name: "Competitor 2", duration: 180000 },
+      { id: 10, name: "Competitor 1", duration: 120 },
+      { id: 11, name: "Competitor 2", duration: 180 },
     ],
     rubric: { id: 1, judges: [], criteria: [] },
   };
@@ -206,7 +206,7 @@ Deno.test("DjClient enables buttons during music playback", async () => {
 
   const competition = {
     id: 100,
-    competitors: [{ id: 10, name: "Competitor 1", duration: 120000 }],
+    competitors: [{ id: 10, name: "Competitor 1", duration: 120 }],
     rubric: { id: 1, judges: [], criteria: [] },
   };
 
@@ -251,7 +251,7 @@ Deno.test("DjClient handles skip button during music playback", async () => {
 
   const competition = {
     id: 100,
-    competitors: [{ id: 10, name: "Competitor 1", duration: 120000 }],
+    competitors: [{ id: 10, name: "Competitor 1", duration: 120 }],
     rubric: { id: 1, judges: [], criteria: [] },
   };
 
@@ -296,7 +296,7 @@ Deno.test("DjClient resets to initial state after performance", async () => {
 
   const competition = {
     id: 100,
-    competitors: [{ id: 10, name: "Competitor 1", duration: 120000 }],
+    competitors: [{ id: 10, name: "Competitor 1", duration: 120 }],
     rubric: { id: 1, judges: [], criteria: [] },
   };
 
@@ -339,7 +339,7 @@ Deno.test("DjClient handles audio playback error", async () => {
 
   const competition = {
     id: 100,
-    competitors: [{ id: 10, name: "Competitor 1", duration: 120000 }],
+    competitors: [{ id: 10, name: "Competitor 1", duration: 120 }],
     rubric: { id: 1, judges: [], criteria: [] },
   };
 
@@ -374,7 +374,7 @@ Deno.test("DjClient handles audio error event", async () => {
 
   const competition = {
     id: 100,
-    competitors: [{ id: 10, name: "Competitor 1", duration: 120000 }],
+    competitors: [{ id: 10, name: "Competitor 1", duration: 120 }],
     rubric: { id: 1, judges: [], criteria: [] },
   };
 
@@ -409,7 +409,7 @@ Deno.test("DjClient plays correct audio sources", async () => {
 
   const competition = {
     id: 555,
-    competitors: [{ id: 777, name: "Competitor 1", duration: 120000 }],
+    competitors: [{ id: 777, name: "Competitor 1", duration: 120 }],
     rubric: { id: 1, judges: [], criteria: [] },
   };
 

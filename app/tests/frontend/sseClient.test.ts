@@ -45,8 +45,8 @@ Deno.test("sseClient constructs competitor table on competition_start", () => {
     name: "Test Competition",
     rubric: { id: 1, criteria: [], judges: [] },
     competitors: [
-      { id: 1, name: "A", duration: 1000 },
-      { id: 2, name: "B", duration: 2000 },
+      { id: 1, name: "A", duration: 120 },
+      { id: 2, name: "B", duration: 180 },
     ],
   };
 
@@ -81,8 +81,8 @@ Deno.test("sseClient updates times on performance_start", () => {
     name: "Mock Competition",
     rubric: { id: 1, criteria: [], judges: [] },
     competitors: [
-      { id: 1, name: "Alice", duration: 1000 },
-      { id: 2, name: "Bob", duration: 2000 },
+      { id: 1, name: "Alice", duration: 120 },
+      { id: 2, name: "Bob", duration: 180 },
     ],
   };
 

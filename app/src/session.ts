@@ -3,6 +3,7 @@ import { resolveTag, waitForTag } from "./resolveTag.ts";
 import { perfTag, requiredTag, scoreTag } from "./contract.ts";
 import {
   type Competition,
+  type ProgressEvent,
   type Scores,
   type ScoreSubmission,
   SSEClient,
@@ -67,6 +68,8 @@ export type ScoreRejection = {
 export interface SessionDependencies {
   unassignedClients: Map<string, SSEClient>;
   saveScore: (submission: ScoreSubmission) => Promise<void>;
+  /** Persist progress (status, current pointers). Best effort: failures are logged. */
+  recordProgress?: (event: ProgressEvent) => Promise<void>;
   /** Track this session runs on (one running session per track). */
   trackId?: number;
   /** Client ids held by this session until it ends (judges for every competition). */
@@ -104,6 +107,18 @@ export class Session {
     public id: number,
     private deps: SessionDependencies,
   ) {
+  }
+
+  /** Progress writes run in order; a failure never disturbs the session. */
+  private progressChain: Promise<void> = Promise.resolve();
+  private progress(event: ProgressEvent): void {
+    const record = this.deps.recordProgress;
+    if (!record) return;
+    this.progressChain = this.progressChain
+      .then(() => record(event))
+      .catch((err) =>
+        console.error(`progress write failed (${event.kind}):`, err)
+      );
   }
 
   isRunning(): boolean {
@@ -639,6 +654,11 @@ export class Session {
     this.currentCompetition = competition;
     this.currentPosition = position;
     this.currentScores = [];
+    this.progress({
+      kind: "competitor_started",
+      competitionId: competition.id,
+      competitorId: competition.competitors[position].id,
+    });
 
     // Send performance start to DJ and all clients
     this.broadcast({
@@ -798,6 +818,10 @@ export class Session {
     this.currentCompetition = competition;
     this.currentPosition = -1;
     this.currentScores = [];
+    this.progress({
+      kind: "competition_started",
+      competitionId: competition.id,
+    });
     this.broadcast({
       event: "competition_start",
       competition,
@@ -828,6 +852,7 @@ export class Session {
     this.excusedJudges.clear();
     this.skippedClients.clear();
     this.submittedScores.clear();
+    this.progress({ kind: "session_started" });
 
     console.log(
       `Starting session ${this.id} (competitions=${competitions.length}, permanent clients=${permanentClientIds})`,
@@ -891,6 +916,10 @@ export class Session {
           }
         }
 
+        this.progress({
+          kind: "competition_completed",
+          competitionId: competition.id,
+        });
         // Competition over: nothing to replay to clients connecting between
         // competitions
         this.currentCompetition = null;
@@ -920,6 +949,11 @@ export class Session {
       // Tell everyone how it ended before clients are released.
       this.announceEnd();
       this.reset();
+      this.progress({
+        kind: "session_ended",
+        reason: this.endReason ?? "error",
+      });
+      await this.progressChain;
       console.log(`Session ${this.id} reset complete`);
     }
   }

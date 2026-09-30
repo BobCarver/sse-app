@@ -69,7 +69,7 @@ Deno.test("ScoreboardClient clearTable clears all score cells", () => {
         judges: [{ id: 10, name: "J1" }, { id: 11, name: "J2" }],
         criteria: [{ id: 20, name: "C1" }, { id: 21, name: "C2" }],
       },
-      competitors: [{ id: 1, name: "A", duration: 1000 }],
+      competitors: [{ id: 1, name: "A", duration: 120 }],
     },
   });
 
@@ -94,7 +94,7 @@ Deno.test("ScoreboardClient updates correct cell on matching score_update", () =
 
   const competition = {
     id: 999,
-    competitors: [{ id: 1, name: "A", duration: 1000 }],
+    competitors: [{ id: 1, name: "A", duration: 120 }],
     rubric: {
       id: 1,
       judges: [{ id: 2, name: "J1" }],
@@ -127,10 +127,10 @@ Deno.test("ScoreboardClient ignores score_update for wrong competitor", () => {
 
   const competition = {
     id: 500,
-    competitors: [{ id: 10, name: "A", duration: 1000 }, {
+    competitors: [{ id: 10, name: "A", duration: 120 }, {
       id: 20,
       name: "B",
-      duration: 1000,
+      duration: 120,
     }],
     rubric: {
       id: 1,
@@ -164,10 +164,10 @@ Deno.test("ScoreboardClient clears previous scores when moving to next competito
 
   const competition = {
     id: 777,
-    competitors: [{ id: 1, name: "A", duration: 1000 }, {
+    competitors: [{ id: 1, name: "A", duration: 120 }, {
       id: 2,
       name: "B",
-      duration: 1000,
+      duration: 120,
     }],
     rubric: {
       id: 1,

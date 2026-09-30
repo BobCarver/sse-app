@@ -16,7 +16,7 @@ const comp = (id: number, ...competitorIds: number[]): Competition => ({
   competitors: competitorIds.map((c) => ({
     id: c,
     name: `P${c}`,
-    duration: 1,
+    duration: 60,
   })),
   rubric: {
     id: 1,

@@ -9,7 +9,7 @@ import { createDependencies, createMockClient, delay } from "../test-utils.ts";
 const competition: Competition = {
   id: 10,
   name: "C",
-  competitors: [{ id: 100, name: "A", duration: 1 }],
+  competitors: [{ id: 100, name: "A", duration: 60 }],
   rubric: {
     id: 1,
     criteria: [{ id: 1, name: "T" }],

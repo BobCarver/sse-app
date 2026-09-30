@@ -13,7 +13,7 @@ import { createMockClient, delay } from "../test-utils.ts";
 const competition: Competition = {
   id: 10,
   name: "Contest",
-  competitors: [{ id: 100, name: "A", duration: 1000 }],
+  competitors: [{ id: 100, name: "A", duration: 120 }],
   rubric: {
     id: 1,
     criteria: [{ id: 1, name: "Technique" }, { id: 2, name: "Artistry" }],

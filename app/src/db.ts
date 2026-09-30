@@ -1,6 +1,12 @@
 // db.ts
 import postgres from "postgres";
-import { Competition, Competitor, Rubric, ScoreSubmission } from "./types.ts";
+import {
+  Competition,
+  Competitor,
+  ProgressEvent,
+  Rubric,
+  ScoreSubmission,
+} from "./types.ts";
 
 const DATABASE_URL = Deno.env.get("DATABASE_URL") || "";
 
@@ -182,3 +188,56 @@ export const credentialStore = sql
     },
   }
   : undefined;
+
+/**
+ * Keep sessions.status, competitions.status and the current_* pointers true.
+ * An aborted or failed session goes back to 'upcoming' so it can be started again.
+ */
+export async function recordProgress(
+  sessionId: number,
+  event: ProgressEvent,
+): Promise<void> {
+  if (!sql) return;
+  switch (event.kind) {
+    case "session_started":
+      await sql`UPDATE sessions SET status = 'active' WHERE id = ${sessionId}`;
+      await sql`UPDATE tracks SET current_session = ${sessionId}
+        WHERE id = (SELECT track_id FROM sessions WHERE id = ${sessionId})`;
+      break;
+    case "competition_started":
+      await sql`UPDATE competitions SET status = 'active'
+        WHERE id = ${event.competitionId}`;
+      await sql`UPDATE sessions
+        SET current_competition = ${event.competitionId}, current_competitor = NULL
+        WHERE id = ${sessionId}`;
+      break;
+    case "competitor_started":
+      await sql`UPDATE sessions SET current_competitor = ${event.competitorId}
+        WHERE id = ${sessionId}`;
+      break;
+    case "competition_completed":
+      await sql`UPDATE competitions SET status = 'completed'
+        WHERE id = ${event.competitionId}`;
+      break;
+    case "session_ended":
+      await sql`UPDATE sessions
+        SET status = ${event.reason === "completed" ? "completed" : "upcoming"},
+            current_competition = NULL, current_competitor = NULL
+        WHERE id = ${sessionId}`;
+      await sql`UPDATE tracks SET current_session = NULL
+        WHERE current_session = ${sessionId}`;
+      break;
+  }
+}
+
+/** Does the track (dj/sb) or judge behind a client id exist? */
+export async function clientExists(
+  kind: "dj" | "judge" | "sb",
+  num: number,
+): Promise<boolean> {
+  if (!sql) return true; // memory mode: nothing to check against
+  const rows = kind === "judge"
+    ? await sql`SELECT 1 FROM judges WHERE id = ${num}`
+    : await sql`SELECT 1 FROM tracks WHERE id = ${num}`;
+  return rows.length > 0;
+}

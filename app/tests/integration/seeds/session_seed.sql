@@ -25,8 +25,8 @@ INSERT INTO competitions (id, session_id, order_number, rubric_id, name, status)
   (10, 1, 1, 1, 'E2E Competition', 'upcoming') ON CONFLICT DO NOTHING;
 
 INSERT INTO competition_competitors (competition_id, competitor_id, duration, order_number) VALUES
-  (10, 100, 50, 1),
-  (10, 101, 50, 2)
+  (10, 100, 60, 1),
+  (10, 101, 60, 2)
 ON CONFLICT DO NOTHING;
 
 INSERT INTO rubric_judges (rubric_id, judge_id) VALUES (1, 2) ON CONFLICT DO NOTHING;

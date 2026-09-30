@@ -14,7 +14,7 @@ function comp(id: number, competitorId: number, judgeId: number): Competition {
   return {
     id,
     name: `C${id}`,
-    competitors: [{ id: competitorId, name: "X", duration: 1000 }],
+    competitors: [{ id: competitorId, name: "X", duration: 120 }],
     rubric: {
       id: 1,
       criteria: [{ id: 1, name: "T" }],

@@ -6,9 +6,8 @@ import { streamSSE } from "@hono/hono/streaming";
 // TYPES
 // ============================================================================
 
-import { Scores, ScoreSubmission, SSEClient } from "./types.ts";
-import { resolvers } from "./resolveTag.ts";
-import { parseTag, validatePayload } from "./contract.ts";
+import { ProgressEvent, ScoreSubmission, SSEClient } from "./types.ts";
+import { handleResponse } from "./responseService.ts";
 import { handleSSEConnection } from "./sse.ts";
 import { SessionManager } from "./sessionManager.ts";
 import {
@@ -18,9 +17,11 @@ import {
   parseClientId,
 } from "./credentials.ts";
 import {
+  clientExists,
   credentialStore,
   getSessionCompetitionsWithRubrics,
   getSessionTrackId,
+  recordProgress,
   saveScore,
   sql,
 } from "./db.ts";
@@ -99,6 +100,8 @@ app.get(
 // Admin operations use a separate bearer token (ADMIN_TOKEN).
 
 export const credentials = new Credentials(credentialStore);
+/** Whether the judge/track behind a client id exists (replaceable in contract tests). */
+export const clientCheck = { exists: clientExists };
 
 const COOKIE = "session_token";
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // credentials are revoked server-side, not by expiry
@@ -197,6 +200,11 @@ app.post("/admin/credentials", requireAdmin, async (c: Ctx) => {
   }
   const label = typeof body?.label === "string" ? body.label : undefined;
   try {
+    const parsedId = parseClientId(clientId)!;
+    if (!(await clientCheck.exists(parsedId.kind, parsedId.num))) {
+      const what = parsedId.kind === "judge" ? "judge" : "track";
+      return c.json({ error: `no ${what} ${parsedId.num}` }, 404);
+    }
     const { credential, secret } = await credentials.issue(clientId, label);
     const origin = Deno.env.get("PUBLIC_URL") ?? new URL(c.req.url).origin;
     return c.json({
@@ -408,6 +416,8 @@ app.post(
           dlog("Saving score data:", scoreData);
           return saveScore(scoreData);
         },
+        recordProgress: (event: ProgressEvent) =>
+          recordProgress(sessionId, event),
       });
     } catch (err) {
       return c.json({ error: String(err) }, 500);
@@ -452,56 +462,8 @@ app.post(
     } catch {
       return c.json({ error: "invalid JSON body" }, 400);
     }
-    const parsed = parseTag(body?.tag);
-    if (!parsed) return c.json({ error: "missing or malformed tag" }, 400);
-    const invalid = validatePayload(parsed, body.payload);
-    if (invalid) return c.json({ error: invalid }, 400);
-
-    const resolver = resolvers.get(body.tag as string);
-    if (!resolver) return c.json({ error: "no resolver for tag" }, 404);
-
-    const session = SessionManager.findSessionForCompetition(
-      parsed.competitionId,
-    );
-    if (!session) return c.json({ error: "no active session" }, 404);
-
-    // Ownership: a device may only answer for itself.
-    //  - perf:*  -> a DJ that belongs to this session
-    //  - score:* -> exactly judge<N> for score:...:N
-    const sender = c.get("client").sub;
-    const owner = parsed.kind === "perf"
-      ? parseClientId(sender)?.kind === "dj" && session.clients.has(sender)
-      : sender === `judge${parsed.judgeId}`;
-    if (!owner) {
-      console.warn(`403: ${sender} tried to answer ${body.tag}`);
-      return c.json({ error: "not allowed to answer this request" }, 403);
-    }
-
-    let payload = body.payload;
-    if (parsed.kind === "score") {
-      const scores = body.payload as Scores;
-      const rejected = session.validateScoreSubmission(
-        parsed.competitionId,
-        parsed.competitorId,
-        parsed.judgeId,
-        scores,
-      );
-      if (rejected) {
-        const status = { closed: 404, forbidden: 403, invalid: 400 }[
-          rejected.kind
-        ] as 404 | 403 | 400;
-        return c.json({ error: rejected.message }, status);
-      }
-      // Stored as NUMERIC(3,1): round to one decimal so what is saved is what
-      // the scoreboard shows.
-      payload = scores.map((s) => ({
-        criteria_id: s.criteria_id,
-        score: Math.round(s.score * 10) / 10,
-      }));
-    }
-
-    resolvers.delete(body.tag as string); // first response wins
-    resolver(payload);
+    const result = handleResponse(c.get("client").sub, body);
+    if (!result.ok) return c.json({ error: result.error }, result.status);
     return c.json({ success: true });
   },
 );
