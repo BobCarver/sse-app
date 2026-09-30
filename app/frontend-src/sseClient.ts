@@ -38,7 +38,6 @@ export class sseClient {
     this.tbody = this.doc.querySelector(
       "#compTable tbody",
     ) as HTMLTableSectionElement;
-    const status = this.doc.getElementById("status");
 
     const sse = deps.sse || (new EventSource("/events") as EventSource);
     sse.addEventListener(
@@ -62,9 +61,8 @@ export class sseClient {
       },
     );
     sse.addEventListener("client_status", ({ data }) => {
-      const { connected_clients } = JSON.parse(data) as ClientStatusMessage;
-      connected_clients.forEach((client) => {
-      });
+      // TODO: render connected clients (roster) in the UI
+      JSON.parse(data) as ClientStatusMessage;
     });
   }
 

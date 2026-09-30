@@ -21,7 +21,7 @@ export async function handleSSEConnection(
   dependencies: SSEDependencies,
 ): Promise<void> {
   let client: SSEClient | null = null;
-  let pingInterval: number | undefined;
+  let pingInterval: ReturnType<typeof setInterval> | undefined;
 
   console.log(
     `SSE connection established for client ${clientId} (${clientType})`,
@@ -92,7 +92,7 @@ function startPing(
   stream: SSEStreamingApi,
   clientId: string,
   signal: AbortSignal,
-): number {
+): ReturnType<typeof setInterval> {
   const interval = setInterval(() => {
     if (signal.aborted) {
       clearInterval(interval);
@@ -104,7 +104,7 @@ function startPing(
     });
   }, 30000);
 
-  return interval as number;
+  return interval;
 }
 
 /**
@@ -122,7 +122,7 @@ function waitForDisconnect(signal: AbortSignal): Promise<void> {
  */
 function cleanup(
   clientId: string,
-  pingInterval: number | undefined,
+  pingInterval: ReturnType<typeof setInterval> | undefined,
   { SessionManager, unassignedClients }: SSEDependencies,
 ): void {
   clearInterval(pingInterval);

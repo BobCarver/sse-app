@@ -194,9 +194,10 @@ app.post(
     try {
       session = SessionManager.createSession(sessionId, {
         unassignedClients,
-        saveScore: async (scoreData: ScoreSubmission) => {
-          // Implement score saving logic here, e.g., insert into DB
+        saveScore: (scoreData: ScoreSubmission) => {
+          // TODO(phase 3): persist via db.saveScore
           dlog("Saving score data:", scoreData);
+          return Promise.resolve();
         },
       });
     } catch (err) {
@@ -222,8 +223,9 @@ app.post(
         try {
           session = SessionManager.createSession(sessionId, {
             unassignedClients,
-            saveScore: async (scoreData: ScoreSubmission) => {
+            saveScore: (scoreData: ScoreSubmission) => {
               dlog("Saving score data:", scoreData);
+              return Promise.resolve();
             },
           });
         } catch (err2) {

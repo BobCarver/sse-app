@@ -11,7 +11,7 @@ export interface JudgeDependencies {
 }
 
 export class JudgeClient extends sseClient {
-  private alert: number | undefined = undefined;
+  private alert: ReturnType<typeof setTimeout> | undefined = undefined;
   private sliders: HTMLElement;
   private submit: HTMLButtonElement;
   protected override doc: Document;

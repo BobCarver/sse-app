@@ -66,7 +66,7 @@ export function waitForTag<T extends TagKey>(
   tag: T,
   timeOut: number = 0,
 ): Promise<PayloadForTag<T>> {
-  let timer: number | undefined = undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined = undefined;
 
   return new Promise<PayloadForTag<T>>((resolve, reject) => {
     resolvers.set(tag, (payload) => {
