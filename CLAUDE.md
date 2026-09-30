@@ -165,7 +165,20 @@ client only.
 - Local scratch Postgres (macOS/Homebrew): `initdb -D d -U postgres --auth=trust`;
   start with `LC_ALL=en_US.UTF-8 pg_ctl -D d -o "-p 54329 -k /tmp/pgs" start`
   (needs the locale and a short socket dir). Integration DB = schema only (empty
-  tables); browser DB = schema + seed.
+  tables); browser DB = schema + seed. The binaries are under
+  `/opt/homebrew/opt/postgresql@17/bin` (not on PATH). The Deno tests connect over
+  TCP, so also start with `-c listen_addresses=127.0.0.1` and use
+  `DATABASE_URL=postgres://postgres@127.0.0.1:54329/<db>`; a unix-socket `?host=`
+  URL does not work with the driver. Run the whole suite both with and without
+  `DATABASE_URL` (CI sets it for every job): `REQUIRE_DB=1 DATABASE_URL=... deno task test`.
+- Contract tests run with `DATABASE_URL` set but an empty schema in CI, so
+  `auth.contract.test.ts` replaces `clientCheck.exists` (the "does this judge/track
+  exist" check on credential issue) with a stub. Do the same in any new contract
+  test that issues credentials for ids the schema doesn't contain.
+- Browser tests: the Playwright server needs `--allow-write` and `AUDIO_DIR` (set in
+  `node-tests/playwright.config.ts`), and `setup()` uploads real silent WAVs with
+  `?force=1` because the seed's session start is already past the audio cut-off.
+  Kill any leftover `app/src/main.ts` server before a run (`reuseExistingServer`).
 - Never log credentials: `/join/<secret>` is redacted in the request log.
 
 ## Repo conventions
@@ -180,22 +193,34 @@ Keep new code within the spirit of those rules; ask before restructuring.
 
 ## Status
 
-Phases 0-7 of the "make it correctly functioning" plan are done and committed
-(latest: `d05e436` Phase 7). Suites: ~90 unit, ~79 frontend, 27 contract, 6
-integration, 7 browser tests; all green with exit code 0.
+Phases 0-7 of the "make it correctly functioning" plan are done and committed.
+Since then (latest: `8c4b4ff`): `/response` extracted to a service, session
+progress persisted, FKs on `rubric_judge_criteria`, credential issue checks the
+judge/track exists, and competitor audio (storage, cut-off, manifest, DJ prefetch,
+start gate). Suites: ~101 unit, ~86 frontend, 27 contract, 9 integration (with a
+DB), 7 browser tests; all green with exit code 0, with and without a database.
+`deno task static` only passes once generated `public/*.js` is committed.
+
+Working style (owner): analysis only when asked to analyse; commit only when asked.
 
 ## Open items (next session)
 
-1. **Audio, next steps.** Decide whether a missing announce is fatal; transcode/
+1. **Audio, next steps.** Decide whether a missing announce is fatal (recommended:
+   skip only the announcement and still play the music; today the DJ page fails the
+   performance and it is reported as skipped); transcode/
    normalise loudness; the competitor portal (accounts, registration, uploads via
    `audio.add`, `audio_files.owner_user_id`); the DJ report map is in memory (DJ
    re-reports on its next sync); `sessions.start_time` must be accurate for the
    cut-off to mean anything (seed data uses NOW(), i.e. already past).
 2. **Server restart loses the running session** (in-memory). Idea: on start, skip
-   competitors already fully scored. Needs a decision on what "start" means.
+   competitors already fully scored. Needs a decision from the owner: after a
+   restart, should "start" resume where it left off, or begin again and skip the
+   already-scored competitors?
 3. Missing-judge-score records are in memory only; persist if results/audit need them.
 4. Single-instance assumption: the revocation cache is in process memory.
 5. Never run on GitHub: `ci.yml` was validated (YAML + running each job's commands
    locally) but not executed there. `tools/run-e2e.sh` (Docker) is unverified because
    Docker wasn't running. `.vscode/tasks.json` references a missing
-   `start-debug-session.sh`.
+   `start-debug-session.sh`. `ci.yml`'s e2e job has not been checked against the
+   audio changes (needs `--allow-write`/`AUDIO_DIR`, done in the Playwright config).
+   Suggested next step: do this item first, it verifies everything on a clean machine.
