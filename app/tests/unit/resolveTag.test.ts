@@ -111,3 +111,39 @@ Deno.test("waitForTag rejects a second concurrent waiter instead of replacing th
   resolveTag("required:dup", undefined);
   await first;
 });
+
+Deno.test("waitForTag: an aborted signal rejects with its reason and releases the tag", async () => {
+  clearAllResolvers();
+  const ctl = new AbortController();
+  const p = waitForTag("required:sig", 0, ctl.signal);
+  assertEquals(hasWaiter("required:sig"), true);
+  const why = new Error("stop");
+  ctl.abort(why);
+  await assertRejects(() => p, Error, "stop");
+  assertEquals(hasWaiter("required:sig"), false);
+  // free again for the next waiter
+  const again = waitForTag("required:sig");
+  resolveTag("required:sig", undefined);
+  await again;
+});
+
+Deno.test("waitForTag: an already-aborted signal rejects immediately and registers nothing", async () => {
+  clearAllResolvers();
+  const ctl = new AbortController();
+  ctl.abort(new Error("already"));
+  await assertRejects(() => waitForTag("required:pre", 0, ctl.signal), Error, "already");
+  assertEquals(hasWaiter("required:pre"), false);
+});
+
+Deno.test("waitForTag: resolving removes the abort listener (no late rejection)", async () => {
+  clearAllResolvers();
+  const ctl = new AbortController();
+  const p = waitForTag("required:ok", 0, ctl.signal);
+  resolveTag("required:ok", undefined);
+  await p;
+  const next = waitForTag("required:ok"); // reuse the tag
+  ctl.abort(new Error("late")); // must not disturb the new waiter
+  assertEquals(hasWaiter("required:ok"), true);
+  resolveTag("required:ok", undefined);
+  await next;
+});

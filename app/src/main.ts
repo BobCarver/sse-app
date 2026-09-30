@@ -22,6 +22,7 @@ import {
   getSessionCompetitionsWithRubrics,
   getSessionTrackId,
   saveScore,
+  sql,
 } from "./db.ts";
 
 /** Who is making the request, set by the `requireClient` middleware. */
@@ -213,6 +214,34 @@ app.delete("/admin/credentials/:id", requireAdmin, async (c: Ctx) => {
   if (!(await credentials.revoke(id))) {
     return c.json({ error: "no active credential with that id" }, 404);
   }
+  return c.json({ success: true });
+});
+
+// --- admin: watch and control running sessions ------------------------------
+
+app.get("/admin/sessions", requireAdmin, (c: Ctx) =>
+  c.json(SessionManager.getAllSessions().map((s) => s.status())));
+
+/** Stop waiting for whatever the session is stuck on (see Session.skip). */
+app.post("/admin/sessions/:id/skip", requireAdmin, (c: Ctx) => {
+  const session = SessionManager.getSession(Number(c.req.param("id")));
+  if (!session?.isRunning()) return c.json({ error: "no running session" }, 404);
+  const skipped = session.skip();
+  if (!skipped) return c.json({ error: "nothing to skip right now" }, 409);
+  return c.json({ success: true, skipped });
+});
+
+/** End a session now (stuck, or started by mistake) and free its track and judges. */
+app.post("/admin/sessions/:id/abort", requireAdmin, (c: Ctx) => {
+  const id = Number(c.req.param("id"));
+  const session = SessionManager.getSession(id);
+  if (!session) return c.json({ error: "no such session" }, 404);
+  if (!session.isRunning()) {
+    // Left over from an earlier failure: just forget it.
+    SessionManager.deleteSession(id);
+    return c.json({ success: true, message: "removed a session that was not running" });
+  }
+  session.abort("aborted by administrator");
   return c.json({ success: true });
 });
 
@@ -454,16 +483,27 @@ app.post(
 // CLEANUP
 // ============================================================================
 
-// Graceful shutdown
-Deno.addSignalListener("SIGINT", () => {
+// Graceful shutdown: tell clients the sessions are ending, let in-flight score
+// saves finish, then close the database pool.
+let shuttingDown = false;
+export async function shutdown(code = 0): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log("Shutting down...");
-  Deno.exit(0);
-});
+  for (const s of SessionManager.getRunningSessions()) {
+    s.abort("server shutting down");
+  }
+  await new Promise((r) => setTimeout(r, 500)); // let sessions wind down
+  try {
+    await sql?.end({ timeout: 5 });
+  } catch (err) {
+    console.error("error closing database:", err);
+  }
+  Deno.exit(code);
+}
 
-Deno.addSignalListener("SIGTERM", () => {
-  console.log("Shutting down...");
-  Deno.exit(0);
-});
+Deno.addSignalListener("SIGINT", () => shutdown());
+Deno.addSignalListener("SIGTERM", () => shutdown());
 
 // ============================================================================
 // START SERVER

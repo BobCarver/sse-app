@@ -285,6 +285,15 @@ var sseClient = class {
       this.updateTimes();
       this.tbody?.style.setProperty("--hide-count", String(position));
     });
+    sse.addEventListener("session_end", ({ data }) => {
+      const { reason } = JSON.parse(data);
+      this.setStatus({
+        completed: "Session complete",
+        aborted: "Session stopped by an administrator",
+        error: "Session ended unexpectedly"
+      }[reason] ?? "Session ended");
+      this.onSessionEnd();
+    });
     sse.addEventListener("superseded", () => {
       this.setStatus("This page was opened in another window and is now inactive");
       sse.close();
@@ -292,6 +301,9 @@ var sseClient = class {
     sse.addEventListener("client_status", ({ data }) => {
       JSON.parse(data);
     });
+  }
+  /** Hook: the session is over (subclasses stop whatever they were doing). */
+  onSessionEnd() {
   }
   /** Set textContent of #id if the page has it. */
   setText(id, text) {
@@ -329,12 +341,18 @@ var sseClient = class {
 };
 
 // app/frontend-src/dj.ts
+var SILENT_WAV = "data:audio/wav;base64,UklGRrQBAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YZABAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA";
 var DjClient = class extends sseClient {
   startPauseButton;
   skipButton;
   audio;
   /** Position of the performance this page is currently handling, if any. */
   activePosition = void 0;
+  /** Set when an administrator skips the performance being handled. */
+  cancelled = false;
+  /** Browsers block audio until a click; resolves once the DJ has enabled it. */
+  audioUnlocked = false;
+  unlockWaiters = [];
   constructor(deps = {}) {
     super({
       sse: deps.sse,
@@ -346,11 +364,16 @@ var DjClient = class extends sseClient {
     this.skipButton = doc.querySelector("#skip");
     this.setupAudioControls();
     this.initialState();
+    this.setupAudioUnlock(doc);
     this.sse.addEventListener("performance_start", ({ data }) => {
       const msg = JSON.parse(data);
       const { position } = msg;
       assert(typeof position === "number");
       this.handlePerformanceStart(position);
+    });
+    this.sse.addEventListener("performance_skipped", ({ data }) => {
+      const { position } = JSON.parse(data);
+      if (this.activePosition === position) this.cancelActive();
     });
     this.sse.addEventListener("performance_recovery", ({ data }) => {
       const { position } = JSON.parse(data);
@@ -373,6 +396,51 @@ var DjClient = class extends sseClient {
       }
     };
   }
+  /**
+   * Browsers refuse to play audio until the page has had a click. If the page
+   * has an #unlock button, the DJ presses it once before the show; a
+   * performance that starts before that waits instead of failing (a failed
+   * play() would otherwise count as a skipped act).
+   */
+  setupAudioUnlock(doc) {
+    const button = doc.querySelector("#unlock");
+    if (!button) {
+      this.audioUnlocked = true;
+      return;
+    }
+    button.onclick = () => {
+      const done = () => {
+        this.audio.onended = null;
+        this.audio.onerror = null;
+        this.audioUnlocked = true;
+        button.hidden = true;
+        this.setStatus("");
+        for (const wake of this.unlockWaiters.splice(0)) wake();
+      };
+      this.audio.src = SILENT_WAV;
+      this.audio.onended = done;
+      this.audio.onerror = done;
+      this.audio.play().catch(done);
+    };
+  }
+  async untilAudioUnlocked() {
+    if (this.audioUnlocked) return;
+    this.setStatus("Tap 'Enable audio' to start playback");
+    await new Promise((resolve) => this.unlockWaiters.push(resolve));
+  }
+  /** An administrator skipped this performance: stop now. */
+  cancelActive() {
+    this.cancelled = true;
+    this.audio.pause();
+    this.audio.onerror?.();
+    for (const wake of this.unlockWaiters.splice(0)) wake();
+    this.setStatus("Performance skipped by an administrator");
+  }
+  onSessionEnd() {
+    const message = this.doc.getElementById("status")?.textContent ?? "";
+    if (this.activePosition !== void 0) this.cancelActive();
+    this.setStatus(message);
+  }
   initialState() {
     this.audio.pause();
     this.startPauseButton.innerText = "play";
@@ -384,8 +452,11 @@ var DjClient = class extends sseClient {
   }
   async handlePerformanceStart(position, { resume = false } = {}) {
     this.activePosition = position;
+    this.cancelled = false;
     try {
       const competitorId = this.competition.competitors[position].id;
+      await this.untilAudioUnlocked();
+      if (this.cancelled) throw new Error("cancelled");
       if (!resume) {
         await this.playAudio(`${this.competition.id}-${competitorId}-announce`);
       }

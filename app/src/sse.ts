@@ -28,7 +28,7 @@ export async function handleSSEConnection(
   );
 
   try {
-    client = createClient(stream, clientId);
+    client = createClient(stream, clientId, dependencies);
     registerClient(client, dependencies);
     pingInterval = startPing(stream, clientId, signal);
 
@@ -48,20 +48,24 @@ export async function handleSSEConnection(
 function createClient(
   stream: SSEStreamingApi,
   id: string,
+  { SessionManager, unassignedClients }: SSEDependencies,
 ): SSEClient {
-  return {
+  const client: SSEClient = {
     id,
     controller: {
       enqueue: (chunk: string) => {
         stream.write(chunk).catch((err) => {
+          // The connection is dead even if the abort signal has not fired yet:
+          // stop treating it as connected so the operator sees who is missing
+          // (a reconnect will register a fresh connection).
           console.error(`Write failed for client ${id}:`, err);
-          console.log(
-            `Client ${id} connection appears broken, awaiting disconnect signal`,
-          );
+          SessionManager.findSessionForClient(id)?.disconnectClient(id, client);
+          if (unassignedClients.get(id) === client) unassignedClients.delete(id);
         });
       },
     },
   };
+  return client;
 }
 
 /**

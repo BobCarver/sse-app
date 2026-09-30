@@ -1,5 +1,8 @@
 /// <reference lib="dom" />
-import { CompetitionStartMessage } from "../src/protocol.ts";
+import {
+  CompetitionStartMessage,
+  ScoringClosedMessage,
+} from "../src/protocol.ts";
 import { Rubric } from "../src/types.ts";
 import { scoreTag } from "../src/contract.ts";
 import { postResponse, type SseLike } from "./connect.ts";
@@ -17,6 +20,8 @@ export class JudgeClient extends sseClient {
   private alert: ReturnType<typeof setTimeout> | undefined = undefined;
   /** Which competition the sliders were built for (replays must not rebuild them). */
   private renderedCompetitionId: number | undefined = undefined;
+  /** Why this judge's last score never got in (kept when the session ends). */
+  private missedNote: string | undefined = undefined;
   /** "competitionId:position" of the scoring window currently open, if any. */
   private scoringKey: string | undefined = undefined;
   private sliders: HTMLElement;
@@ -66,6 +71,16 @@ export class JudgeClient extends sseClient {
       },
     );
 
+    // Scoring closed (time ran out, or an administrator closed it). If this
+    // judge's score did not get in, say so instead of leaving a live button.
+    this.sse.addEventListener("scoring_closed", ({ data }) => {
+      const { missing_judge_ids } = JSON.parse(data) as ScoringClosedMessage;
+      if (!missing_judge_ids.includes(this.judge_id)) return;
+      this.missedNote =
+        "Scoring closed - your scores were not received in time";
+      this.closeScoring(this.missedNote);
+    });
+
     this.sse.addEventListener("enable_scoring", ({ data }) => {
       // Replayed on reconnect while a window is already open: don't reset the
       // judge's sliders or restart the alarm.
@@ -73,8 +88,31 @@ export class JudgeClient extends sseClient {
       const key = `${msg.competition_id}:${msg.position}`;
       if (this.scoringKey === key && !this.submit.disabled) return;
       this.scoringKey = key;
+      this.missedNote = undefined; // a new window: the earlier miss is history
       this.enableSubmit();
     });
+  }
+
+  protected override onSessionEnd(): void {
+    this.closeScoring();
+    // "Session complete" must not hide that this judge's last score was missed.
+    if (this.missedNote) {
+      const ended = this.doc.getElementById("status")?.textContent ?? "";
+      this.setStatus(`${ended} - ${this.missedNote}`);
+    }
+  }
+
+  /** Disable submitting and stop the reminder; optionally explain why. */
+  private closeScoring(message?: string): void {
+    if (this.alert !== undefined) {
+      this.clearTimerFn(this.alert);
+      this.alert = undefined;
+    }
+    if (!this.submit.disabled) {
+      this.submit.disabled = true;
+      if (message) this.setStatus(message);
+    }
+    this.scoringKey = undefined;
   }
 
   updateCriteria(rubric: Rubric): void {

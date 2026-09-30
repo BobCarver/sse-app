@@ -251,6 +251,15 @@ var sseClient = class {
       this.updateTimes();
       this.tbody?.style.setProperty("--hide-count", String(position));
     });
+    sse.addEventListener("session_end", ({ data }) => {
+      const { reason } = JSON.parse(data);
+      this.setStatus({
+        completed: "Session complete",
+        aborted: "Session stopped by an administrator",
+        error: "Session ended unexpectedly"
+      }[reason] ?? "Session ended");
+      this.onSessionEnd();
+    });
     sse.addEventListener("superseded", () => {
       this.setStatus("This page was opened in another window and is now inactive");
       sse.close();
@@ -258,6 +267,9 @@ var sseClient = class {
     sse.addEventListener("client_status", ({ data }) => {
       JSON.parse(data);
     });
+  }
+  /** Hook: the session is over (subclasses stop whatever they were doing). */
+  onSessionEnd() {
   }
   /** Set textContent of #id if the page has it. */
   setText(id, text) {

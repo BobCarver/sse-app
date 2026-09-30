@@ -433,3 +433,141 @@ Deno.test({
     }
   },
 });
+
+const admin = async (method: string, path: string): Promise<Response> =>
+  await app.fetch(
+    new Request(`http://localhost${path}`, { method, headers: adminHeaders }),
+  );
+
+Deno.test({
+  name:
+    "Operator: skip past a judge who never connects; their scores are recorded as absent",
+  ignore: !sql,
+  fn: async () => {
+    const db = sql!;
+    await seed(db);
+    const open: SSEStream[] = [];
+    const track = async (p: Promise<SSEStream>) => {
+      const s = await p;
+      open.push(s);
+      return s;
+    };
+    try {
+      const dj = await track(SSEStream.open("dj1"));
+      const j2 = await track(SSEStream.open("judge2")); // judge3 never shows up
+      const sb = await track(SSEStream.open("sb1"));
+      const start = await admin("POST", "/sessions/1/start");
+      assertEquals(start.status, 200);
+      await start.body?.cancel();
+
+      // The session is stuck; the operator can see on whom.
+      await delay(150);
+      const list = await (await admin("GET", "/admin/sessions")).json();
+      assertEquals([list[0].running, list[0].waiting_for], [true, ["judge3"]]);
+
+      const skip = await admin("POST", "/admin/sessions/1/skip");
+      assertEquals((await skip.json()).skipped, "waiting");
+      for (const s of [dj, j2, sb]) await s.next("competition_start");
+
+      const scores = [{ criteria_id: 1, score: 7 }];
+      for (const [pos, competitorId] of [[0, 100], [1, 101]] as const) {
+        assertEquals((await dj.next("performance_start")).position, pos);
+        assertEquals(
+          await respond(dj, { tag: perfTag(10, pos), payload: true }),
+          200,
+        );
+        await j2.next("enable_scoring");
+        // only judge 2 is waited for: the competitor finishes as soon as they score
+        assertEquals(
+          await respond(j2, {
+            tag: scoreTag(10, competitorId, 2),
+            payload: scores,
+          }),
+          200,
+        );
+        assertEquals((await sb.next("score_update")).judge_id, 2);
+      }
+      for (let i = 0; i < 100 && SessionManager.getSession(1); i++) {
+        await delay(20);
+      }
+      assertEquals(SessionManager.getSession(1), undefined);
+
+      // Every stream is told how it ended, including that scores are missing.
+      assertEquals(await dj.next("session_end"), {
+        reason: "completed",
+        incomplete: 2,
+      });
+      const rows =
+        await db`SELECT DISTINCT judge_id FROM scores WHERE competition_id = 10`;
+      assertEquals(rows.map((r: any) => r.judge_id), [2]);
+    } finally {
+      await Promise.all(open.map((s) => s.close()));
+      await delay(50);
+      await unseed(db);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "Operator: abort mid-performance tells every page, frees the session, and it can be started again",
+  ignore: !sql,
+  fn: async () => {
+    const db = sql!;
+    await seed(db);
+    const open: SSEStream[] = [];
+    const track = async (p: Promise<SSEStream>) => {
+      const s = await p;
+      open.push(s);
+      return s;
+    };
+    try {
+      const dj = await track(SSEStream.open("dj1"));
+      const j2 = await track(SSEStream.open("judge2"));
+      const j3 = await track(SSEStream.open("judge3"));
+      const sb = await track(SSEStream.open("sb1"));
+      assertEquals((await admin("POST", "/sessions/1/start")).status, 200);
+      await dj.next("performance_start"); // stuck: the DJ never answers
+
+      const abort = await admin("POST", "/admin/sessions/1/abort");
+      assertEquals(abort.status, 200);
+      await abort.body?.cancel();
+      for (const s of [dj, j2, j3, sb]) {
+        assertEquals(await s.next("session_end"), {
+          reason: "aborted",
+          incomplete: 0,
+        });
+      }
+      for (let i = 0; i < 100 && SessionManager.getSession(1); i++) {
+        await delay(20);
+      }
+      assertEquals(SessionManager.getSession(1), undefined);
+      // the DJ's late answer goes nowhere
+      assertEquals(
+        await respond(dj, { tag: perfTag(10, 0), payload: true }),
+        404,
+      );
+
+      // Same session, same clients: starts cleanly and runs from the top.
+      const again = await admin("POST", "/sessions/1/start");
+      assertEquals(again.status, 200);
+      await again.body?.cancel();
+      for (const s of [dj, j2, j3, sb]) {
+        assertEquals((await s.next("competition_start")).competition.id, 10);
+      }
+      assertEquals((await dj.next("performance_start")).position, 0);
+      await admin("POST", "/admin/sessions/1/abort").then((r) =>
+        r.body?.cancel()
+      );
+      for (let i = 0; i < 100 && SessionManager.getSession(1); i++) {
+        await delay(20);
+      }
+    } finally {
+      await Promise.all(open.map((s) => s.close()));
+      await delay(50);
+      SessionManager.deleteSession(1);
+      clearAllResolvers();
+      await unseed(db);
+    }
+  },
+});

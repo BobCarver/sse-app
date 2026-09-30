@@ -5,6 +5,7 @@ import type {
   ClientStatusMessage,
   CompetitionStartMessage,
   PerformanceStartMessage,
+  SessionEndMessage,
 } from "../src/protocol.ts";
 import { assert } from "@std/assert";
 import { escapeHtml } from "./html.ts";
@@ -68,6 +69,17 @@ export class sseClient {
         this.tbody?.style.setProperty("--hide-count", String(position));
       },
     );
+    sse.addEventListener("session_end", ({ data }) => {
+      const { reason } = JSON.parse(data) as SessionEndMessage;
+      this.setStatus(
+        {
+          completed: "Session complete",
+          aborted: "Session stopped by an administrator",
+          error: "Session ended unexpectedly",
+        }[reason] ?? "Session ended",
+      );
+      this.onSessionEnd();
+    });
     sse.addEventListener("superseded", () => {
       // Another window took over this client id. Stop; do not fight for it.
       this.setStatus(
@@ -80,6 +92,9 @@ export class sseClient {
       JSON.parse(data) as ClientStatusMessage;
     });
   }
+
+  /** Hook: the session is over (subclasses stop whatever they were doing). */
+  protected onSessionEnd(): void {}
 
   /** Set textContent of #id if the page has it. */
   protected setText(id: string, text: string): void {

@@ -12,9 +12,41 @@ import {
 // SESSION
 // ============================================================================
 
-const timeOut = 30000;
+// How long judges have to score once scoring opens. Read at use so it can be
+// set per environment (JUDGE_SCORE_TIMEOUT_MS); the judge page nudges at 30s.
+const DEFAULT_SCORE_TIMEOUT_MS = 60_000;
+function scoreTimeout(): number {
+  const n = Number(Deno.env.get("JUDGE_SCORE_TIMEOUT_MS"));
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_SCORE_TIMEOUT_MS;
+}
+// Optional cap on a performance (0 = wait for the DJ as long as it takes).
+function performanceTimeout(): number {
+  const n = Number(Deno.env.get("PERFORMANCE_TIMEOUT_MS"));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** The session was stopped from outside (administrator, server shutdown). */
+export class SessionAbortedError extends Error {
+  constructor(reason = "session aborted") {
+    super(reason);
+    this.name = "SessionAbortedError";
+  }
+}
+/** An administrator chose to stop waiting for clients that have not connected. */
+class SkipWaitError extends Error {}
+/** Scoring was closed before every judge submitted. */
+class ScoringClosedError extends Error {}
+
+/** A judge score that never arrived. */
+export interface IncompleteScore {
+  competition_id: number;
+  competitor_id: number;
+  judge_id: number;
+  reason: "timeout" | "closed" | "absent";
+}
 
 const isJudge = (clientId: string) => clientId.startsWith("judge");
+const isDj = (clientId: string) => clientId.startsWith("dj");
 const isScoreboard = (clientId: string) => clientId.startsWith("sb");
 
 // saveScore is retried before giving up (delays in ms between attempts).
@@ -54,6 +86,19 @@ export class Session {
   unsavedScores: ScoreSubmission[] = [];
   /** Scores accepted for the current competitor (replayed to scoreboards that connect late). */
   currentScores: ScoreSubmission[] = [];
+  /** Judge scores that never arrived (timed out, closed early, or judge absent). */
+  incomplete: IncompleteScore[] = [];
+  endReason: "completed" | "aborted" | "error" | null = null;
+  /** Clients the session is currently waiting to connect. */
+  waitingFor: string[] = [];
+
+  private runController: AbortController | null = null;
+  private waitController: AbortController | null = null;
+  private scoreController: AbortController | null = null;
+  /** Judges the operator chose to go on without for the current competition. */
+  private excusedJudges = new Set<number>();
+  /** Clients the operator chose to stop waiting for (not waited for again). */
+  private skippedClients = new Set<string>();
 
   constructor(
     public id: number,
@@ -80,11 +125,17 @@ export class Session {
       this.currentPhase !== "scoring" || !comp || comp.id !== competitionId ||
       comp.competitors[this.currentPosition]?.id !== competitorId
     ) {
-      return { kind: "closed", message: "not accepting scores for this competitor" };
+      return {
+        kind: "closed",
+        message: "not accepting scores for this competitor",
+      };
     }
     const judge = comp.rubric.judges.find((j) => j.id === judgeId);
     if (!judge) {
-      return { kind: "forbidden", message: "judge is not part of this competition" };
+      return {
+        kind: "forbidden",
+        message: "judge is not part of this competition",
+      };
     }
     const expected = [...judge.criteria].sort((a, b) => a - b);
     const got = scores.map((s) => s.criteria_id).sort((a, b) => a - b);
@@ -93,7 +144,8 @@ export class Session {
     ) {
       return {
         kind: "invalid",
-        message: `expected exactly one score for each of criteria [${expected}]`,
+        message:
+          `expected exactly one score for each of criteria [${expected}]`,
       };
     }
     if (scores.some((s) => s.score < MIN_SCORE || s.score > MAX_SCORE)) {
@@ -375,41 +427,143 @@ export class Session {
     }
   }
 
+  /** Aborted when the session is stopped; a fresh signal when not running. */
+  private get signal(): AbortSignal {
+    return this.runController?.signal ?? new AbortController().signal;
+  }
+
+  /**
+   * Wait for the given clients to connect. An administrator can `skip()` the
+   * wait: the session then goes on without whoever is missing (missing judges
+   * are excused for this competition). Stopping the session throws.
+   */
+  private async waitForClients(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    console.log("Session: waiting for clients", { ids });
+    const skip = new AbortController();
+    this.waitController = skip;
+    this.waitingFor = [...ids];
+    try {
+      const signal = AbortSignal.any([this.signal, skip.signal]);
+      await Promise.allSettled(
+        ids.map((id) => waitForTag(requiredTag(id), 0, signal)),
+      );
+    } finally {
+      this.waitController = null;
+      this.waitingFor = [];
+    }
+    this.signal.throwIfAborted();
+    if (skip.signal.aborted) {
+      for (const id of ids) {
+        if (this.clients.get(id)) continue;
+        console.warn(`Session ${this.id}: going on without ${id}`);
+        this.skippedClients.add(id);
+        if (isJudge(id)) this.excusedJudges.add(Number(id.slice(5)));
+      }
+      return;
+    }
+    console.log("Session: all clients connected", { ids });
+  }
+
   /**
    * Wait for all registered clients to connect
    */
   async requireAllClients(): Promise<void> {
-    const disconnectedClients = [];
-    for (const [id, client] of this.clients.entries()) {
-      if (!client) {
-        disconnectedClients.push(id);
-      }
-    }
-
-    if (disconnectedClients.length > 0) {
-      console.log("Session: waiting for clients", { disconnectedClients });
-      await Promise.all(
-        disconnectedClients.map((id) => waitForTag(requiredTag(id))),
-      );
-      console.log("Session: all clients connected", { disconnectedClients });
-    }
+    const disconnected = [...this.clients.entries()]
+      .filter(([id, client]) => !client && !this.skippedClients.has(id))
+      .map(([id]) => id);
+    await this.waitForClients(disconnected);
   }
 
   /**
    * Wait for specific clients to connect (by client ID)
    */
   async require(clientIds: string[]): Promise<void> {
-    const missing = clientIds.filter((id) =>
-      !this.clients.has(id) || !this.clients.get(id)
+    await this.waitForClients(
+      clientIds.filter((id) =>
+        (!this.clients.has(id) || !this.clients.get(id)) &&
+        !this.skippedClients.has(id)
+      ),
     );
+  }
 
-    if (missing.length > 0) {
-      console.log("Session: waiting for required clients", { missing });
-      await Promise.all(
-        missing.map((id) => waitForTag(requiredTag(id))),
-      );
-      console.log("Session: required clients connected", { missing });
+  // --- operator controls ----------------------------------------------------
+
+  /**
+   * Stop the session now: pending waits are cancelled, clients are told it
+   * ended, and everyone goes back to the unassigned pool. Returns false if it
+   * is not running.
+   */
+  abort(reason = "aborted by administrator"): boolean {
+    if (
+      !this.running || !this.runController || this.runController.signal.aborted
+    ) {
+      return false;
     }
+    console.warn(`Session ${this.id}: ${reason}`);
+    this.endReason = "aborted";
+    this.runController.abort(new SessionAbortedError(reason));
+    return true;
+  }
+
+  /**
+   * Stop waiting for whatever the session is stuck on:
+   *  - "waiting":     clients that have not connected (their judges are excused)
+   *  - "performance": the DJ's performance (treated as skipped; DJ playback stops)
+   *  - "scoring":     judges who have not submitted (scoring closes now)
+   * Returns what was skipped, or undefined if nothing is pending.
+   */
+  skip(): "waiting" | "performance" | "scoring" | undefined {
+    if (this.waitController && !this.waitController.signal.aborted) {
+      this.waitController.abort(new SkipWaitError());
+      return "waiting";
+    }
+    const competition = this.currentCompetition;
+    if (this.currentPhase === "performing" && competition) {
+      const at = {
+        competition_id: competition.id,
+        position: this.currentPosition,
+      };
+      this.broadcast({ event: "performance_skipped", ...at }, isDj);
+      resolveTag(perfTag(at.competition_id, at.position), false);
+      return "performance";
+    }
+    if (
+      this.currentPhase === "scoring" && this.scoreController &&
+      !this.scoreController.signal.aborted
+    ) {
+      this.scoreController.abort(new ScoringClosedError());
+      return "scoring";
+    }
+    return undefined;
+  }
+
+  /** What the operator needs to see: where the session is and what it waits for. */
+  status() {
+    const competition = this.currentCompetition;
+    const waitingFor = this.waitingFor.length > 0
+      ? [...this.waitingFor]
+      : this.currentPhase === "scoring" && competition
+      ? competition.rubric.judges
+        .filter((j) =>
+          !this.submittedScores.has(
+            `${competition.id}:${this.currentPosition}:${j.id}`,
+          )
+        )
+        .map((j) => `judge${j.id}`)
+      : [];
+    return {
+      id: this.id,
+      track_id: this.trackId ?? null,
+      running: this.running,
+      phase: this.currentPhase,
+      competition_id: competition?.id ?? null,
+      competition_name: competition?.name ?? null,
+      position: this.currentPosition,
+      connected: [...this.clients].filter(([, c]) => c).map(([id]) => id),
+      waiting_for: waitingFor,
+      incomplete: this.incomplete,
+    };
   }
 
   /**
@@ -493,13 +647,17 @@ export class Session {
       position,
     });
 
-    // Wait for DJ to signal completion (tag: perf:competitionId:position)
-    const result = await waitForTag(
-      perfTag(competition.id, position),
-    );
-
-    this.currentPhase = "idle";
-    return result;
+    // Wait for DJ to signal completion (tag: perf:competitionId:position).
+    // Ends early if an administrator skips it or stops the session.
+    try {
+      return await waitForTag(
+        perfTag(competition.id, position),
+        performanceTimeout(),
+        this.signal,
+      );
+    } finally {
+      this.currentPhase = "idle";
+    }
   }
 
   /**
@@ -528,36 +686,59 @@ export class Session {
   }
 
   /**
-   * Scoring phase - judges submit scores for competitor
+   * Scoring phase - judges submit scores for competitor.
+   * Ends when every expected judge has submitted, the time limit passes, an
+   * administrator closes scoring, or the session is stopped. Judges whose score
+   * never arrived are recorded in `incomplete` and told the window closed.
    */
   private async scorePhase(competition: Competition): Promise<void> {
     this.currentPhase = "scoring";
+    const position = this.currentPosition;
+    const competitor = competition.competitors[position];
 
-    // Enable scoring for all judges
     // Only judges score.
     this.broadcast({
       event: "enable_scoring",
       competition_id: competition.id,
-      position: this.currentPosition,
+      position,
     }, isJudge);
 
-    // Wait for all judges to submit scores (with timeout)
+    const closer = new AbortController();
+    this.scoreController = closer;
+    const signal = AbortSignal.any([this.signal, closer.signal]);
+
+    const record = (
+      judge_id: number,
+      reason: IncompleteScore["reason"],
+    ) => {
+      this.incomplete.push({
+        competition_id: competition.id,
+        competitor_id: competitor.id,
+        judge_id,
+        reason,
+      });
+    };
+
     const scorePromises = competition.rubric.judges.map(async ({ id }) => {
+      // A judge the operator went on without stays excused unless they showed up.
+      if (this.excusedJudges.has(id) && !this.clients.get(`judge${id}`)) {
+        record(id, "absent");
+        return { success: false };
+      }
       try {
-        const competitor = competition.competitors[this.currentPosition];
         const scores = await waitForTag(
           scoreTag(competition.id, competitor.id, id),
-          timeOut,
+          scoreTimeout(),
+          signal,
         );
 
         // Mark as submitted before saving
-        const scoreKey = `${competition.id}:${this.currentPosition}:${id}`;
-        this.submittedScores.add(scoreKey);
+        this.submittedScores.add(`${competition.id}:${position}:${id}`);
 
         // Save to database
         const submission: ScoreSubmission = {
           competition_id: competition.id,
-          competitor_id: competition.competitors[this.currentPosition].id,
+          competitor_id: competitor.id,
           judge_id: id,
           scores,
         };
@@ -574,20 +755,37 @@ export class Session {
 
         return { success: true };
       } catch (err) {
-        console.warn(`judge${id} timeout or error:`, err);
-        return { success: false, error: err };
+        if (this.signal.aborted) return { success: false }; // stopping, not a miss
+        const closed = err instanceof ScoringClosedError;
+        console.warn(
+          `judge${id} ${closed ? "closed out" : "timeout or error"}:`,
+          err,
+        );
+        record(id, closed ? "closed" : "timeout");
+        return { success: false };
       }
     });
 
-    const results = await Promise.allSettled(scorePromises);
+    try {
+      await Promise.allSettled(scorePromises);
+    } finally {
+      this.scoreController = null;
+    }
+    this.signal.throwIfAborted();
 
-    // Log any failures
-    const failures = results.filter((r) =>
-      r.status === "rejected" || (r.status === "fulfilled" && !r.value.success)
-    );
-
-    if (failures.length > 0) {
-      console.warn(`${failures.length} judges failed to submit scores`);
+    const missing = competition.rubric.judges
+      .map((j) => j.id)
+      .filter((id) =>
+        !this.submittedScores.has(`${competition.id}:${position}:${id}`)
+      );
+    if (missing.length > 0) {
+      console.warn(`${missing.length} judge(s) did not score`, { missing });
+      this.broadcast({
+        event: "scoring_closed",
+        competition_id: competition.id,
+        position,
+        missing_judge_ids: missing,
+      }, isJudge);
     }
 
     this.currentPhase = "idle";
@@ -624,6 +822,11 @@ export class Session {
     }
 
     this.running = true;
+    this.runController = new AbortController();
+    this.endReason = null;
+    this.incomplete = [];
+    this.excusedJudges.clear();
+    this.skippedClients.clear();
     this.submittedScores.clear();
 
     console.log(
@@ -640,6 +843,13 @@ export class Session {
 
       // Iterate through competitions in order
       for (const [index, competition] of competitions.entries()) {
+        this.signal.throwIfAborted();
+        // The operator decides per competition whether to go on without a judge.
+        this.excusedJudges.clear();
+        for (const id of this.skippedClients) {
+          if (isJudge(id)) this.skippedClients.delete(id);
+        }
+
         // Register required clients for THIS competition
         this.registerRequiredClients(competition);
 
@@ -653,6 +863,7 @@ export class Session {
         for (
           const [position, competitor] of competition.competitors.entries()
         ) {
+          this.signal.throwIfAborted();
           try {
             const performanceCompleted = await this.performPhase(
               competition,
@@ -667,6 +878,7 @@ export class Session {
               );
             }
           } catch (err) {
+            if (this.signal.aborted) throw err; // stopping: not a per-competitor error
             console.error("Error during competitor", {
               competitionId: competition.id,
               competitorId: competitor.id,
@@ -674,6 +886,7 @@ export class Session {
               err,
             });
           } finally {
+            this.currentPhase = "idle";
             this.submittedScores.clear();
           }
         }
@@ -684,18 +897,48 @@ export class Session {
         this.currentPosition = -1;
         this.currentScores = [];
 
-        // Clean up clients not needed for next competition
+        // Clean up clients not needed for next competition. After the last one
+        // everyone is released by reset(), once they have been told it ended.
         const nextCompetition = competitions[index + 1];
-        this.clearUnneededClients(nextCompetition, permanentClientIds);
+        if (nextCompetition) {
+          this.clearUnneededClients(nextCompetition, permanentClientIds);
+        }
       }
 
+      this.endReason = "completed";
       console.log(`Session ${this.id} completed successfully`);
     } catch (err) {
-      console.error(`Session ${this.id} error:`, err);
-      throw err;
+      if (err instanceof SessionAbortedError) {
+        this.endReason = "aborted";
+        console.warn(`Session ${this.id} stopped: ${err.message}`);
+      } else {
+        this.endReason = "error";
+        console.error(`Session ${this.id} error:`, err);
+        throw err;
+      }
     } finally {
+      // Tell everyone how it ended before clients are released.
+      this.announceEnd();
       this.reset();
       console.log(`Session ${this.id} reset complete`);
+    }
+  }
+
+  /**
+   * Tell everyone the session is over: connected clients, and judges the
+   * session is holding who are parked in the unassigned pool between
+   * competitions.
+   */
+  private announceEnd(): void {
+    const message: ServerToClientMessage = {
+      event: "session_end",
+      reason: this.endReason ?? "error",
+      incomplete: this.incomplete.length,
+    };
+    this.broadcast(message);
+    for (const id of this.claimedClients) {
+      const parked = this.deps.unassignedClients.get(id);
+      if (parked && !this.clients.get(id)) this.sendToClient(parked, message);
     }
   }
 
@@ -704,6 +947,12 @@ export class Session {
    */
   private reset(): void {
     this.running = false;
+    this.runController = null;
+    this.waitController = null;
+    this.scoreController = null;
+    this.waitingFor = [];
+    this.excusedJudges.clear();
+    this.skippedClients.clear();
     this.currentPhase = "idle";
     this.currentCompetition = null;
     this.currentPosition = -1;

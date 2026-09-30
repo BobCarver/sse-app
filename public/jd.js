@@ -285,6 +285,15 @@ var sseClient = class {
       this.updateTimes();
       this.tbody?.style.setProperty("--hide-count", String(position));
     });
+    sse.addEventListener("session_end", ({ data }) => {
+      const { reason } = JSON.parse(data);
+      this.setStatus({
+        completed: "Session complete",
+        aborted: "Session stopped by an administrator",
+        error: "Session ended unexpectedly"
+      }[reason] ?? "Session ended");
+      this.onSessionEnd();
+    });
     sse.addEventListener("superseded", () => {
       this.setStatus("This page was opened in another window and is now inactive");
       sse.close();
@@ -292,6 +301,9 @@ var sseClient = class {
     sse.addEventListener("client_status", ({ data }) => {
       JSON.parse(data);
     });
+  }
+  /** Hook: the session is over (subclasses stop whatever they were doing). */
+  onSessionEnd() {
   }
   /** Set textContent of #id if the page has it. */
   setText(id, text) {
@@ -334,6 +346,8 @@ var JudgeClient = class extends sseClient {
   alert;
   /** Which competition the sliders were built for (replays must not rebuild them). */
   renderedCompetitionId;
+  /** Why this judge's last score never got in (kept when the session ends). */
+  missedNote;
   /** "competitionId:position" of the scoring window currently open, if any. */
   scoringKey;
   sliders;
@@ -343,7 +357,7 @@ var JudgeClient = class extends sseClient {
   timerFn;
   clearTimerFn;
   constructor(judge_id, deps = {}) {
-    super(deps), this.judge_id = judge_id, this.alert = void 0, this.renderedCompetitionId = void 0, this.scoringKey = void 0;
+    super(deps), this.judge_id = judge_id, this.alert = void 0, this.renderedCompetitionId = void 0, this.missedNote = void 0, this.scoringKey = void 0;
     this.doc = deps.document || document;
     this.nav = deps.navigator || navigator;
     this.timerFn = deps.setTimeout ?? globalThis.setTimeout.bind(globalThis);
@@ -368,13 +382,39 @@ var JudgeClient = class extends sseClient {
       this.renderedCompetitionId = competition.id;
       this.updateCriteria(competition.rubric);
     });
+    this.sse.addEventListener("scoring_closed", ({ data }) => {
+      const { missing_judge_ids } = JSON.parse(data);
+      if (!missing_judge_ids.includes(this.judge_id)) return;
+      this.missedNote = "Scoring closed - your scores were not received in time";
+      this.closeScoring(this.missedNote);
+    });
     this.sse.addEventListener("enable_scoring", ({ data }) => {
       const msg = JSON.parse(data || "{}");
       const key = `${msg.competition_id}:${msg.position}`;
       if (this.scoringKey === key && !this.submit.disabled) return;
       this.scoringKey = key;
+      this.missedNote = void 0;
       this.enableSubmit();
     });
+  }
+  onSessionEnd() {
+    this.closeScoring();
+    if (this.missedNote) {
+      const ended = this.doc.getElementById("status")?.textContent ?? "";
+      this.setStatus(`${ended} - ${this.missedNote}`);
+    }
+  }
+  /** Disable submitting and stop the reminder; optionally explain why. */
+  closeScoring(message) {
+    if (this.alert !== void 0) {
+      this.clearTimerFn(this.alert);
+      this.alert = void 0;
+    }
+    if (!this.submit.disabled) {
+      this.submit.disabled = true;
+      if (message) this.setStatus(message);
+    }
+    this.scoringKey = void 0;
   }
   updateCriteria(rubric) {
     const judge = rubric.judges.find(({ id }) => id === this.judge_id);

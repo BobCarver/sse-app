@@ -2,11 +2,16 @@
 import { assert } from "@std/assert";
 import {
   PerformanceRecoveryMessage,
+  PerformanceSkippedMessage,
   PerformanceStartMessage,
 } from "../src/protocol.ts";
 import { perfTag } from "../src/contract.ts";
 import { postResponse, type SseLike } from "./connect.ts";
 import { sseClient } from "./sseClient.ts";
+
+// 25ms of silence: playing it inside a click unlocks audio for the page.
+const SILENT_WAV =
+  "data:audio/wav;base64,UklGRrQBAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YZABAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA";
 
 export interface DjDependencies {
   sse?: SseLike;
@@ -52,6 +57,11 @@ export class DjClient extends sseClient {
   private audio: HTMLAudioElement;
   /** Position of the performance this page is currently handling, if any. */
   private activePosition: number | undefined = undefined;
+  /** Set when an administrator skips the performance being handled. */
+  private cancelled = false;
+  /** Browsers block audio until a click; resolves once the DJ has enabled it. */
+  private audioUnlocked = false;
+  private unlockWaiters: Array<() => void> = [];
 
   constructor(deps: DjDependencies = {}) {
     super({
@@ -67,6 +77,7 @@ export class DjClient extends sseClient {
 
     this.setupAudioControls();
     this.initialState();
+    this.setupAudioUnlock(doc);
     this.sse.addEventListener(
       "performance_start",
       ({ data }) => {
@@ -79,6 +90,10 @@ export class DjClient extends sseClient {
     // Sent when this DJ (re)connects mid-performance. If this page is already
     // handling that performance (a network blip) do nothing; if the page was
     // reloaded, resume without repeating the announcement or auto-playing.
+    this.sse.addEventListener("performance_skipped", ({ data }) => {
+      const { position } = JSON.parse(data) as PerformanceSkippedMessage;
+      if (this.activePosition === position) this.cancelActive();
+    });
     this.sse.addEventListener("performance_recovery", ({ data }) => {
       const { position } = JSON.parse(data) as PerformanceRecoveryMessage;
       assert(typeof position === "number");
@@ -100,6 +115,60 @@ export class DjClient extends sseClient {
     };
   }
 
+  /**
+   * Browsers refuse to play audio until the page has had a click. If the page
+   * has an #unlock button, the DJ presses it once before the show; a
+   * performance that starts before that waits instead of failing (a failed
+   * play() would otherwise count as a skipped act).
+   */
+  private setupAudioUnlock(doc: Document): void {
+    const button = doc.querySelector("#unlock") as HTMLButtonElement | null;
+    if (!button) {
+      this.audioUnlocked = true; // nothing to wait for (tests, embedded use)
+      return;
+    }
+    button.onclick = () => {
+      // Play a short silent clip on the real element (some browsers unlock per
+      // element), and only release waiting performances once it has finished:
+      // otherwise its cleanup could stop the announcement that follows.
+      const done = () => {
+        this.audio.onended = null;
+        this.audio.onerror = null;
+        this.audioUnlocked = true;
+        button.hidden = true;
+        this.setStatus("");
+        for (const wake of this.unlockWaiters.splice(0)) wake();
+      };
+      this.audio.src = SILENT_WAV;
+      this.audio.onended = done;
+      this.audio.onerror = done;
+      this.audio.play().catch(done);
+    };
+  }
+
+  private async untilAudioUnlocked(): Promise<void> {
+    if (this.audioUnlocked) return;
+    this.setStatus("Tap 'Enable audio' to start playback");
+    await new Promise<void>((resolve) => this.unlockWaiters.push(resolve));
+  }
+
+  /** An administrator skipped this performance: stop now. */
+  private cancelActive(): void {
+    this.cancelled = true;
+    this.audio.pause();
+    // reject whichever playback promise is pending; the report then says skipped
+    (this.audio.onerror as (() => void) | null)?.();
+    for (const wake of this.unlockWaiters.splice(0)) wake();
+    this.setStatus("Performance skipped by an administrator");
+  }
+
+  protected override onSessionEnd(): void {
+    // keep the "session ended" message the base class just showed
+    const message = this.doc.getElementById("status")?.textContent ?? "";
+    if (this.activePosition !== undefined) this.cancelActive();
+    this.setStatus(message);
+  }
+
   private initialState(): void {
     this.audio.pause();
     this.startPauseButton.innerText = "play";
@@ -115,8 +184,12 @@ export class DjClient extends sseClient {
     { resume = false } = {},
   ): Promise<void> {
     this.activePosition = position;
+    this.cancelled = false;
     try {
       const competitorId = this.competition!.competitors[position].id;
+
+      await this.untilAudioUnlocked();
+      if (this.cancelled) throw new Error("cancelled");
 
       // Play announcement (skipped when resuming after a reload)
       if (!resume) {

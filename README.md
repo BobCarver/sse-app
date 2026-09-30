@@ -25,6 +25,19 @@ Nothing on the server trusts a device until it opens an admin-issued link.
   right page (`/dj`, `/judge`, `/scoreboard`); there are no URL parameters.
 - Lost or replaced device: `deno task links list`, then
   `deno task links revoke <id>` (takes effect immediately), then issue a new one.
+- During an event, when something is stuck (`ADMIN_TOKEN=... deno task links ...`):
+  - `sessions` shows every running session, its phase and who it is waiting for.
+  - `skip <sessionId>` stops waiting for whatever it is stuck on: a client that
+    never connected (the session goes on without them), a performance (treated
+    as skipped; the DJ's audio stops), or judges who have not scored (scoring
+    closes with the scores received). Missing scores are listed under
+    `sessions` and judges are told scoring closed.
+  - `abort <sessionId>` ends it now and frees the track and judges; every page
+    is told. Start it again with `POST /sessions/<id>/start`.
+  - Judges have `JUDGE_SCORE_TIMEOUT_MS` (default 60000) to score; set
+    `PERFORMANCE_TIMEOUT_MS` to cap a performance (default: no limit).
+  - The DJ presses **Enable audio** once after opening the page; browsers block
+    playback until then. A performance that starts earlier waits for the click.
 - Start a session: `POST /sessions/<id>/start` with `Authorization: Bearer $ADMIN_TOKEN`.
 - Serve over HTTPS in production (cookies are marked `Secure` behind
   `X-Forwarded-Proto: https`), and set `PUBLIC_URL` if the server is behind a proxy

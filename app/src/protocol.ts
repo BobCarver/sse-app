@@ -85,6 +85,30 @@ export interface PingMessage {
   event: "ping";
 }
 
+// SERVER -> ALL: the session finished (or was stopped). `incomplete` is the
+// number of judge scores that were never received.
+export interface SessionEndMessage extends BaseMessage {
+  event: "session_end";
+  reason: "completed" | "aborted" | "error";
+  incomplete: number;
+}
+
+// SERVER -> JUDGES: the scoring window closed (time ran out or an administrator
+// closed it). Judges listed in `missing_judge_ids` did not get a score in.
+export interface ScoringClosedMessage extends BaseMessage {
+  event: "scoring_closed";
+  competition_id: number;
+  position: number;
+  missing_judge_ids: number[];
+}
+
+// SERVER -> DJ: an administrator skipped this performance; stop playback.
+export interface PerformanceSkippedMessage extends BaseMessage {
+  event: "performance_skipped";
+  competition_id: number;
+  position: number;
+}
+
 // SERVER -> CLIENT: another connection with the same client id replaced this
 // one (e.g. a second tab). The client should stop reconnecting.
 export interface SupersededMessage extends BaseMessage {
@@ -112,6 +136,9 @@ export type ServerToClientMessage =
   | ScoreUpdateMessage
   | PingMessage
   | SupersededMessage
+  | SessionEndMessage
+  | ScoringClosedMessage
+  | PerformanceSkippedMessage
   | ErrorMessage;
 
 // ============================================================================

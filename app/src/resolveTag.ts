@@ -61,12 +61,19 @@ export const resolvers = new Map<string, (payload: unknown) => void>();
  *
  * // Wait for score submission (payload: ScoreSubmission)
  * const submission = await waitForTag('score:10:2:5', 30000);
+ *
+ * An optional AbortSignal cancels the wait: the promise rejects with the
+ * signal's reason and the tag is released.
  */
 export function waitForTag<T extends TagKey>(
   tag: T,
   timeOut: number = 0,
+  signal?: AbortSignal,
 ): Promise<PayloadForTag<T>> {
   let timer: ReturnType<typeof setTimeout> | undefined = undefined;
+  let onAbort: (() => void) | undefined;
+
+  if (signal?.aborted) return Promise.reject(signal.reason);
 
   if (resolvers.has(tag)) {
     // A second waiter would silently replace the first, which would hang forever.
@@ -84,11 +91,20 @@ export function waitForTag<T extends TagKey>(
         reject(new Error(`Timeout waiting for tag: ${tag}`));
       }, timeOut);
     }
+
+    if (signal) {
+      onAbort = () => {
+        resolvers.delete(tag);
+        reject(signal.reason);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
   }).finally(() => {
     resolvers.delete(tag);
     if (timer !== undefined) {
       clearTimeout(timer);
     }
+    if (signal && onAbort) signal.removeEventListener("abort", onAbort);
   });
 }
 
