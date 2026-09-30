@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 import { CompetitionStartMessage } from "../src/protocol.ts";
 import { Rubric } from "../src/types.ts";
+import { scoreTag } from "../src/contract.ts";
 import { sseClient } from "./sseClient.ts";
 export interface JudgeDependencies {
   sse?: EventSource;
@@ -118,20 +119,14 @@ export class JudgeClient extends sseClient {
     // derive base URL from location or default to localhost for testing
     const base = globalThis.location?.origin ?? "http://localhost";
 
-    if (!this.sessionId) {
-      // If sessionId is missing, try to derive from document body dataset, else warn
-      console.warn("JudgeClient: sessionId not specified; submit aborted");
-      return;
-    }
-
     fetch(
       `${base}/response`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          tag: `score:${competitionId}:${competitorId}:${this.judge_id}`,
-          scores: scores,
+          tag: scoreTag(competitionId, competitorId, this.judge_id),
+          payload: scores,
         }),
       },
     );

@@ -183,8 +183,8 @@ Deno.test("DjClient handles performance_start with announcement and music", asyn
     f!.url,
     "http://localhost/response",
   );
-  assertEquals(f!.body.tag, "performance:100:10");
-  assertEquals(f!.body.completed, true);
+  assertEquals(f!.body.tag, "perf:100:0");
+  assertEquals(f!.body.payload, true);
 
   fetchStub.restore();
 });
@@ -274,8 +274,8 @@ Deno.test("DjClient handles skip button during music playback", async () => {
     f!.url,
     "http://localhost/response",
   );
-  assertEquals(f!.body.tag, "performance:100:10");
-  assertEquals(f!.body.completed, false);
+  assertEquals(f!.body.tag, "perf:100:0");
+  assertEquals(f!.body.payload, false);
 
   fetchStub.restore();
 });
@@ -352,7 +352,8 @@ Deno.test("DjClient handles audio playback error", async () => {
   const f = fetchStub.getLastFetch();
   assert(f !== null);
   assertEquals(f!.url, "http://localhost/response");
-  assertEquals(f!.body.tag, "error:Play failed");
+  assertEquals(f!.body.tag, "perf:100:0");
+  assertEquals(f!.body.payload, false);
 
   fetchStub.restore();
 });
@@ -386,7 +387,8 @@ Deno.test("DjClient handles audio error event", async () => {
   const f = fetchStub.getLastFetch();
   assert(f !== null);
   assertEquals(f!.url, "http://localhost/response");
-  assertEquals(f!.body.tag, "error:audio_error");
+  assertEquals(f!.body.tag, "perf:100:0");
+  assertEquals(f!.body.payload, false);
 
   fetchStub.restore();
 });

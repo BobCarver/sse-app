@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 import { assert } from "@std/assert";
 import { PerformanceStartMessage } from "../src/protocol.ts";
+import { perfTag } from "../src/contract.ts";
 import { sseClient } from "./sseClient.ts";
 
 export interface DjDependencies {
@@ -116,19 +117,23 @@ export class DjClient extends sseClient {
         : "http://localhost";
       fetch(`${base}/response`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          tag: `performance:${this.competition!.id}:${competitorId}`,
-          completed,
+          tag: perfTag(this.competition!.id, position),
+          payload: completed,
         }),
       });
-    } catch (err) {
+    } catch (_err) {
       const base = typeof location !== "undefined"
         ? location.origin
         : "http://localhost";
       fetch(`${base}/response`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // playback failed: report the performance as not completed (skipped)
         body: JSON.stringify({
-          tag: `error:${(err as Error).message}`,
+          tag: perfTag(this.competition!.id, position),
+          payload: false,
         }),
       });
     } finally {

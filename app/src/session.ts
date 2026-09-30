@@ -1,5 +1,6 @@
 import type { ClientStatusMessage, ServerToClientMessage } from "./protocol.ts";
 import { resolveTag, waitForTag } from "./resolveTag.ts";
+import { perfTag, requiredTag, scoreTag } from "./contract.ts";
 import { type Competition, type ScoreSubmission, SSEClient } from "./types.ts";
 
 // ============================================================================
@@ -59,7 +60,7 @@ export class Session {
     this.clients.set(client.id, client);
 
     // Wake up any code waiting for this client
-    resolveTag(`required:${client.id}`, undefined);
+    resolveTag(requiredTag(client.id), undefined);
 
     // Tell all clients about updated roster
     this.broadcastClientStatus();
@@ -159,7 +160,7 @@ export class Session {
           );
 
           // Resolve any waiters
-          resolveTag(`required:${clientId}`, undefined);
+          resolveTag(requiredTag(clientId), undefined);
         } else {
           // Client not connected yet, add empty slot
           this.clients.set(clientId, undefined);
@@ -201,7 +202,7 @@ export class Session {
           );
 
           // Resolve any waiters
-          resolveTag(`required:${clientKey}`, undefined);
+          resolveTag(requiredTag(clientKey), undefined);
         } else {
           // Client not connected yet, add empty slot
           this.clients.set(clientKey, undefined);
@@ -282,7 +283,7 @@ export class Session {
     if (disconnectedClients.length > 0) {
       console.log("Session: waiting for clients", { disconnectedClients });
       await Promise.all(
-        disconnectedClients.map((id) => waitForTag(`required:${id}`)),
+        disconnectedClients.map((id) => waitForTag(requiredTag(id))),
       );
       console.log("Session: all clients connected", { disconnectedClients });
     }
@@ -299,7 +300,7 @@ export class Session {
     if (missing.length > 0) {
       console.log("Session: waiting for required clients", { missing });
       await Promise.all(
-        missing.map((id) => waitForTag(`required:${id}`)),
+        missing.map((id) => waitForTag(requiredTag(id))),
       );
       console.log("Session: required clients connected", { missing });
     }
@@ -383,8 +384,8 @@ export class Session {
 
     // Wait for DJ to signal completion (tag: perf:competitionId:position)
     const result = await waitForTag(
-      `perf:${competition.id}:${position}`,
-    ) as boolean;
+      perfTag(competition.id, position),
+    );
 
     this.currentPhase = "idle";
     return result;
@@ -408,7 +409,7 @@ export class Session {
       try {
         const competitor = competition.competitors[this.currentPosition];
         const scores = await waitForTag(
-          `score:${competition.id}:${competitor.id}:${id}`,
+          scoreTag(competition.id, competitor.id, id),
           timeOut,
         );
 

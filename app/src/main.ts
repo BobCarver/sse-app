@@ -9,6 +9,7 @@ import { serveStatic } from "@hono/hono/deno";
 
 import { ScoreSubmission, SSEClient } from "./types.ts";
 import { resolvers } from "./resolveTag.ts";
+import { parseTag, validatePayload } from "./contract.ts";
 import { handleSSEConnection } from "./sse.ts";
 import { SessionManager } from "./sessionManager.ts";
 import { getSessionCompetitionsWithRubrics } from "./db.ts";
@@ -277,18 +278,27 @@ app.post(
   },
 );
 
-// Consolidated tag-based responder endpoint: { tag: string, payload?: any }
+// Consolidated tag-based responder endpoint. Body shape: see ResponseBody in contract.ts
 app.post(
   "/response",
   jwtMiddleware,
   async (c: Context<{ Variables: Variables }>) => {
-    const { tag, payload } = await c.req.json();
-    resolvers.get(tag)?.(payload);
-    if (!tag) return c.json({ error: "missing tag" }, 400);
-    if (!resolvers.has(tag)) {
-      return c.json({ error: "no resolver for tag" }, 404);
+    let body: { tag?: unknown; payload?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid JSON body" }, 400);
     }
-    // perhaps do some validation ?????
+    const parsed = parseTag(body?.tag);
+    if (!parsed) return c.json({ error: "missing or malformed tag" }, 400);
+    const invalid = validatePayload(parsed, body.payload);
+    if (invalid) return c.json({ error: invalid }, 400);
+
+    const resolver = resolvers.get(body.tag as string);
+    if (!resolver) return c.json({ error: "no resolver for tag" }, 404);
+    // TODO(phase 5): verify the JWT sub is allowed to resolve this tag
+    resolvers.delete(body.tag as string); // first response wins
+    resolver(body.payload);
     return c.json({ success: true });
   },
 );

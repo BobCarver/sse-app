@@ -191,7 +191,6 @@ Deno.test("JudgeClient submits scores with correct data", async () => {
     sse: mockSse as any,
     document: doc,
   });
-  (judge as any).sessionId = 1; // set sessionId for test
   const rubric = {
     judges: [{ id: 101, name: "Judge 1", criteria: [1, 2] }],
     criteria: [
@@ -233,12 +232,12 @@ Deno.test("JudgeClient submits scores with correct data", async () => {
   assert(f !== null);
   assertEquals(f!.url, "http://localhost/response");
   assertEquals(f!.body.tag, "score:5:10:101");
-  assertEquals(Array.isArray(f!.body.scores), true);
-  assertEquals(f!.body.scores.length, 2);
-  assertEquals(f!.body.scores[0].criteria_id, 1);
-  assertEquals(f!.body.scores[0].score, 9.2);
-  assertEquals(f!.body.scores[1].criteria_id, 2);
-  assertEquals(f!.body.scores[1].score, 8.5);
+  assertEquals(Array.isArray(f!.body.payload), true);
+  assertEquals(f!.body.payload.length, 2);
+  assertEquals(f!.body.payload[0].criteria_id, 1);
+  assertEquals(f!.body.payload[0].score, 9.2);
+  assertEquals(f!.body.payload[1].criteria_id, 2);
+  assertEquals(f!.body.payload[1].score, 8.5);
 
   // Submit should be disabled after submission
   assertEquals(submit.disabled, true);
