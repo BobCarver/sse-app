@@ -1,5 +1,5 @@
-import { Context, Hono } from "@hono/hono";
-import { jwt, type JwtVariables, sign } from "@hono/hono/jwt";
+import { type Context, Hono, type Next } from "@hono/hono";
+import { deleteCookie, getCookie, setCookie } from "@hono/hono/cookie";
 import { streamSSE } from "@hono/hono/streaming";
 
 // ============================================================================
@@ -12,23 +12,21 @@ import { parseTag, validatePayload } from "./contract.ts";
 import { handleSSEConnection } from "./sse.ts";
 import { SessionManager } from "./sessionManager.ts";
 import {
+  Credentials,
+  hashSecret,
+  pageFor,
+  parseClientId,
+} from "./credentials.ts";
+import {
+  credentialStore,
   getSessionCompetitionsWithRubrics,
   getSessionTrackId,
   saveScore,
 } from "./db.ts";
 
-export type JWTPayload = {
-  sub: string; // subject representing client (e.g. "dj0" or "judge2")
-  exp?: number;
-};
-
-export function isJWTPayload(v: unknown): v is JWTPayload {
-  if (!v || typeof v !== "object") return false;
-  const obj = v as Record<string, unknown>;
-  return typeof obj.sub === "string";
-}
-
-type Variables = JwtVariables & JWTPayload;
+/** Who is making the request, set by the `requireClient` middleware. */
+type Variables = { client: { sub: string; credentialId: number } };
+type Ctx = Context<{ Variables: Variables }>;
 
 // ============================================================================
 // CONFIGURATION
@@ -50,7 +48,12 @@ export const app = new Hono<{ Variables: Variables }>();
 // Debug: log incoming requests to help trace 404s
 app.use("*", async (c, next) => {
   try {
-    console.log("REQ", c.req.method, c.req.url);
+    // Never log credentials: /join/<secret> carries one in the path.
+    console.log(
+      "REQ",
+      c.req.method,
+      new URL(c.req.url).pathname.replace(/^\/join\/.*/, "/join/***"),
+    );
   } catch (_e) {
     /* ignore logging errors */
   }
@@ -58,12 +61,12 @@ app.use("*", async (c, next) => {
 });
 
 // Basic root for tests
-app.get("/", (c: Context<{ Variables: Variables }>) => c.text("Hello Hono"));
+app.get("/", (c: Ctx) => c.text("Hello Hono"));
 
 // Health/readiness endpoint for e2e harness and external checks
 app.get(
   "/_health",
-  async (c: Context<{ Variables: Variables }>) => {
+  async (c: Ctx) => {
     // If the app is expected to rely on a database for e2e tests, verify DB is configured
     const dbUrl = Deno.env.get("DATABASE_URL");
     if (!dbUrl) {
@@ -85,43 +88,132 @@ app.get(
 );
 
 // ============================================================================
-// MIDDLEWARE
+// AUTH
 // ============================================================================
+//
+// Devices authenticate with an admin-issued credential (see credentials.ts):
+// the admin creates one per DJ / judge / scoreboard, and hands it out as a
+// link. GET /join/<secret> stores it in an HttpOnly cookie; every request is
+// checked against the stored hash, so revoking locks a device out at once.
+// Admin operations use a separate bearer token (ADMIN_TOKEN).
 
-// JWT middleware for protected routes
-const jwtMiddleware = jwt({
-  secret: Deno.env.get("JWT_SECRET") || "your-secret-key",
-  alg: "HS256", // Required: specify the JWT algorithm explicitly
-  cookie: "session_token", // The name of the cookie containing the JWT
+export const credentials = new Credentials(credentialStore);
+
+const COOKIE = "session_token";
+const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // credentials are revoked server-side, not by expiry
+
+/** Constant-time string comparison (on digests, so lengths never leak). */
+async function safeEqual(a: string, b: string): Promise<boolean> {
+  const [x, y] = await Promise.all([hashSecret(a), hashSecret(b)]);
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
+  return diff === 0;
+}
+
+if (!Deno.env.get("ADMIN_TOKEN")) {
+  console.warn(
+    "ADMIN_TOKEN is not set: admin endpoints (issuing links, starting sessions) are disabled",
+  );
+}
+
+/** Admin bearer token. Fails closed when ADMIN_TOKEN is unset. */
+async function requireAdmin(c: Ctx, next: Next) {
+  const expected = Deno.env.get("ADMIN_TOKEN");
+  if (!expected) return c.json({ error: "admin access is not configured" }, 503);
+  const given = /^Bearer (.+)$/.exec(c.req.header("authorization") ?? "")?.[1];
+  if (!given || !(await safeEqual(given, expected))) {
+    return c.json({ error: "admin credentials required" }, 401);
+  }
+  await next();
+}
+
+/** A device with a valid, unrevoked credential cookie. */
+async function requireClient(c: Ctx, next: Next) {
+  let credential;
+  try {
+    credential = await credentials.authenticate(getCookie(c, COOKIE) ?? "");
+  } catch (err) {
+    console.error("credential lookup failed:", err);
+    return c.json({ error: "authentication unavailable" }, 503);
+  }
+  if (!credential) return c.json({ error: "unauthorized" }, 401);
+  c.set("client", { sub: credential.clientId, credentialId: credential.id });
+  await next();
+}
+
+// Open a link: exchange the secret for a cookie, then go to the right page.
+app.get("/join/:secret", async (c: Ctx) => {
+  const credential = await credentials.authenticate(c.req.param("secret"));
+  const page = credential && pageFor(credential.clientId);
+  const noStore = { "cache-control": "no-store", "referrer-policy": "no-referrer" };
+  if (!credential || !page) {
+    return c.text("This link is invalid or has been revoked. Ask an administrator for a new one.", 401, noStore);
+  }
+  setCookie(c, COOKIE, c.req.param("secret"), {
+    path: "/",
+    maxAge: COOKIE_MAX_AGE,
+    httpOnly: true,
+    sameSite: "Strict",
+    secure: new URL(c.req.url).protocol === "https:" ||
+      c.req.header("x-forwarded-proto") === "https",
+  });
+  for (const [k, v] of Object.entries(noStore)) c.header(k, v);
+  return c.redirect(page);
 });
 
-// --- /register route ---
-// Usage: GET /register?sub=<clientId>
-// Returns: { token: "..." } and sets Set-Cookie: session_token=...
-app.get("/register", async (c: Context<{ Variables: Variables }>) => {
-  const url = new URL(c.req.url);
-  const sub = url.searchParams.get("sub");
-  if (!sub) {
-    return c.json({ error: "missing sub query parameter" }, 400);
+// Who am I? Pages learn their identity from the server, not from the URL.
+app.get("/session", requireClient, (c: Ctx) => {
+  c.header("cache-control", "no-store");
+  return c.json({ client_id: c.get("client").sub });
+});
+
+app.post("/logout", (c: Ctx) => {
+  deleteCookie(c, COOKIE, { path: "/" });
+  return c.json({ success: true });
+});
+
+// --- admin: issue / list / revoke -------------------------------------------
+
+app.post("/admin/credentials", requireAdmin, async (c: Ctx) => {
+  const body = await c.req.json().catch(() => null) as
+    | { client_id?: unknown; label?: unknown }
+    | null;
+  const clientId = body?.client_id;
+  if (typeof clientId !== "string" || !parseClientId(clientId)) {
+    return c.json({ error: "client_id must look like dj1, judge2 or sb1" }, 400);
   }
+  const label = typeof body?.label === "string" ? body.label : undefined;
+  try {
+    const { credential, secret } = await credentials.issue(clientId, label);
+    const origin = Deno.env.get("PUBLIC_URL") ?? new URL(c.req.url).origin;
+    return c.json({
+      id: credential.id,
+      client_id: credential.clientId,
+      label: credential.label,
+      link: `${origin}/join/${secret}`, // shown once; only its hash is stored
+    }, 201);
+  } catch (err) {
+    console.error("issue credential failed:", err);
+    return c.json({ error: "could not create credential" }, 500);
+  }
+});
 
-  const exp = Math.floor(Date.now() / 1000) + 60 * 60; // 1 hour expiry
-  const payload: JWTPayload = { sub, exp };
-  const secret = Deno.env.get("JWT_SECRET") || "your-secret-key";
-  const token = await sign(payload as Record<string, unknown>, secret, "HS256");
+app.get("/admin/credentials", requireAdmin, (c: Ctx) =>
+  c.json(credentials.list().map((x) => ({
+    id: x.id,
+    client_id: x.clientId,
+    label: x.label,
+    created_at: x.createdAt,
+    revoked_at: x.revokedAt,
+  }))));
 
-  const maxAge = 60 * 60; // 1 hour
-  const cookie = `session_token=${
-    encodeURIComponent(token)
-  }; Path=/; Max-Age=${maxAge}; HttpOnly; SameSite=Lax`;
-
-  return new Response(JSON.stringify({ token }), {
-    status: 200,
-    headers: {
-      "content-type": "application/json",
-      "set-cookie": cookie,
-    },
-  });
+app.delete("/admin/credentials/:id", requireAdmin, async (c: Ctx) => {
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id)) return c.json({ error: "invalid id" }, 400);
+  if (!(await credentials.revoke(id))) {
+    return c.json({ error: "no active credential with that id" }, 404);
+  }
+  return c.json({ success: true });
 });
 
 // ============================================================================
@@ -131,16 +223,10 @@ app.get("/register", async (c: Context<{ Variables: Variables }>) => {
 // Store of unassigned clients (connected but not yet assigned to a session)
 const unassignedClients: Map<string, SSEClient> = new Map();
 
-// SSE connection (production - expects JWT with sub)
-app.get("/events", jwtMiddleware, (c) => {
-  const { sub } = c.get("jwtPayload") as JWTPayload;
-  // Parse subject: expected format like 'dj0', 'judge2', 'sb3'
-  const re = (sub || "").match(/^(?<type>(dj|judge|sb))(\d*)$/);
-  if (!re) {
-    return c.json({ error: " Invalid'sub' claim" }, 400);
-  }
-  const clientId = sub;
-  const clientType = re.groups?.type as "dj" | "judge" | "sb";
+// SSE connection; identity comes from the credential.
+app.get("/events", requireClient, (c: Ctx) => {
+  const clientId = c.get("client").sub;
+  const clientType = parseClientId(clientId)!.kind;
 
   return streamSSE(c, async (stream) => {
     await handleSSEConnection(
@@ -199,8 +285,8 @@ app.get("/js/:file", (c) => {
 // session until it completes.
 app.post(
   "/sessions/:sessionId/start",
-  // public for tests; in prod you may want to protect this route
-  async (c: Context<{ Variables: Variables }>) => {
+  requireAdmin,
+  async (c: Ctx) => {
     const sessionId = Number(c.req.param("sessionId"));
     if (!Number.isInteger(sessionId)) {
       return c.json({ error: "Invalid session ID" }, 400);
@@ -298,8 +384,13 @@ app.post(
 // Consolidated tag-based responder endpoint. Body shape: see ResponseBody in contract.ts
 app.post(
   "/response",
-  jwtMiddleware,
-  async (c: Context<{ Variables: Variables }>) => {
+  requireClient,
+  async (c: Ctx) => {
+    // Cross-site forms cannot send JSON without a preflight (CSRF defence in
+    // depth on top of the SameSite=Strict cookie).
+    if (!(c.req.header("content-type") ?? "").includes("application/json")) {
+      return c.json({ error: "content-type must be application/json" }, 415);
+    }
     let body: { tag?: unknown; payload?: unknown };
     try {
       body = await c.req.json();
@@ -314,12 +405,25 @@ app.post(
     const resolver = resolvers.get(body.tag as string);
     if (!resolver) return c.json({ error: "no resolver for tag" }, 404);
 
+    const session = SessionManager.findSessionForCompetition(
+      parsed.competitionId,
+    );
+    if (!session) return c.json({ error: "no active session" }, 404);
+
+    // Ownership: a device may only answer for itself.
+    //  - perf:*  -> a DJ that belongs to this session
+    //  - score:* -> exactly judge<N> for score:...:N
+    const sender = c.get("client").sub;
+    const owner = parsed.kind === "perf"
+      ? parseClientId(sender)?.kind === "dj" && session.clients.has(sender)
+      : sender === `judge${parsed.judgeId}`;
+    if (!owner) {
+      console.warn(`403: ${sender} tried to answer ${body.tag}`);
+      return c.json({ error: "not allowed to answer this request" }, 403);
+    }
+
     let payload = body.payload;
     if (parsed.kind === "score") {
-      const session = SessionManager.findSessionForCompetition(
-        parsed.competitionId,
-      );
-      if (!session) return c.json({ error: "no active session" }, 404);
       const scores = body.payload as Scores;
       const rejected = session.validateScoreSubmission(
         parsed.competitionId,
@@ -341,7 +445,6 @@ app.post(
       }));
     }
 
-    // TODO(phase 5): verify the JWT sub is allowed to resolve this tag
     resolvers.delete(body.tag as string); // first response wins
     resolver(payload);
     return c.json({ success: true });

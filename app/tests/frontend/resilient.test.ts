@@ -2,6 +2,7 @@
 import { assertEquals } from "@std/assert";
 import { FakeTime } from "@std/testing/time";
 import {
+  AuthError,
   type ConnectionState,
   ResilientEventSource,
 } from "../../frontend-src/connect.ts";
@@ -45,7 +46,7 @@ function setup(
   const states: ConnectionState[] = [];
   let registers = 0;
   const rs = new ResilientEventSource({
-    register: () => {
+    ensureSession: () => {
       registers++;
       return Promise.resolve();
     },
@@ -157,7 +158,7 @@ Deno.test("resilient: register failure keeps retrying instead of giving up", asy
     let calls = 0;
     const { rs, latest } = setup({
       backoffMs: [1000],
-      register: () =>
+      ensureSession: () =>
         ++calls < 3 ? Promise.reject(new Error("offline")) : Promise.resolve(),
     });
     latest().giveUp();
@@ -197,6 +198,24 @@ Deno.test("resilient: close() cancels timers", async () => {
     rs.close();
     await time.tickAsync(120_000);
     assertEquals(FakeES.all.length, 1);
+  } finally {
+    time.restore();
+  }
+});
+
+Deno.test("resilient: revoked credential (AuthError) stops for good and says so", async () => {
+  const time = new FakeTime();
+  try {
+    const { rs, states, latest } = setup({
+      backoffMs: [1000],
+      ensureSession: () => Promise.reject(new AuthError()),
+    });
+    latest().giveUp(); // browser gave up: the server answered 401 to /events
+    await time.tickAsync(1000);
+    assertEquals(states.at(-1), "unauthorized");
+    await time.tickAsync(120_000);
+    assertEquals(FakeES.all.length, 1); // never retried
+    rs.close();
   } finally {
     time.restore();
   }

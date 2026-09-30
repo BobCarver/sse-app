@@ -20,7 +20,7 @@ export default defineConfig({
         env: {
             DATABASE_URL: "postgres://postgres:test@localhost:5432/test_db",
             JUDGE_SCORE_TIMEOUT_MS: "5000",
-            JWT_SECRET: "test-secret",
+            ADMIN_TOKEN: "test-admin",
         },
     },
     projects: [

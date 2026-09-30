@@ -2,6 +2,7 @@
 // messages never cross tracks, and judge/track conflicts are detected.
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { app } from "../../src/main.ts";
+import { secretFor } from "../auth-utils.ts";
 import { Session } from "../../src/session.ts";
 import { SessionManager, sessions } from "../../src/sessionManager.ts";
 import { clearAllResolvers } from "../../src/resolveTag.ts";
@@ -23,7 +24,7 @@ function comp(id: number, competitorId: number, judgeId: number): Competition {
 }
 
 async function post(sub: string, body: unknown) {
-  const { token } = await (await app.request(`/register?sub=${sub}`)).json();
+  const token = await secretFor(sub);
   return app.request("/response", {
     method: "POST",
     headers: {
@@ -32,6 +33,10 @@ async function post(sub: string, body: unknown) {
     },
     body: JSON.stringify(body),
   });
+}
+
+async function postStatus(sub: string, tag: string): Promise<number> {
+  return (await post(sub, { tag, payload: false })).status;
 }
 
 const msgs = (c: ReturnType<typeof createMockClient>) =>
@@ -137,11 +142,14 @@ Deno.test("findConflict: one running session per track; judges held until sessio
   // the session itself is not a conflict with itself (idempotent restart)
   assertEquals(SessionManager.findConflict(1, 1, ["judge5"]), undefined);
 
-  // Session ends -> judges released
-  unassigned.set("dj1", createMockClient("dj1"));
-  s1.connectClient(unassigned.get("dj1"));
-  await delay(20);
-  await post("dj1", { tag: perfTag(10, 0), payload: false }); // skipped -> no scoring
+  // Session ends -> judges released. Everyone the competition needs connects,
+  // then the DJ skips the only performance so nothing is scored.
+  for (const id of ["dj1", "judge5"]) {
+    unassigned.set(id, createMockClient(id));
+    s1.connectClient(unassigned.get(id));
+  }
+  await delay(30);
+  assertEquals(await postStatus("dj1", perfTag(10, 0)), 200);
   await running;
   SessionManager.deleteSession(1);
   assertEquals(SessionManager.findConflict(2, 1, ["judge5"]), undefined);

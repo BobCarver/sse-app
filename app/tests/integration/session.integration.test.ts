@@ -9,6 +9,7 @@ import { SessionManager } from "../../src/sessionManager.ts";
 import { clearAllResolvers } from "../../src/resolveTag.ts";
 import { perfTag, scoreTag } from "../../src/contract.ts";
 import { delay } from "../test-utils.ts";
+import { adminHeaders, cookieFor } from "../auth-utils.ts";
 
 const SEED_SQL = new URL("./seeds/session_seed.sql", import.meta.url).pathname;
 
@@ -22,10 +23,7 @@ class SSEStream {
 
   static async open(sub: string): Promise<SSEStream> {
     const s = new SSEStream();
-    const reg = await app.fetch(
-      new Request(`http://localhost/register?sub=${sub}`),
-    );
-    const cookie = reg.headers.get("set-cookie")!.split(";")[0];
+    const cookie = await cookieFor(sub);
     const res = await app.fetch(
       new Request("http://localhost/events", {
         headers: { cookie },
@@ -125,7 +123,10 @@ Deno.test({
       streams.push(dj, j2, j3, sb);
 
       const start = await app.fetch(
-        new Request("http://localhost/sessions/1/start", { method: "POST" }),
+        new Request("http://localhost/sessions/1/start", {
+          method: "POST",
+          headers: adminHeaders,
+        }),
       );
       assertEquals(start.status, 200);
       const started = await start.json();
@@ -241,7 +242,8 @@ Deno.test({
       await delay(50); // let SSE cleanup clear its ping timers
       // Cleanup seeded rows (deterministic IDs used in seed)
       await db.unsafe(`
-      DELETE FROM scores WHERE competition_id = 10;
+      DELETE FROM client_credentials;
+    DELETE FROM scores WHERE competition_id = 10;
       DELETE FROM competition_competitors WHERE competition_id = 10;
       DELETE FROM competitions WHERE id = 10;
       DELETE FROM rubric_judge_criteria WHERE rubric_id = 1 AND judge_id IN (2,3);
@@ -266,6 +268,7 @@ async function seed(db: NonNullable<typeof sql>) {
 
 async function unseed(db: NonNullable<typeof sql>) {
   await db.unsafe(`
+    DELETE FROM client_credentials;
     DELETE FROM scores WHERE competition_id = 10;
     DELETE FROM competition_competitors WHERE competition_id = 10;
     DELETE FROM competitions WHERE id = 10;
@@ -302,7 +305,10 @@ Deno.test({
       const j3 = await track(SSEStream.open("judge3"));
       const sb = await track(SSEStream.open("sb1"));
       const start = await app.fetch(
-        new Request("http://localhost/sessions/1/start", { method: "POST" }),
+        new Request("http://localhost/sessions/1/start", {
+          method: "POST",
+          headers: adminHeaders,
+        }),
       );
       assertEquals(start.status, 200);
       for (const s of [dj, j2, j3, sb]) await s.next("competition_start");
@@ -407,7 +413,10 @@ Deno.test({
       ];
       for (const p of others) open.push(await p);
       const start = await app.fetch(
-        new Request("http://localhost/sessions/1/start", { method: "POST" }),
+        new Request("http://localhost/sessions/1/start", {
+          method: "POST",
+          headers: adminHeaders,
+        }),
       );
       assertEquals(start.status, 200);
       await second.next("competition_start");

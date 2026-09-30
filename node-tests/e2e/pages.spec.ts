@@ -1,7 +1,10 @@
-import { expect, test } from "@playwright/test";
+import { type APIRequestContext, type Browser, expect, test } from "@playwright/test";
 
-// Drives the REAL pages (/dj, /judge, /scoreboard) through the UI:
-// session start -> DJ plays -> judges submit -> scoreboard shows scores.
+// Drives the REAL pages through admin-issued links:
+//   admin issues links -> devices open them -> session start -> DJ plays ->
+//   judges submit -> scoreboard shows scores. Plus drop/recover and revocation.
+
+const ADMIN = { authorization: `Bearer ${process.env.ADMIN_TOKEN ?? "test-admin"}` };
 
 // 0.3s of silence as a valid WAV so <audio> can play/end in headless Chromium.
 function silentWav(seconds = 0.3): Buffer {
@@ -27,37 +30,73 @@ test.use({
     launchOptions: { args: ["--autoplay-policy=no-user-gesture-required"] },
 });
 
-test("real pages: full session through the UI", async ({ browser, request }) => {
+/** What the admin does: issue a link for a client id. */
+async function issue(request: APIRequestContext, client_id: string) {
+    const res = await request.post("/admin/credentials", {
+        headers: ADMIN,
+        data: { client_id, label: "e2e" },
+    });
+    expect(res.status()).toBe(201);
+    return await res.json() as { id: number; link: string };
+}
+
+const pageErrors: string[] = [];
+
+/** What a device does: open its link in a fresh browser context. */
+async function openLink(browser: Browser, link: string) {
     const wav = silentWav();
-    const pageErrors: string[] = [];
-    async function open(url: string) {
-        const context = await browser.newContext();
-        await context.route(/-(announce|music)$/, (r) =>
-            r.fulfill({ status: 200, contentType: "audio/wav", body: wav }));
-        const page = await context.newPage();
-        page.on("pageerror", (e) => pageErrors.push(`${url}: ${e.message}`));
-        await page.goto(url);
-        return { context, page };
-    }
+    const context = await browser.newContext();
+    // Keep a handle on every EventSource so tests can kill the live one.
+    await context.addInitScript(() => {
+        const Native = window.EventSource;
+        (window as any).__eventSources = [];
+        (window as any).EventSource = class extends Native {
+            constructor(url: string | URL, init?: EventSourceInit) {
+                super(url, init);
+                (window as any).__eventSources.push(this);
+            }
+        };
+    });
+    await context.route(/-(announce|music)$/, (r) =>
+        r.fulfill({ status: 200, contentType: "audio/wav", body: wav }));
+    const page = await context.newPage();
+    page.on("pageerror", (e) => pageErrors.push(`${link.split("/join/")[0]}: ${e.message}`));
+    await page.goto(link);
+    return { context, page };
+}
 
-    const dj = await open("/dj?track=1");
-    const j2 = await open("/judge?judge=2");
-    const j3 = await open("/judge?judge=3");
-    const sb = await open("/scoreboard?track=1");
+async function setup(browser: Browser, request: APIRequestContext) {
+    pageErrors.length = 0;
+    const links = {
+        dj: await issue(request, "dj1"),
+        j2: await issue(request, "judge2"),
+        j3: await issue(request, "judge3"),
+        sb: await issue(request, "sb1"),
+    };
+    const dj = await openLink(browser, links.dj.link);
+    const j2 = await openLink(browser, links.j2.link);
+    const j3 = await openLink(browser, links.j3.link);
+    const sb = await openLink(browser, links.sb.link);
+    // the link landed each device on its own page
+    expect(dj.page.url()).toContain("/dj");
+    expect(j2.page.url()).toContain("/judge");
+    expect(sb.page.url()).toContain("/scoreboard");
+    await new Promise((r) => setTimeout(r, 1000)); // let the pages connect
+    return { links, dj, j2, j3, sb, all: [dj, j2, j3, sb] };
+}
 
+async function startSession(request: APIRequestContext) {
+    const res = await request.post("/sessions/1/start", { headers: ADMIN });
+    expect(res.status()).toBe(200);
+}
+
+test("real pages: full session through the UI", async ({ browser, request }) => {
+    const { j2, j3, sb, all } = await setup(browser, request);
     try {
-        // Give the pages a moment to register + connect before starting.
-        await new Promise((r) => setTimeout(r, 1000));
-        const start = await request.post("/sessions/1/start");
-        expect(start.status()).toBe(200);
+        await startSession(request);
 
-        // Judges get their sliders (rubric criterion "Technique") and a disabled submit.
         for (const j of [j2, j3]) {
             await expect(j.page.locator("#sliders label")).toHaveText("Technique");
-        }
-
-        // DJ announcement plays, then the music; on completion judges are enabled.
-        for (const j of [j2, j3]) {
             await expect(j.page.locator("#submit")).toBeEnabled({ timeout: 20_000 });
         }
 
@@ -72,84 +111,106 @@ test("real pages: full session through the UI", async ({ browser, request }) => 
             await expect(j.page.locator("#submit")).toBeDisabled();
         }
 
-        // Scoreboard: one row (Technique), two judge columns.
-        const cells = sb.page.locator("#scoreboard tbody td");
-        await expect(cells).toHaveText(["8", "6"]);
-
-        // No uncaught errors on any page (catches browser-only bugs).
+        await expect(sb.page.locator("#scoreboard tbody td")).toHaveText(["8", "6"]);
         expect(pageErrors).toEqual([]);
     } finally {
-        await Promise.all([dj, j2, j3, sb].map((c) => c.context.close()));
+        await Promise.all(all.map((c) => c.context.close()));
     }
 });
 
 test("real pages: a judge whose connection drops mid-scoring recovers and can still submit", async ({ browser, request }) => {
-    const wav = silentWav();
-    const pageErrors: string[] = [];
-    async function open(url: string) {
-        const context = await browser.newContext();
-        // Keep a handle on every EventSource so the test can kill the live one.
-        await context.addInitScript(() => {
-            const Native = window.EventSource;
-            (window as any).__eventSources = [];
-            (window as any).EventSource = class extends Native {
-                constructor(url: string | URL, init?: EventSourceInit) {
-                    super(url, init);
-                    (window as any).__eventSources.push(this);
-                }
-            };
-        });
-        await context.route(/-(announce|music)$/, (r) =>
-            r.fulfill({ status: 200, contentType: "audio/wav", body: wav }));
-        const page = await context.newPage();
-        page.on("pageerror", (e) => pageErrors.push(`${url}: ${e.message}`));
-        await page.goto(url);
-        return { context, page };
-    }
-
-    const dj = await open("/dj?track=1");
-    const j2 = await open("/judge?judge=2");
-    const j3 = await open("/judge?judge=3");
-    const sb = await open("/scoreboard?track=1");
-
+    const { j2, j3, sb, all } = await setup(browser, request);
     try {
-        await new Promise((r) => setTimeout(r, 1000));
-        expect((await request.post("/sessions/1/start")).status()).toBe(200);
-
+        await startSession(request);
         for (const j of [j2, j3]) {
             await expect(j.page.locator("#submit")).toBeEnabled({ timeout: 20_000 });
         }
 
-        // Judge 2 starts scoring, then loses the network.
         await j2.page.locator("#sliders input").evaluate((el) => {
             (el as HTMLInputElement).value = "9";
             el.dispatchEvent(new Event("input", { bubbles: true }));
         });
-        // The connection dies the way a browser reports it when it gives up:
-        // closed + error event.
+        // The connection dies the way a browser reports it when it gives up.
         await j2.page.evaluate(() => {
             const es = (window as any).__eventSources.at(-1) as EventSource;
             es.close();
             es.dispatchEvent(new Event("error"));
         });
         await expect(j2.page.locator("#connection")).toContainText("reconnecting");
-
-        // The page reopens by itself (fresh token) and the server replays state.
         await expect(j2.page.locator("#connection")).toHaveText("", { timeout: 15_000 });
         expect(await j2.page.evaluate(() => (window as any).__eventSources.length)).toBe(2);
 
-        // The judge's in-progress slider survived the replay, and submitting works.
+        // In-progress slider survived the replay; submitting works.
         await expect(j2.page.locator("#sliders input")).toHaveValue("9");
         await expect(j2.page.locator("#submit")).toBeEnabled();
         await j2.page.locator("#submit").click();
         await expect(j2.page.locator("#status")).toHaveText("Scores submitted");
-
         await j3.page.locator("#submit").click();
         await expect(j3.page.locator("#status")).toHaveText("Scores submitted");
 
         await expect(sb.page.locator("#scoreboard tbody td")).toHaveText(["9", "5"]);
         expect(pageErrors).toEqual([]);
     } finally {
-        await Promise.all([dj, j2, j3, sb].map((c) => c.context.close()));
+        await Promise.all(all.map((c) => c.context.close()));
+    }
+});
+
+test("real pages: a revoked judge is locked out at once and told why", async ({ browser, request }) => {
+    const { links, j2, j3, all } = await setup(browser, request);
+    try {
+        await startSession(request);
+        for (const j of [j2, j3]) {
+            await expect(j.page.locator("#submit")).toBeEnabled({ timeout: 20_000 });
+        }
+
+        // Admin revokes judge 2's link while they are mid-scoring.
+        const del = await request.delete(`/admin/credentials/${links.j2.id}`, { headers: ADMIN });
+        expect(del.status()).toBe(200);
+
+        // Their next submit is refused...
+        await j2.page.locator("#submit").click();
+        await expect(j2.page.locator("#status")).toContainText("Access denied");
+
+        // ...and if their connection drops they do not keep retrying forever.
+        await j2.page.evaluate(() => {
+            const es = (window as any).__eventSources.at(-1) as EventSource;
+            es.close();
+            es.dispatchEvent(new Event("error"));
+        });
+        await expect(j2.page.locator("#connection")).toContainText("Access revoked", { timeout: 15_000 });
+
+        // The old link no longer opens.
+        const res = await request.get(links.j2.link, { maxRedirects: 0 });
+        expect(res.status()).toBe(401);
+
+        // Other judges are unaffected.
+        await j3.page.locator("#submit").click();
+        await expect(j3.page.locator("#status")).toHaveText("Scores submitted");
+    } finally {
+        await Promise.all(all.map((c) => c.context.close()));
+    }
+});
+
+test("real pages: a page opened without a link explains what to do", async ({ browser }) => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    try {
+        for (const path of ["/dj", "/judge", "/scoreboard"]) {
+            await page.goto(path);
+            await expect(page.locator("#status")).toContainText("valid link");
+        }
+    } finally {
+        await context.close();
+    }
+});
+
+test("real pages: a link for one role cannot be used on another role's page", async ({ browser, request }) => {
+    const judge = await issue(request, "judge2");
+    const { context, page } = await openLink(browser, judge.link);
+    try {
+        await page.goto("/dj"); // same cookie, wrong page
+        await expect(page.locator("#status")).toContainText("not a dj page");
+    } finally {
+        await context.close();
     }
 });

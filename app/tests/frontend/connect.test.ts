@@ -1,6 +1,5 @@
 // deno-lint-ignore-file no-explicit-any
 import { assertEquals } from "@std/assert";
-import { FakeTime } from "@std/testing/time";
 import { postResponse } from "../../frontend-src/connect.ts";
 import { escapeHtml } from "../../frontend-src/html.ts";
 import { perfTag } from "../../src/contract.ts";
@@ -46,30 +45,34 @@ Deno.test("postResponse: 4xx is final (404 = too late), not retried", async () =
   }
 });
 
-Deno.test("postResponse: retries network errors then succeeds", async () => {
-  const time = new FakeTime();
+const FAST = [1, 1, 1]; // real timers, tiny delays
+
+Deno.test("postResponse: retries network errors and 5xx, then succeeds", async () => {
   const f = stubFetch([new TypeError("net"), 503, 200]);
   try {
-    const p = postResponse(body);
-    await time.tickAsync(5000);
-    assertEquals(await p, { ok: true, status: 200 });
+    assertEquals(await postResponse(body, FAST), { ok: true, status: 200 });
     assertEquals(f.calls(), 3);
   } finally {
     f.restore();
-    time.restore();
   }
 });
 
-Deno.test("postResponse: gives up after retries with status 0 on network failure", async () => {
-  const time = new FakeTime();
+Deno.test("postResponse: gives up after the retries (status 0 on network failure)", async () => {
   const f = stubFetch([new TypeError("net")]);
   try {
-    const p = postResponse(body);
-    await time.tickAsync(10000);
-    assertEquals(await p, { ok: false, status: 0 });
+    assertEquals(await postResponse(body, FAST), { ok: false, status: 0 });
     assertEquals(f.calls(), 4); // 1 try + 3 retries
   } finally {
     f.restore();
-    time.restore();
+  }
+});
+
+Deno.test("postResponse: persistent 5xx is returned after the retries", async () => {
+  const f = stubFetch([500]);
+  try {
+    assertEquals(await postResponse(body, FAST), { ok: false, status: 500 });
+    assertEquals(f.calls(), 4);
+  } finally {
+    f.restore();
   }
 });

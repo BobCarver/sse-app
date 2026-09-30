@@ -14,6 +14,9 @@ import {
 
 const timeOut = 30000;
 
+const isJudge = (clientId: string) => clientId.startsWith("judge");
+const isScoreboard = (clientId: string) => clientId.startsWith("sb");
+
 // saveScore is retried before giving up (delays in ms between attempts).
 const SAVE_RETRY_DELAYS = [100, 300];
 
@@ -444,13 +447,17 @@ export class Session {
   /**
    * Broadcast message to all connected clients
    */
-  broadcast(message: ServerToClientMessage): void {
+  broadcast(
+    message: ServerToClientMessage,
+    only?: (clientId: string) => boolean,
+  ): void {
     const { event, ...payload } = message;
     const data = JSON.stringify(payload);
 
     console.log("broadcast ->", JSON.stringify(message));
 
     for (const [clientId, client] of this.clients.entries()) {
+      if (only && !only(clientId)) continue;
       if (client === undefined) {
         // Client is registered but disconnected, skip
         continue;
@@ -527,11 +534,12 @@ export class Session {
     this.currentPhase = "scoring";
 
     // Enable scoring for all judges
+    // Only judges score.
     this.broadcast({
       event: "enable_scoring",
       competition_id: competition.id,
       position: this.currentPosition,
-    });
+    }, isJudge);
 
     // Wait for all judges to submit scores (with timeout)
     const scorePromises = competition.rubric.judges.map(async ({ id }) => {
@@ -557,10 +565,12 @@ export class Session {
 
         // Remember for scoreboards that connect late, then broadcast
         this.currentScores.push(submission);
+        // Scores go to scoreboards only: judges must not see each other's
+        // scores while judging.
         this.broadcast({
           event: "score_update",
           ...submission,
-        });
+        }, isScoreboard);
 
         return { success: true };
       } catch (err) {

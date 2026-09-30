@@ -1,7 +1,8 @@
-// Contract test: drives the real Hono app (/register, /response) against a real
+// Contract test: drives the real Hono app (/response, with issued credentials) against a real
 // Session, using the same tag builders and body shapes the browser clients use.
 import { assertEquals } from "@std/assert";
 import { app } from "../../src/main.ts";
+import { secretFor } from "../auth-utils.ts";
 import { Session } from "../../src/session.ts";
 import { sessions } from "../../src/sessionManager.ts";
 import { clearAllResolvers } from "../../src/resolveTag.ts";
@@ -20,10 +21,7 @@ const competition: Competition = {
   },
 };
 
-async function token(sub: string): Promise<string> {
-  const res = await app.request(`/register?sub=${sub}`);
-  return (await res.json()).token;
-}
+const token = secretFor;
 
 async function post(tok: string, body: unknown, raw = false) {
   return await app.request("/response", {

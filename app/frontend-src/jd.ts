@@ -140,6 +140,8 @@ export class JudgeClient extends sseClient {
     }).then(({ ok, status }) => {
       if (ok) {
         this.setStatus("Scores submitted");
+      } else if (status === 401 || status === 403) {
+        this.setStatus("Access denied - ask an administrator for a new link");
       } else if (status === 404) {
         // Scoring window closed (timed out) or already recorded.
         this.setStatus("Too late - scoring for this competitor has closed");

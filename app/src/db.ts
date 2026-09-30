@@ -130,3 +130,53 @@ export async function getSessionTrackId(
     SELECT track_id FROM sessions WHERE id = ${sessionId}`;
   return rows[0]?.track_id;
 }
+
+// --- client credentials (admin-issued links) --------------------------------
+
+export type CredentialRow = {
+  id: number;
+  clientId: string;
+  secretHash: string;
+  label: string | null;
+  createdAt: Date;
+  revokedAt: Date | null;
+};
+
+export const credentialStore = sql
+  ? {
+    async insert(
+      c: { clientId: string; secretHash: string; label?: string },
+    ): Promise<{ id: number; createdAt: Date }> {
+      const [row] = await sql<{ id: number; created_at: Date }[]>`
+        INSERT INTO client_credentials (client_id, secret_hash, label)
+        VALUES (${c.clientId}, ${c.secretHash}, ${c.label ?? null})
+        RETURNING id, created_at`;
+      return { id: row.id, createdAt: row.created_at };
+    },
+    async revoke(id: number): Promise<boolean> {
+      const rows = await sql`
+        UPDATE client_credentials SET revoked_at = NOW()
+        WHERE id = ${id} AND revoked_at IS NULL RETURNING id`;
+      return rows.length > 0;
+    },
+    async loadAll(): Promise<CredentialRow[]> {
+      type Raw = {
+        id: number;
+        client_id: string;
+        secret_hash: string;
+        label: string | null;
+        created_at: Date;
+        revoked_at: Date | null;
+      };
+      const rows = await sql<Raw[]>`SELECT * FROM client_credentials ORDER BY id`;
+      return rows.map((r: Raw) => ({
+        id: r.id,
+        clientId: r.client_id,
+        secretHash: r.secret_hash,
+        label: r.label,
+        createdAt: r.created_at,
+        revokedAt: r.revoked_at,
+      }));
+    },
+  }
+  : undefined;

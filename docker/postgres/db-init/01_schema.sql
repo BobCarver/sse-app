@@ -167,6 +167,18 @@ CREATE TABLE IF NOT EXISTS scores (
     UNIQUE (competition_id, judge_id, competitor_id, criteria_id)
 );
 
+-- Client credentials: admin-issued links for DJs, judges and scoreboards.
+-- Only a hash of the secret is stored; revoking a row locks that device out.
+-- client_id is the SSE identity: dj<trackId>, sb<trackId> or judge<judgeId>.
+CREATE TABLE IF NOT EXISTS client_credentials (
+    id SERIAL PRIMARY KEY,
+    client_id TEXT NOT NULL CHECK (client_id ~ '^(dj|judge|sb)[0-9]+$'),
+    secret_hash TEXT NOT NULL UNIQUE,
+    label TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    revoked_at TIMESTAMP
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_competition_competitors_order
     ON competition_competitors(competition_id, order_number);

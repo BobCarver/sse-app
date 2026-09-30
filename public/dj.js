@@ -1,4 +1,10 @@
 // app/frontend-src/connect.ts
+var AuthError = class extends Error {
+  constructor(message = "unauthorized") {
+    super(message);
+    this.name = "AuthError";
+  }
+};
 var ResilientEventSource = class {
   listeners = /* @__PURE__ */ new Map();
   es = null;
@@ -89,27 +95,59 @@ var ResilientEventSource = class {
     const delay = backoffMs[Math.min(this.attempts++, backoffMs.length - 1)];
     this.retry = setTimeout(async () => {
       try {
-        await this.opts.register();
-      } catch (_err) {
+        await this.opts.ensureSession();
+      } catch (err) {
+        if (err instanceof AuthError) {
+          this.stopped = true;
+          this.opts.onState?.("unauthorized");
+          return;
+        }
         return this.reopenLater();
       }
       this.open();
     }, delay);
   }
 };
-var currentSub;
-async function refreshToken() {
-  if (!currentSub) throw new Error("not registered");
-  const res = await fetch(`/register?sub=${encodeURIComponent(currentSub)}`);
-  if (!res.ok) throw new Error(`register failed: ${res.status}`);
+async function whoami() {
+  const res = await fetch("/session", {
+    cache: "no-store"
+  });
+  if (res.status === 401) throw new AuthError();
+  if (!res.ok) throw new Error(`session check failed: ${res.status}`);
+  return (await res.json()).client_id;
 }
-async function registerAndConnect(sub, onState) {
-  currentSub = sub;
-  await refreshToken();
-  return new ResilientEventSource({
-    register: refreshToken,
+async function connect(kind, onState) {
+  const clientId = await whoami();
+  const m = /^(dj|judge|sb)(\d+)$/.exec(clientId);
+  if (!m || m[1] !== kind) {
+    throw new Error(`This link is for "${clientId}", not a ${kind} page`);
+  }
+  const sse = new ResilientEventSource({
+    ensureSession: async () => {
+      await whoami();
+    },
     onState
   });
+  return {
+    clientId,
+    num: Number(m[2]),
+    sse
+  };
+}
+async function bootstrap(kind, build) {
+  try {
+    const { num, sse } = await connect(kind, showConnection);
+    const client = build(num, sse);
+    globalThis.addEventListener("pagehide", () => {
+      client?.destroy?.();
+      sse.close();
+    });
+  } catch (err) {
+    const message = err instanceof AuthError ? "This page needs a valid link. Ask an administrator for a new one." : err.message;
+    const el = document.getElementById("status") ?? document.getElementById("connection");
+    if (el) el.textContent = message;
+    console.error(err);
+  }
 }
 function showConnection(state) {
   const el = document.getElementById("connection");
@@ -118,7 +156,8 @@ function showConnection(state) {
     connecting: "Connecting...",
     open: "",
     reconnecting: "Connection lost - reconnecting...",
-    closed: "Disconnected"
+    closed: "Disconnected",
+    unauthorized: "Access revoked - ask an administrator for a new link"
   }[state];
 }
 var RETRY_DELAYS_MS = [
@@ -126,9 +165,8 @@ var RETRY_DELAYS_MS = [
   1e3,
   2e3
 ];
-async function postResponse(body) {
+async function postResponse(body, retryDelaysMs = RETRY_DELAYS_MS) {
   const base = globalThis.location?.origin ?? "http://localhost";
-  let refreshed = false;
   for (let attempt = 0; ; attempt++) {
     try {
       const res = await fetch(`${base}/response`, {
@@ -138,36 +176,20 @@ async function postResponse(body) {
         },
         body: JSON.stringify(body)
       });
-      if (res.status === 401 && !refreshed && currentSub) {
-        refreshed = true;
-        await refreshToken();
-        attempt--;
-        continue;
-      }
-      if (res.status < 500 || attempt >= RETRY_DELAYS_MS.length) {
+      if (res.status < 500 || attempt >= retryDelaysMs.length) {
         return {
           ok: res.ok,
           status: res.status
         };
       }
     } catch (_err) {
-      if (attempt >= RETRY_DELAYS_MS.length) return {
+      if (attempt >= retryDelaysMs.length) return {
         ok: false,
         status: 0
       };
     }
-    await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+    await new Promise((r) => setTimeout(r, retryDelaysMs[attempt]));
   }
-}
-function requireParam(name) {
-  const v = new URLSearchParams(globalThis.location?.search).get(name);
-  if (!v || !/^\d+$/.test(v)) {
-    const msg = `Missing or invalid ?${name}= in URL`;
-    const el = document.getElementById("status");
-    if (el) el.textContent = msg;
-    throw new Error(msg);
-  }
-  return v;
 }
 
 // deno:https://jsr.io/@std/assert/1.0.18/assertion_error.ts
@@ -246,8 +268,8 @@ var sseClient = class {
   constructor(deps = {}) {
     this.doc = deps.document || document;
     this.tbody = this.doc.querySelector("#compTable tbody");
-    const sse2 = this.sse = deps.sse || new EventSource("/events");
-    sse2.addEventListener("competition_start", ({ data }) => {
+    const sse = this.sse = deps.sse || new EventSource("/events");
+    sse.addEventListener("competition_start", ({ data }) => {
       const { competition } = JSON.parse(data);
       this.competition = competition;
       this.position = 0;
@@ -255,7 +277,7 @@ var sseClient = class {
       this.buildCompetitorTable();
       this.setText("currentCompetition", competition.name);
     });
-    sse2.addEventListener("performance_start", ({ data }) => {
+    sse.addEventListener("performance_start", ({ data }) => {
       const { position } = JSON.parse(data);
       assert(typeof position === "number");
       this.position = position;
@@ -263,11 +285,11 @@ var sseClient = class {
       this.updateTimes();
       this.tbody?.style.setProperty("--hide-count", String(position));
     });
-    sse2.addEventListener("superseded", () => {
+    sse.addEventListener("superseded", () => {
       this.setStatus("This page was opened in another window and is now inactive");
-      sse2.close();
+      sse.close();
     });
-    sse2.addEventListener("client_status", ({ data }) => {
+    sse.addEventListener("client_status", ({ data }) => {
       JSON.parse(data);
     });
   }
@@ -385,7 +407,9 @@ var DjClient = class extends sseClient {
       tag: perfTag(this.competition.id, position),
       payload: completed
     });
-    if (!ok && status !== 404) {
+    if (status === 401 || status === 403) {
+      this.setStatus("Access denied - ask an administrator for a new link");
+    } else if (!ok && status !== 404) {
       this.setStatus("Could not reach server - performance result not sent");
     }
   }
@@ -411,11 +435,6 @@ var DjClient = class extends sseClient {
 };
 
 // app/frontend-src/main-dj.ts
-var sse = await registerAndConnect(`dj${requireParam("track")}`, showConnection);
-var client = new DjClient({
+await bootstrap("dj", (_num, sse) => new DjClient({
   sse
-});
-globalThis.addEventListener("pagehide", () => {
-  client.destroy();
-  sse.close();
-});
+}));

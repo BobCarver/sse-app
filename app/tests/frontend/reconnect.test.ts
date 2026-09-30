@@ -1,13 +1,14 @@
 // deno-lint-ignore-file no-explicit-any
 // Page classes must tolerate the server replaying state on (re)connect.
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { DOMParser } from "b-fuze/deno-dom";
 import { DjClient } from "../../frontend-src/dj.ts";
 import { JudgeClient } from "../../frontend-src/jd.ts";
 import { ScoreboardClient } from "../../frontend-src/sb.ts";
 import {
+  AuthError,
+  connect,
   postResponse,
-  registerAndConnect,
 } from "../../frontend-src/connect.ts";
 import { MockEventSource } from "./sse-mocks.ts";
 import { applyStyleShim, applyTableShims } from "./test-utils.ts";
@@ -230,35 +231,86 @@ Deno.test("scoreboard: a score arriving before any competition state does not th
   assertEquals(cells(), ["6"]);
 });
 
-// ---- token expiry -----------------------------------------------------------
+// ---- identity & revocation ---------------------------------------------------
 
-Deno.test("postResponse: 401 refreshes the cookie once and retries", async () => {
+function stubFetch(handler: (url: string, init?: any) => Response) {
   const g = globalThis as any;
-  const origES = g.EventSource, origFetch = g.fetch;
+  const orig = g.fetch, origES = g.EventSource;
+  const calls: string[] = [];
+  g.fetch = (input: any, init?: any) => {
+    const url = String(input);
+    calls.push(new URL(url, "http://x").pathname);
+    return Promise.resolve(handler(url, init));
+  };
   g.EventSource = class {
     addEventListener() {}
     close() {}
   };
-  const calls: string[] = [];
-  let responseCalls = 0;
-  g.fetch = (input: any) => {
-    const url = String(input);
-    calls.push(new URL(url, "http://x").pathname);
-    if (url.includes("/response")) {
-      return Promise.resolve(
-        new Response(null, { status: ++responseCalls === 1 ? 401 : 200 }),
-      );
-    }
-    return Promise.resolve(new Response("{}", { status: 200 }));
+  return {
+    calls,
+    restore() {
+      g.fetch = orig;
+      g.EventSource = origES;
+    },
   };
+}
+
+Deno.test("connect: identity comes from the server, and must match the page kind", async () => {
+  const f = stubFetch(() =>
+    new Response(JSON.stringify({ client_id: "judge7" }), { status: 200 })
+  );
   try {
-    const sse = await registerAndConnect("judge2");
-    const r = await postResponse({ tag: "perf:1:0", payload: true });
-    assertEquals(r, { ok: true, status: 200 });
-    assertEquals(calls, ["/register", "/response", "/register", "/response"]);
+    const { clientId, num, sse } = await connect("judge");
+    assertEquals([clientId, num], ["judge7", 7]);
     sse.close();
+    await assertRejects(() => connect("dj"), Error, "not a dj page");
   } finally {
-    g.EventSource = origES;
-    g.fetch = origFetch;
+    f.restore();
+  }
+});
+
+Deno.test("connect: no/invalid credential is an AuthError", async () => {
+  const f = stubFetch(() => new Response("{}", { status: 401 }));
+  try {
+    await assertRejects(() => connect("judge"), AuthError);
+  } finally {
+    f.restore();
+  }
+});
+
+Deno.test("postResponse: 401 (revoked) is reported, not retried", async () => {
+  const f = stubFetch(() => new Response(null, { status: 401 }));
+  try {
+    assertEquals(await postResponse({ tag: "perf:1:0", payload: true }), {
+      ok: false,
+      status: 401,
+    });
+    assertEquals(f.calls, ["/response"]);
+  } finally {
+    f.restore();
+  }
+});
+
+Deno.test("judge: revoked or forbidden submit says access denied and stays disabled", async () => {
+  for (const status of [401, 403]) {
+    const { doc, sse, client, submit } = judge();
+    sse.emit("competition_start", { competition: competition() });
+    sse.emit("performance_start", { competition_id: 10, position: 0 });
+    sse.emit("enable_scoring", { competition_id: 10, position: 0 });
+    const f = stubFetch(() => new Response(null, { status }));
+    try {
+      submit().onclick();
+      await tick();
+      await tick();
+      assertEquals(
+        doc.getElementById("status")!.textContent.startsWith("Access denied"),
+        true,
+        String(status),
+      );
+      assertEquals(submit().disabled, true);
+    } finally {
+      f.restore();
+      client.destroy();
+    }
   }
 });

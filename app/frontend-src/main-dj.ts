@@ -1,12 +1,4 @@
-import { registerAndConnect, requireParam, showConnection } from "./connect.ts";
+import { bootstrap } from "./connect.ts";
 import { DjClient } from "./dj.ts";
 
-const sse = await registerAndConnect(
-  `dj${requireParam("track")}`,
-  showConnection,
-);
-const client = new DjClient({ sse });
-globalThis.addEventListener("pagehide", () => {
-  client.destroy();
-  sse.close();
-});
+await bootstrap("dj", (_num, sse) => new DjClient({ sse }));

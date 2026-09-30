@@ -150,7 +150,9 @@ export class DjClient extends sseClient {
       payload: completed,
     });
     // 404 = the server already moved on; nothing more to do.
-    if (!ok && status !== 404) {
+    if (status === 401 || status === 403) {
+      this.setStatus("Access denied - ask an administrator for a new link");
+    } else if (!ok && status !== 404) {
       this.setStatus("Could not reach server - performance result not sent");
     }
   }

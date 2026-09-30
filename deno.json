@@ -19,6 +19,7 @@
     "test:all": "deno test -A app/tests",
 
     "build:artifacts": "deno run --allow-read --allow-write --allow-run scripts/build_artifacts.ts",
+    "links": "deno run --allow-net --allow-env scripts/issue-links.ts",
     "build": "deno task build:artifacts"
   },
   "imports": {
