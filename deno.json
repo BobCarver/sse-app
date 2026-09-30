@@ -14,6 +14,7 @@
     "init-db:all": "deno task docker:postgres:compose:up && deno task docker:postgres:db-init",
     "test:unit": "deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost app/tests/unit",
     "test:frontend": "deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost app/tests/frontend",
+    "test:integration": "deno test --allow-read --allow-env --allow-net app/tests/integration",
     "test:contract": "deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost app/tests/contract",
     "test:all": "deno test -A app/tests",
 
