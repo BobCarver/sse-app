@@ -120,7 +120,9 @@ if (!Deno.env.get("ADMIN_TOKEN")) {
 /** Admin bearer token. Fails closed when ADMIN_TOKEN is unset. */
 async function requireAdmin(c: Ctx, next: Next) {
   const expected = Deno.env.get("ADMIN_TOKEN");
-  if (!expected) return c.json({ error: "admin access is not configured" }, 503);
+  if (!expected) {
+    return c.json({ error: "admin access is not configured" }, 503);
+  }
   const given = /^Bearer (.+)$/.exec(c.req.header("authorization") ?? "")?.[1];
   if (!given || !(await safeEqual(given, expected))) {
     return c.json({ error: "admin credentials required" }, 401);
@@ -146,9 +148,16 @@ async function requireClient(c: Ctx, next: Next) {
 app.get("/join/:secret", async (c: Ctx) => {
   const credential = await credentials.authenticate(c.req.param("secret"));
   const page = credential && pageFor(credential.clientId);
-  const noStore = { "cache-control": "no-store", "referrer-policy": "no-referrer" };
+  const noStore = {
+    "cache-control": "no-store",
+    "referrer-policy": "no-referrer",
+  };
   if (!credential || !page) {
-    return c.text("This link is invalid or has been revoked. Ask an administrator for a new one.", 401, noStore);
+    return c.text(
+      "This link is invalid or has been revoked. Ask an administrator for a new one.",
+      401,
+      noStore,
+    );
   }
   setCookie(c, COOKIE, c.req.param("secret"), {
     path: "/",
@@ -181,7 +190,10 @@ app.post("/admin/credentials", requireAdmin, async (c: Ctx) => {
     | null;
   const clientId = body?.client_id;
   if (typeof clientId !== "string" || !parseClientId(clientId)) {
-    return c.json({ error: "client_id must look like dj1, judge2 or sb1" }, 400);
+    return c.json(
+      { error: "client_id must look like dj1, judge2 or sb1" },
+      400,
+    );
   }
   const label = typeof body?.label === "string" ? body.label : undefined;
   try {
@@ -199,14 +211,20 @@ app.post("/admin/credentials", requireAdmin, async (c: Ctx) => {
   }
 });
 
-app.get("/admin/credentials", requireAdmin, (c: Ctx) =>
-  c.json(credentials.list().map((x) => ({
-    id: x.id,
-    client_id: x.clientId,
-    label: x.label,
-    created_at: x.createdAt,
-    revoked_at: x.revokedAt,
-  }))));
+app.get(
+  "/admin/credentials",
+  requireAdmin,
+  (c: Ctx) =>
+    c.json(
+      credentials.list().map((x) => ({
+        id: x.id,
+        client_id: x.clientId,
+        label: x.label,
+        created_at: x.createdAt,
+        revoked_at: x.revokedAt,
+      })),
+    ),
+);
 
 app.delete("/admin/credentials/:id", requireAdmin, async (c: Ctx) => {
   const id = Number(c.req.param("id"));
@@ -219,13 +237,18 @@ app.delete("/admin/credentials/:id", requireAdmin, async (c: Ctx) => {
 
 // --- admin: watch and control running sessions ------------------------------
 
-app.get("/admin/sessions", requireAdmin, (c: Ctx) =>
-  c.json(SessionManager.getAllSessions().map((s) => s.status())));
+app.get(
+  "/admin/sessions",
+  requireAdmin,
+  (c: Ctx) => c.json(SessionManager.getAllSessions().map((s) => s.status())),
+);
 
 /** Stop waiting for whatever the session is stuck on (see Session.skip). */
 app.post("/admin/sessions/:id/skip", requireAdmin, (c: Ctx) => {
   const session = SessionManager.getSession(Number(c.req.param("id")));
-  if (!session?.isRunning()) return c.json({ error: "no running session" }, 404);
+  if (!session?.isRunning()) {
+    return c.json({ error: "no running session" }, 404);
+  }
   const skipped = session.skip();
   if (!skipped) return c.json({ error: "nothing to skip right now" }, 409);
   return c.json({ success: true, skipped });
@@ -239,7 +262,10 @@ app.post("/admin/sessions/:id/abort", requireAdmin, (c: Ctx) => {
   if (!session.isRunning()) {
     // Left over from an earlier failure: just forget it.
     SessionManager.deleteSession(id);
-    return c.json({ success: true, message: "removed a session that was not running" });
+    return c.json({
+      success: true,
+      message: "removed a session that was not running",
+    });
   }
   session.abort("aborted by administrator");
   return c.json({ success: true });

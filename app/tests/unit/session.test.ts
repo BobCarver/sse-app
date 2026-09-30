@@ -5,7 +5,11 @@ import {
   waitForTag,
 } from "../../src/resolveTag.ts";
 import { Session } from "../../src/session.ts";
-import type { Competition, ScoreSubmission, SSEClient } from "../../src/types.ts";
+import type {
+  Competition,
+  ScoreSubmission,
+  SSEClient,
+} from "../../src/types.ts";
 import {
   connectAsUnassigned,
   createDependencies,
@@ -298,8 +302,7 @@ Deno.test("Session - saveScore errors are handled and session continues", async 
 
   // Trigger normal perf and score
   schedulePerf(12, 0, 20);
-  scheduleScore(12, 300, 2, [{ criteria_id: 1, score: 7.0 }],
-   40);
+  scheduleScore(12, 300, 2, [{ criteria_id: 1, score: 7.0 }], 40);
 
   await sessionPromise;
 
@@ -327,7 +330,9 @@ Deno.test("Session - handleClientReconnect sends recovery messages", async () =>
   await delay(10);
   assertEquals(
     // deno-lint-ignore no-explicit-any
-    (dj as any).__messages.some((m: string) => m.includes("performance_recovery")),
+    (dj as any).__messages.some((m: string) =>
+      m.includes("performance_recovery")
+    ),
     true,
   );
 
@@ -342,7 +347,7 @@ Deno.test("Session - handleClientReconnect sends recovery messages", async () =>
       criteria: [],
       judges: [{ id: 2, name: "Judge A", criteria: [] }],
     },
-  } ;
+  };
   session.currentPosition = 0;
 
   const judge = createMockClient("judge2") as unknown as SSEClient;
@@ -361,7 +366,9 @@ Deno.test("Session - handleClientReconnect sends recovery messages", async () =>
   await delay(10);
   assertEquals(
     // deno-lint-ignore no-explicit-any
-    (judge2 as any).__messages.some((m: string) => m.includes("enable_scoring")),
+    (judge2 as any).__messages.some((m: string) =>
+      m.includes("enable_scoring")
+    ),
     false,
   );
 });
@@ -486,7 +493,7 @@ Deno.test("schedulePerf resolves perf tag with boolean payload", async () => {
 
 Deno.test("scheduleScore resolves score tag with provided payload", async () => {
   clearAllResolvers();
-  const payload =  [{ criteria_id: 1, score: 9 }];
+  const payload = [{ criteria_id: 1, score: 9 }];
 
   const p = waitForTag("score:21:101:3");
   scheduleScore(21, 101, 3, payload, 10);
@@ -500,13 +507,16 @@ Deno.test("createMockClient captures messages from broadcast", () => {
   const client = createMockClient("judge8") as unknown as SSEClient;
   session.clients.set("judge8", client);
 
+  // deno-lint-ignore no-explicit-any
   session.broadcast({ event: "test_event", foo: 1 } as any);
 
   // deno-lint-ignore no-explicit-any
   assertEquals((client as any).__messages.length > 0, true);
   assertEquals(
     // deno-lint-ignore no-explicit-any
-    (client as any).__messages.some((m: string) => m.includes("event: test_event")),
+    (client as any).__messages.some((m: string) =>
+      m.includes("event: test_event")
+    ),
     true,
   );
 });
@@ -518,23 +528,18 @@ Deno.test("delay waits at least the specified time", async () => {
   assertEquals(elapsed >= 25, true);
 });
 
-Deno.test.ignore(
-  "Session - connectClient should resolve waiting tag",
-  async () => {
-    clearAllResolvers();
-    const deps = createDependencies();
-    const session = new Session(1, deps);
+Deno.test("Session - connectClient resolves the tag a waiting session is blocked on", async () => {
+  clearAllResolvers();
+  const deps = createDependencies();
+  const session = new Session(1, deps);
+  const mockClient = createMockClient("judge5");
 
-    const mockClient = createMockClient("judge5");
+  // The session registered a slot for judge5 and is waiting for it to connect.
+  session.clients.set("judge5", undefined);
+  const promise = waitForTag("required:judge5");
 
-    // Pre-register slot
-    session.clients.set("judge5", undefined);
+  delay(10).then(() => session.connectClient(mockClient));
 
-    const promise = waitForTag("required:5");
-
-    delay(10).then(() => session.connectClient(mockClient));
-
-    await promise;
-    assertEquals(session.clients.has("judge5"), true);
-  },
-);
+  await promise; // would hang if connectClient did not resolve the tag
+  assertEquals(session.clients.get("judge5"), mockClient);
+});

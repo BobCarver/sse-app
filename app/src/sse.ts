@@ -60,7 +60,9 @@ function createClient(
           // (a reconnect will register a fresh connection).
           console.error(`Write failed for client ${id}:`, err);
           SessionManager.findSessionForClient(id)?.disconnectClient(id, client);
-          if (unassignedClients.get(id) === client) unassignedClients.delete(id);
+          if (unassignedClients.get(id) === client) {
+            unassignedClients.delete(id);
+          }
         });
       },
     },

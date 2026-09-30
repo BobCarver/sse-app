@@ -1,55 +1,31 @@
 #!/usr/bin/env sh
+# Full local browser-test run with Docker providing Postgres:
+#   up -> load schema + seed -> tools/e2e.sh -> tear down
+#
+#   ./tools/run-e2e.sh              # tear the database down afterwards
+#   TEARDOWN=0 ./tools/run-e2e.sh   # leave it running for debugging
 set -eu
+cd "$(dirname "$0")/.."
+
 TEARDOWN=${TEARDOWN:-1}
-echo "[run-e2e] Bringing up DB..."
-docker compose up -d db
+COMPOSE="docker compose -f docker/docker-compose.yml"
 
-echo "[run-e2e] Running one-shot DB init..."
-docker compose run --rm db-init
+echo "[run-e2e] starting the database"
+$COMPOSE up -d --wait db
+echo "[run-e2e] loading schema and seed"
+$COMPOSE run --rm db-init
 
-echo "[run-e2e] Starting server with test DB env..."
-# ensure any existing server on PORT is stopped
-if lsof -i :8000 -t >/dev/null 2>&1; then
-  echo "Killing existing process on :8000"
-  lsof -i :8000 -t | xargs -r kill || true
-  sleep 1
-fi
+export DATABASE_URL="${DATABASE_URL:-postgres://postgres:test@localhost:5432/test_db}"
 
-DATABASE_URL="postgres://postgres:test@localhost:5432/test_db" \
-JWT_SECRET="test-secret" \
-DEBUG=1 \
-JUDGE_SCORE_TIMEOUT_MS="5000" \
-PORT=8000 nohup deno run --allow-net --allow-env --allow-read app/src/main.ts > /tmp/deno-8000.log 2>&1 &
-
-# Wait for /_health to report OK (timeout 60s)
-HEALTH_URL="http://localhost:8000/_health"
-echo "Waiting for $HEALTH_URL to return OK..."
-END=$((SECONDS+60))
-while [ $SECONDS -lt $END ]; do
-  status=$(curl -s -o /dev/null -w "%{http_code}" $HEALTH_URL || true)
-  if [ "$status" = "200" ]; then
-    echo "Server reported healthy"
-    break
-  fi
-  sleep 1
-done
-
-if [ "$status" != "200" ]; then
-  echo "Server did not become healthy in time (status=$status). See /tmp/deno-8000.log for details"
-  tail -n +1 /tmp/deno-8000.log || true
-  exit 1
-fi
-
-
-echo "[run-e2e] Running e2e tests..."
-cd tests && npm ci && npx playwright install --with-deps && npx playwright test
+set +e
+sh tools/e2e.sh
 RESULT=$?
+set -e
 
-if [ "$TEARDOWN" -eq 1 ]; then
-  echo "[run-e2e] Tearing down DB stack..."
-  docker compose down
+if [ "$TEARDOWN" = "1" ]; then
+  echo "[run-e2e] stopping the database"
+  $COMPOSE down
 else
-  echo "[run-e2e] Leaving DB stack running (TEARDOWN=0)"
+  echo "[run-e2e] leaving the database running (TEARDOWN=0)"
 fi
-
 exit $RESULT

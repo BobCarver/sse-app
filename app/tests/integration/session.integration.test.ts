@@ -11,6 +11,14 @@ import { perfTag, scoreTag } from "../../src/contract.ts";
 import { delay } from "../test-utils.ts";
 import { adminHeaders, cookieFor } from "../auth-utils.ts";
 
+// These tests need a database and are skipped without one. CI sets REQUIRE_DB=1
+// so a missing/misconfigured database fails loudly instead of skipping silently.
+Deno.test("integration: database is configured when required", () => {
+  if (Deno.env.get("REQUIRE_DB") && !sql) {
+    throw new Error("REQUIRE_DB is set but DATABASE_URL is not (no database)");
+  }
+});
+
 const SEED_SQL = new URL("./seeds/session_seed.sql", import.meta.url).pathname;
 
 type SSEEvent = { event: string; data: any };

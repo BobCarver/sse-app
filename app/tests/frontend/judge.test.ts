@@ -11,7 +11,7 @@ import { JudgeClient } from "../../frontend-src/jd.ts";
 // dependency injection in tests. Extend `BaseMockWebSocketClient` in
 // `websocket-mocks.ts` if you need more specialized behavior for other tests.
 import { MockEventSource } from "./sse-mocks.ts";
-import { interceptFetch, stubFetchNoop } from "./fetch-mock.ts";
+import { interceptFetch } from "./fetch-mock.ts";
 import { applyStyleShim } from "./test-utils.ts";
 
 class MockNavigator {
@@ -247,63 +247,45 @@ Deno.test("JudgeClient submits scores with correct data", async () => {
   fetchStub.restore();
 });
 
-Deno.test({
-  name: "JudgeClient clears alarm on submit",
-  ignore: true,
-  fn: async () => {
-    const doc = createTestDOM();
-    const mockSse = new MockEventSource();
-    const ft = new FakeTime();
-    let judge: JudgeClient | undefined;
-    // try {
-
+Deno.test("JudgeClient clears the reminder alarm on submit", async () => {
+  const doc = createTestDOM();
+  const mockSse = new MockEventSource();
+  const ft = new FakeTime();
+  const fetchStub = interceptFetch();
+  let judge: JudgeClient | undefined;
+  try {
     judge = new JudgeClient(101, {
       sse: mockSse as any,
       document: doc,
-      setTimeout: (globalThis as any).setTimeout,
-      clearTimeout: (globalThis as any).clearTimeout,
+      setTimeout: globalThis.setTimeout.bind(globalThis), // FakeTime's clock
+      clearTimeout: globalThis.clearTimeout.bind(globalThis),
     });
-
-    const rubric = {
-      judges: [{ id: 101, name: "Judge 1", criteria: [1] }],
-      criteria: [{ id: 1, name: "Technique" }],
-    };
 
     mockSse.emit("competition_start", {
       competition: {
         id: 1,
-        rubric,
-        competitors: [{ id: 10 }],
+        rubric: {
+          judges: [{ id: 101, name: "Judge 1", criteria: [1] }],
+          criteria: [{ id: 1, name: "Technique" }],
+        },
+        competitors: [{ id: 10, name: "A", duration: 60 }],
       },
     });
+    mockSse.emit("performance_start", { competition_id: 1, position: 0 });
+    mockSse.emit("enable_scoring", { competition_id: 1, position: 0 });
+    assert((judge as any).alert !== undefined, "reminder alarm should be set");
 
-    (judge as any).position = 0;
+    (doc.querySelector("#submit") as any).onclick?.();
+    assert((judge as any).alert === undefined, "alarm should be cleared");
 
-    mockSse.emit("enable_scoring", {});
-    /* Check that alarm timer is set */
-    assert((judge as any).alert !== undefined, "Should have alarm timer");
-
-    // Prevent network and allow submit to complete
-    const noop = stubFetchNoop();
-
-    // Submit scores
-    const submit = doc.querySelector("#submit") as any;
-    /* Click submit to trigger score submission */
-    (submit as any).onclick?.();
-
-    // Wait a tick and check alarm cleared
-    await new Promise((r) => setTimeout(r, 0));
-    assert((judge as any).alert === undefined, "Alarm timer should be cleared");
-
-    noop.restore();
-    // } finally {
-    //   try {
-    //     judge?.destroy();
-    //   } finally {
-    //     ft.restore();
-    //   }
-    // }
-  },
+    // ...and it must not fire later (no red flash after the score is in)
+    await ft.tickAsync(60_000);
+    assertEquals((doc.body as any).style.backgroundColor ?? "", "");
+  } finally {
+    judge?.destroy();
+    fetchStub.restore();
+    ft.restore();
+  }
 });
 
 Deno.test("JudgeClient alarm triggers vibration and visual feedback", () => {

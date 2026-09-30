@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "playwright test",
-    "test:ci": "npx playwright install --with-deps && playwright test --reporter=dot"
+    "test:ci": "playwright test"
   },
   "devDependencies": {
     "@playwright/test": "^1.40.0",

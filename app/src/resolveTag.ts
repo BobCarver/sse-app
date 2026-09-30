@@ -164,11 +164,3 @@ export function clearAllResolvers(): void {
     console.warn(`Cleared ${count} pending resolvers`);
   }
 }
-
-// Debug helper: expose pending tags to devtools consoles when attached
-// (temporary - intended for developer debugging)
-// deno-lint-ignore no-explicit-any
-if ((globalThis as any).__getPendingTags === undefined) {
-  // deno-lint-ignore no-explicit-any
-  (globalThis as any).__getPendingTags = () => Array.from(resolvers.keys());
-}

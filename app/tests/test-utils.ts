@@ -13,7 +13,7 @@ import type {
 } from "../src/types.ts";
 
 export function connectAsUnassigned(
-// deno-lint-ignore no-explicit-any
+  // deno-lint-ignore no-explicit-any
   deps: any,
   session: Session,
   client: SSEClient,

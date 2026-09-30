@@ -107,7 +107,11 @@ Deno.test("resolveTag - clearAllResolvers should clear pending", () => {
 Deno.test("waitForTag rejects a second concurrent waiter instead of replacing the first", async () => {
   clearAllResolvers();
   const first = waitForTag("required:dup");
-  await assertRejects(() => waitForTag("required:dup"), Error, "Already waiting");
+  await assertRejects(
+    () => waitForTag("required:dup"),
+    Error,
+    "Already waiting",
+  );
   resolveTag("required:dup", undefined);
   await first;
 });
@@ -131,7 +135,11 @@ Deno.test("waitForTag: an already-aborted signal rejects immediately and registe
   clearAllResolvers();
   const ctl = new AbortController();
   ctl.abort(new Error("already"));
-  await assertRejects(() => waitForTag("required:pre", 0, ctl.signal), Error, "already");
+  await assertRejects(
+    () => waitForTag("required:pre", 0, ctl.signal),
+    Error,
+    "already",
+  );
   assertEquals(hasWaiter("required:pre"), false);
 });
 

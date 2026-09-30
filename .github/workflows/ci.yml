@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The committed browser bundles (public/*.js) are produced by `deno bundle`,
+  # whose output depends on the Deno version. `deno task static` checks they are
+  # current, so keep this in step with the version used to build them locally.
+  DENO_VERSION: "2.8.2"
+
+jobs:
+  static:
+    name: Types, lint, format, bundles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+      - run: deno task static
+
+  tests:
+    name: Unit, frontend, contract, integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:test@localhost:5432/test_db
+      # Fail (instead of silently skipping) if the database is not reachable.
+      REQUIRE_DB: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+      - name: Load the schema (empty tables; the integration tests seed themselves)
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docker/postgres/db-init/01_schema.sql
+      - run: deno task test
+
+  e2e:
+    name: Browser tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:test@localhost:5432/test_db
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: ${{ env.DENO_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: node-tests/package-lock.json
+      - name: Load the schema and seed
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docker/postgres/db-init/01_schema.sql
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f docker/postgres/db-init/02_seed.sql
+      - run: sh tools/e2e.sh
+      - name: Keep the Playwright report when tests fail
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: node-tests/playwright-report
+          if-no-files-found: ignore
+          retention-days: 7

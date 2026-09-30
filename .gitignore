@@ -9,8 +9,9 @@
 
 # Node / Playwright
 node_modules/
-tests/node_modules/
-tests/test-results/
+node-tests/node_modules/
+node-tests/test-results/
+node-tests/playwright-report/
 playwright-report/
 .playwright/
 

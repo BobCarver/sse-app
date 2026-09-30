@@ -43,55 +43,51 @@ Nothing on the server trusts a device until it opens an admin-issued link.
   `X-Forwarded-Proto: https`), and set `PUBLIC_URL` if the server is behind a proxy
   so issued links use the public address.
 
-E2E with Docker Compose 🧪
+## Tests and checks
 
-- Bring up the Postgres service (mapped to localhost:5432):
+Everything CI runs can be run locally with the same commands:
 
-  ```sh
-  deno task docker:postgres:compose:up
-  ```
+| Command | What it does | Needs a database |
+| --- | --- | --- |
+| `deno task static` | type-check, lint, format check, and that the committed bundles in `public/` match their sources | no |
+| `deno task test:unit` | server logic: sessions, waits, credentials, recovery, operator controls | no |
+| `deno task test:frontend` | the page classes against mocked connections | no |
+| `deno task test:contract` | the real HTTP app (auth, `/response`, admin API) | no |
+| `deno task test:integration` | full sessions over real event streams and Postgres | yes (`DATABASE_URL`, schema loaded, tables empty) |
+| `deno task test` | the four suites above, in order | for the last one |
+| `deno task test:e2e` | browser tests (Playwright) driving the real pages | yes (schema **and** seed) |
 
-- Apply the schema and seed (one-shot init). The seed creates deterministic test
-  rows (session=1, competition=10, competitor=100, judges=2/3):
+- Integration tests skip themselves without `DATABASE_URL`. Set `REQUIRE_DB=1`
+  to make a missing database a failure (CI does).
+- The bundles are built with `deno bundle`, whose output depends on the Deno
+  version, so `deno task static` fails if `public/` is stale: run `deno task
+  build` and commit. CI pins the Deno version in `.github/workflows/ci.yml`.
+- Fix formatting with `deno task fmt`.
 
-  ```sh
-  deno task docker:postgres:db-init
-  ```
+### Database for the integration and browser tests
 
-- Run the E2E test harness (Playwright). The project includes
-  `./tools/run-e2e.sh` which does the full flow (up → seed → tests → teardown):
+With Docker (Postgres on localhost:5432; schema and seed loaded):
 
-  ```sh
-  ./tools/run-e2e.sh
-  # To keep DB running after tests:
-  TEARDOWN=0 ./tools/run-e2e.sh
-  ```
+```sh
+./tools/run-e2e.sh              # up -> load schema + seed -> browser tests -> down
+TEARDOWN=0 ./tools/run-e2e.sh   # leave the database running afterwards
+```
 
-- Or run the steps manually (useful for debugging):
+or step by step:
 
-  ```sh
-  deno task docker:postgres:compose:up
-  deno task docker:postgres:db-init
-  cd tests && npm ci && npx playwright install --with-deps && npx playwright test
-  ```
+```sh
+deno task docker:postgres:compose:up
+deno task docker:postgres:db-init      # schema + seed (session 1, competition 10, judges 2/3)
+export DATABASE_URL=postgres://postgres:test@localhost:5432/test_db
+deno task test:e2e                     # builds the bundles, starts the app, runs Playwright
+docker compose -f docker/docker-compose.yml down -v   # reset completely
+```
 
-- Quick teardown (remove volumes to reset DB completely):
+Without Docker, point `DATABASE_URL` at any Postgres and load
+`docker/postgres/db-init/01_schema.sql` (and `02_seed.sql` for the browser
+tests) with `psql`. The integration tests need a database with the schema but
+**empty tables** (they seed and clean up after themselves); the browser tests
+need the seed. Playwright starts the app on port 8000 (`E2E_PORT` to change),
+or reuses one already running there.
 
-  ```sh
-  docker compose down -v
-  ```
-
-Notes & tips:
-
-- The Playwright `webServer` config will automatically start the server when
-  running tests, but you can also start it manually on port 8000:
-
-  ```sh
-  PORT=8000 deno run --allow-net --allow-env --allow-read app/src/main.ts
-  # or for dev: deno task dev
-  ```
-
-- If `/sessions/1/start` returns `No competitions found`, ensure you ran the DB
-  init step (above) or run `./tools/run-e2e.sh` which seeds the DB for you.
-
-Includes `/events` SSE demo route.
+If `/sessions/1/start` returns `No competitions found`, the seed is not loaded.

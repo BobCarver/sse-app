@@ -1,26 +1,42 @@
 import { defineConfig, devices } from "@playwright/test";
 
+// Browser tests drive the real pages against the real app and a real database.
+// The app is started here; the database must already have the schema and seed
+// (tools/e2e.sh / tools/run-e2e.sh / CI take care of that).
+
+const PORT = process.env.E2E_PORT ?? "8000";
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN ?? "test-admin";
+process.env.ADMIN_TOKEN = ADMIN_TOKEN; // the specs read it too
+
 export default defineConfig({
     testDir: "./e2e",
     timeout: 120_000,
     expect: { timeout: 5000 },
+    // Tests share one session id and one database; they must not run in parallel.
+    fullyParallel: false,
+    workers: 1,
+    forbidOnly: !!process.env.CI,
+    retries: process.env.CI ? 1 : 0,
+    reporter: process.env.CI ? [["list"], ["html", { open: "never" }]] : "list",
     use: {
-        baseURL: "http://localhost:8000",
+        baseURL: `http://localhost:${PORT}`,
         actionTimeout: 0,
         trace: "on-first-retry",
         headless: true,
     },
     webServer: {
-        command:
-            "DEBUG=1 PORT=8000 deno run --config=../deno.json --allow-net --allow-env --allow-read src/main.ts",
-        cwd: "../app",
-        url: "http://localhost:8000/_health",
+        command: "deno run --allow-net --allow-env --allow-read app/src/main.ts",
+        cwd: "..",
+        url: `http://localhost:${PORT}/_health`,
         timeout: 60_000,
-        reuseExistingServer: true,
+        // Locally, reuse a server you already started; CI always starts a fresh one.
+        reuseExistingServer: !process.env.CI,
         env: {
-            DATABASE_URL: "postgres://postgres:test@localhost:5432/test_db",
-            JUDGE_SCORE_TIMEOUT_MS: "5000",
-            ADMIN_TOKEN: "test-admin",
+            PORT,
+            ADMIN_TOKEN,
+            DATABASE_URL: process.env.DATABASE_URL ??
+                "postgres://postgres:test@localhost:5432/test_db",
+            JUDGE_SCORE_TIMEOUT_MS: "60000",
         },
     },
     projects: [

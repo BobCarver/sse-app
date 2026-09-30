@@ -168,7 +168,9 @@ export const credentialStore = sql
         created_at: Date;
         revoked_at: Date | null;
       };
-      const rows = await sql<Raw[]>`SELECT * FROM client_credentials ORDER BY id`;
+      const rows = await sql<
+        Raw[]
+      >`SELECT * FROM client_credentials ORDER BY id`;
       return rows.map((r: Raw) => ({
         id: r.id,
         clientId: r.client_id,
