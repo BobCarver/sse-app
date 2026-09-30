@@ -203,6 +203,24 @@ CREATE TABLE IF NOT EXISTS client_credentials (
     revoked_at TIMESTAMP
 );
 
+-- Audio each competitor performs with. The bytes live on disk (AUDIO_DIR) under
+-- storage_key (sha256 + extension); one row per (competition, competitor, kind).
+-- Uploads close when the competition's session starts.
+CREATE TABLE IF NOT EXISTS audio_files (
+    competition_id INT NOT NULL,
+    competitor_id INT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('announce', 'music')),
+    storage_key TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    bytes INT NOT NULL,
+    sha256 TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY (competition_id, competitor_id, kind),
+    FOREIGN KEY (competition_id, competitor_id)
+        REFERENCES competition_competitors(competition_id, competitor_id)
+        ON DELETE CASCADE
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_competition_competitors_order
     ON competition_competitors(competition_id, order_number);

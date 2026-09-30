@@ -47,8 +47,7 @@ const SUBMITTED = /^(Scores submitted|Session complete)$/;
 const pageErrors: string[] = [];
 
 /** What a device does: open its link in a fresh browser context. */
-async function openLink(browser: Browser, link: string, clipSeconds = 0.3) {
-    const wav = silentWav(clipSeconds);
+async function openLink(browser: Browser, link: string) {
     const context = await browser.newContext();
     // Keep a handle on every EventSource so tests can kill the live one.
     await context.addInitScript(() => {
@@ -61,8 +60,6 @@ async function openLink(browser: Browser, link: string, clipSeconds = 0.3) {
             }
         };
     });
-    await context.route(/-(announce|music)$/, (r) =>
-        r.fulfill({ status: 200, contentType: "audio/wav", body: wav }));
     const page = await context.newPage();
     page.on("pageerror", (e) => pageErrors.push(`${link.split("/join/")[0]}: ${e.message}`));
     await page.goto(link);
@@ -71,13 +68,22 @@ async function openLink(browser: Browser, link: string, clipSeconds = 0.3) {
 
 async function setup(browser: Browser, request: APIRequestContext, djClipSeconds = 0.3) {
     pageErrors.length = 0;
+    // The performer's audio, uploaded for real. The seed's session "starts" now,
+    // so the upload cut-off has passed: the administrator forces it in.
+    for (const kind of ["announce", "music"]) {
+        const up = await request.put(`/admin/audio/10/100/${kind}?force=1`, {
+            headers: { ...ADMIN, "content-type": "audio/wav" },
+            data: silentWav(kind === "music" ? djClipSeconds : 0.3),
+        });
+        expect(up.status()).toBe(201);
+    }
     const links = {
         dj: await issue(request, "dj1"),
         j2: await issue(request, "judge2"),
         j3: await issue(request, "judge3"),
         sb: await issue(request, "sb1"),
     };
-    const dj = await openLink(browser, links.dj.link, djClipSeconds);
+    const dj = await openLink(browser, links.dj.link);
     const j2 = await openLink(browser, links.j2.link);
     const j3 = await openLink(browser, links.j3.link);
     const sb = await openLink(browser, links.sb.link);
@@ -108,7 +114,8 @@ test("real pages: full session through the UI", async ({ browser, request }) => 
         await startSession(request);
 
         for (const j of [j2, j3]) {
-            await expect(j.page.locator("#sliders label")).toHaveText("Technique");
+            // The start now waits for the DJ page to hold the audio (prefetch handshake).
+            await expect(j.page.locator("#sliders label")).toHaveText("Technique", { timeout: 20_000 });
             await expect(j.page.locator("#submit")).toBeEnabled({ timeout: 20_000 });
         }
 

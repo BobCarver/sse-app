@@ -31,3 +31,4 @@ build/
 # Archives / artifacts
 *.zip
 *.tar.gz
+audio/

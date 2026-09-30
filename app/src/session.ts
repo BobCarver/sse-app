@@ -70,6 +70,15 @@ export interface SessionDependencies {
   saveScore: (submission: ScoreSubmission) => Promise<void>;
   /** Persist progress (status, current pointers). Best effort: failures are logged. */
   recordProgress?: (event: ProgressEvent) => Promise<void>;
+  /**
+   * Before the first competition the session waits until the DJ page reports it
+   * holds the session's audio (`expectedDigest`, "" = no audio to wait for).
+   * `reported` is the last digest that DJ reported, if any.
+   */
+  audioGate?: {
+    expectedDigest(): Promise<string>;
+    reported(djId: string): string | undefined;
+  };
   /** Track this session runs on (one running session per track). */
   trackId?: number;
   /** Client ids held by this session until it ends (judges for every competition). */
@@ -480,6 +489,37 @@ export class Session {
     console.log("Session: all clients connected", { ids });
   }
 
+  /** Set while the session waits for a DJ to report its audio is in place. */
+  private awaitingAudio: string | null = null;
+
+  /**
+   * The DJ page says it holds (and has verified) the audio set with `digest`.
+   * Releases the start gate if that is the set the session expects.
+   */
+  async audioReported(djId: string, digest: string): Promise<void> {
+    if (this.awaitingAudio !== djId) return;
+    const expected = await this.deps.audioGate?.expectedDigest();
+    if (expected && digest === expected && this.awaitingAudio === djId) {
+      resolveTag(requiredTag(`audio:${djId}`), undefined);
+    }
+  }
+
+  /** Hold the start until the track's DJ has the audio (operator can skip). */
+  private async awaitAudioReady(djIds: string[]): Promise<void> {
+    const gate = this.deps.audioGate;
+    const dj = djIds.find(isDj);
+    if (!gate || !dj) return;
+    const expected = await gate.expectedDigest();
+    if (!expected || gate.reported(dj) === expected) return;
+    console.log(`Session ${this.id}: waiting for ${dj} to hold the audio`);
+    this.awaitingAudio = dj;
+    try {
+      await this.waitForClients([`audio:${dj}`]);
+    } finally {
+      this.awaitingAudio = null;
+    }
+  }
+
   /**
    * Wait for all registered clients to connect
    */
@@ -865,6 +905,7 @@ export class Session {
       // Wait for all permanent clients to connect
       await this.require(permanentClientIds);
       console.log(`All permanent clients connected for session ${this.id}`);
+      await this.awaitAudioReady(permanentClientIds);
 
       // Iterate through competitions in order
       for (const [index, competition] of competitions.entries()) {

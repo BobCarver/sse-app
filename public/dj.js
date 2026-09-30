@@ -240,6 +240,15 @@ function assert(expr, msg = "") {
 
 // app/src/contract.ts
 var perfTag = (competitionId, position) => `perf:${competitionId}:${position}`;
+var audioUrl = (competitionId, competitorId, kind) => `/audio/${competitionId}/${competitorId}/${kind}`;
+async function manifestDigest(files) {
+  if (files.length === 0) return "";
+  const lines = files.map((f) => `${f.competition_id}:${f.competitor_id}:${f.kind}:${f.sha256}`).sort().join("\n");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(lines));
+  return [
+    ...new Uint8Array(digest)
+  ].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 // app/frontend-src/html.ts
 function escapeHtml(s) {
@@ -356,6 +365,9 @@ var DjClient = class extends sseClient {
   /** Browsers block audio until a click; resolves once the DJ has enabled it. */
   audioUnlocked = false;
   unlockWaiters = [];
+  prefetcher;
+  audioRetryMs;
+  audioRetry;
   constructor(deps = {}) {
     super({
       sse: deps.sse,
@@ -363,6 +375,8 @@ var DjClient = class extends sseClient {
     });
     const doc = deps.document || document;
     this.audio = deps.audio || new Audio();
+    this.prefetcher = deps.prefetcher;
+    this.audioRetryMs = deps.audioRetryMs ?? 1e4;
     this.startPauseButton = doc.querySelector("#start");
     this.skipButton = doc.querySelector("#skip");
     this.setupAudioControls();
@@ -373,6 +387,11 @@ var DjClient = class extends sseClient {
       const { position } = msg;
       assert(typeof position === "number");
       this.handlePerformanceStart(position);
+    });
+    this.sse.addEventListener("audio_available", ({ data }) => {
+      const msg = JSON.parse(data);
+      assert(typeof msg.digest === "string");
+      void this.syncAudio();
     });
     this.sse.addEventListener("performance_skipped", ({ data }) => {
       const { position } = JSON.parse(data);
@@ -386,6 +405,59 @@ var DjClient = class extends sseClient {
         resume: true
       });
     });
+  }
+  /**
+   * Download the next session's audio (if it is final), show progress, and tell
+   * the server once everything is held and verified. Safe to call any time;
+   * retries itself while files are still missing.
+   */
+  async syncAudio() {
+    if (!this.prefetcher) return;
+    clearTimeout(this.audioRetry);
+    try {
+      const r = await this.prefetcher.sync();
+      if (!r.available) {
+        this.setAudioStatus("");
+        return;
+      }
+      this.setAudioStatus(r.total === 0 ? "" : r.complete ? `Audio ready (${r.ready}/${r.total})` : `Audio: ${r.ready}/${r.total} ready`);
+      if (r.complete && r.total > 0) {
+        if (!await this.reportReady(r.digest)) this.scheduleAudioRetry();
+        return;
+      }
+      if (!r.complete) this.scheduleAudioRetry();
+    } catch (err) {
+      console.warn("audio sync failed:", err);
+      this.scheduleAudioRetry();
+    }
+  }
+  scheduleAudioRetry() {
+    if (this.audioRetryMs <= 0) return;
+    this.audioRetry = setTimeout(() => void this.syncAudio(), this.audioRetryMs);
+  }
+  async reportReady(digest) {
+    try {
+      const res = await fetch("/audio-ready", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          digest
+        })
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+  setAudioStatus(text) {
+    const el = this.doc.getElementById("audioStatus");
+    if (el) el.textContent = text;
+  }
+  /** Play from the verified local copy when there is one. */
+  async sourceFor(url) {
+    return this.prefetcher ? await this.prefetcher.srcFor(url) : url;
   }
   setupAudioControls() {
     this.startPauseButton.onclick = () => {
@@ -461,9 +533,9 @@ var DjClient = class extends sseClient {
       await this.untilAudioUnlocked();
       if (this.cancelled) throw new Error("cancelled");
       if (!resume) {
-        await this.playAudio(`${this.competition.id}-${competitorId}-announce`);
+        await this.playAudio(await this.sourceFor(audioUrl(this.competition.id, competitorId, "announce")));
       }
-      this.audio.src = `${this.competition.id}-${competitorId}-music`;
+      this.audio.src = await this.sourceFor(audioUrl(this.competition.id, competitorId, "music"));
       this.startPauseButton.disabled = false;
       this.skipButton.disabled = false;
       const completed = await this.playMusicWithControls(!resume);
@@ -508,7 +580,171 @@ var DjClient = class extends sseClient {
   }
 };
 
+// app/frontend-src/audioCache.ts
+var CACHE_NAME = "dj-audio-v1";
+var keyFor = (sha256) => `https://audio.cache/${sha256}`;
+var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function sha256Hex(data) {
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return [
+    ...new Uint8Array(digest)
+  ].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+var AudioPrefetcher = class {
+  deps;
+  fetchFn;
+  openCache;
+  cache;
+  urlBySha;
+  bySlot;
+  running;
+  constructor(deps = {}) {
+    this.deps = deps;
+    this.urlBySha = /* @__PURE__ */ new Map();
+    this.bySlot = /* @__PURE__ */ new Map();
+    this.fetchFn = deps.fetch ?? ((...a) => fetch(...a));
+    this.openCache = deps.openCache ?? (() => caches.open(CACHE_NAME));
+  }
+  getCache() {
+    return this.cache ??= this.openCache();
+  }
+  /** Bring the cache in line with the server's manifest. Overlapping calls share one run. */
+  sync() {
+    return this.running ??= this.doSync().finally(() => {
+      this.running = void 0;
+    });
+  }
+  async doSync() {
+    const res = await this.fetchFn("/audio-manifest", {
+      cache: "no-store"
+    });
+    if (!res.ok && res.status !== 425) {
+      throw new Error(`manifest failed: ${res.status}`);
+    }
+    const manifest = await res.json();
+    const base = {
+      sessionId: manifest.session_id,
+      available: manifest.available
+    };
+    if (!manifest.available) {
+      return {
+        ...base,
+        total: 0,
+        ready: 0,
+        digest: "",
+        complete: false
+      };
+    }
+    const cache = await this.getCache();
+    this.bySlot.clear();
+    for (const f of manifest.files) this.bySlot.set(f.url, f.sha256);
+    const wanted = new Set(manifest.files.map((f) => keyFor(f.sha256)));
+    for (const k of await cache.keys()) {
+      if (!wanted.has(k.url)) await cache.delete(k.url);
+    }
+    for (const [sha, url] of this.urlBySha) {
+      if (!wanted.has(keyFor(sha))) {
+        this.deps.revokeObjectURL?.(url);
+        this.urlBySha.delete(sha);
+      }
+    }
+    const total = manifest.files.length;
+    let ready = 0;
+    const held = [];
+    const todo = [];
+    for (const f of manifest.files) {
+      if (await cache.match(keyFor(f.sha256))) {
+        ready++;
+        held.push(f);
+      } else todo.push(f);
+    }
+    this.deps.onProgress?.(ready, total);
+    const queue = [
+      ...todo
+    ];
+    const worker = async () => {
+      for (let f = queue.shift(); f; f = queue.shift()) {
+        if (await this.download(cache, f)) {
+          ready++;
+          held.push(f);
+          this.deps.onProgress?.(ready, total);
+        }
+      }
+    };
+    await Promise.all(Array.from({
+      length: Math.min(this.deps.concurrency ?? 2, queue.length)
+    }, worker));
+    const complete = ready === total;
+    return {
+      ...base,
+      total,
+      ready,
+      // The digest of what is held: equals the server's only if nothing is missing.
+      digest: complete ? await manifestDigest(held) : "",
+      complete
+    };
+  }
+  /** Fetch one file in full, verify it and store it. False if it could not be had. */
+  async download(cache, f) {
+    const delays = this.deps.retryDelaysMs ?? [
+      500,
+      2e3,
+      5e3
+    ];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const res = await this.fetchFn(f.url, {
+          cache: "no-store",
+          credentials: "same-origin"
+        });
+        if (res.status !== 200) throw new Error(`status ${res.status}`);
+        const buf = await res.arrayBuffer();
+        if (buf.byteLength !== f.bytes) throw new Error("size mismatch");
+        if (await sha256Hex(buf) !== f.sha256) throw new Error("hash mismatch");
+        await cache.put(keyFor(f.sha256), new Response(buf, {
+          headers: {
+            "content-type": res.headers.get("content-type") ?? "audio/mpeg"
+          }
+        }));
+        return true;
+      } catch (err) {
+        console.warn(`audio download failed (${f.url}):`, err);
+        if (attempt >= delays.length) return false;
+        await sleep(delays[attempt]);
+      }
+    }
+  }
+  /**
+   * Where to play `url` from: the verified local copy if there is one, else
+   * the network URL (which the server still serves).
+   */
+  async srcFor(url) {
+    const sha = this.bySlot.get(url);
+    if (!sha || !this.deps.createObjectURL) return url;
+    const existing = this.urlBySha.get(sha);
+    if (existing) return existing;
+    try {
+      const hit = await (await this.getCache()).match(keyFor(sha));
+      if (!hit) return url;
+      const objectUrl = this.deps.createObjectURL(await hit.blob());
+      this.urlBySha.set(sha, objectUrl);
+      return objectUrl;
+    } catch {
+      return url;
+    }
+  }
+};
+
 // app/frontend-src/main-dj.ts
-await bootstrap("dj", (_num, sse) => new DjClient({
-  sse
-}));
+await bootstrap("dj", (_num, sse) => {
+  const prefetcher = new AudioPrefetcher({
+    createObjectURL: (blob) => URL.createObjectURL(blob),
+    revokeObjectURL: (url) => URL.revokeObjectURL(url)
+  });
+  const client = new DjClient({
+    sse,
+    prefetcher
+  });
+  void client.syncAudio();
+  return client;
+});

@@ -423,8 +423,8 @@ Deno.test("DjClient plays correct audio sources", async () => {
   const musicSrc = mockAudio.src;
   mockAudio.triggerEnded(); // End music
   await delay(100);
-  assertEquals(announceSrc, "555-777-announce");
-  assertEquals(musicSrc, "555-777-music");
+  assertEquals(announceSrc, "/audio/555/777/announce");
+  assertEquals(musicSrc, "/audio/555/777/music");
 });
 
 Deno.test("DjClient destroy cleans up", () => {

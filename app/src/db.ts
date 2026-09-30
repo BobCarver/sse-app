@@ -1,5 +1,10 @@
 // db.ts
 import postgres from "postgres";
+import type {
+  AudioMetadataStore,
+  AudioRecord,
+  AudioRef,
+} from "./audioLibrary.ts";
 import {
   Competition,
   Competitor,
@@ -240,4 +245,93 @@ export async function clientExists(
     ? await sql`SELECT 1 FROM judges WHERE id = ${num}`
     : await sql`SELECT 1 FROM tracks WHERE id = ${num}`;
   return rows.length > 0;
+}
+
+// --- audio metadata ----------------------------------------------------------
+
+/** The session and track a competition belongs to, and whether it has started. */
+export async function getCompetitionSession(
+  competitionId: number,
+): Promise<
+  | { sessionId: number; trackId: number; status: string; startTime: Date }
+  | undefined
+> {
+  if (!sql) return undefined;
+  const rows = await sql<
+    { session_id: number; track_id: number; status: string; start_time: Date }[]
+  >`
+    SELECT s.id AS session_id, s.track_id, s.status, s.start_time
+    FROM competitions c JOIN sessions s ON s.id = c.session_id
+    WHERE c.id = ${competitionId}`;
+  const r = rows[0];
+  return r && {
+    sessionId: r.session_id,
+    trackId: r.track_id,
+    status: r.status,
+    startTime: r.start_time,
+  };
+}
+
+type AudioRow = {
+  competition_id: number;
+  competitor_id: number;
+  kind: AudioRecord["kind"];
+  storage_key: string;
+  content_type: string;
+  bytes: number;
+  sha256: string;
+};
+const toAudioRecord = (r: AudioRow): AudioRecord => ({
+  competitionId: r.competition_id,
+  competitorId: r.competitor_id,
+  kind: r.kind,
+  storageKey: r.storage_key,
+  contentType: r.content_type,
+  bytes: r.bytes,
+  sha256: r.sha256,
+});
+
+export const audioStore: AudioMetadataStore | undefined = sql
+  ? {
+    async upsert(rec: AudioRecord) {
+      const old = await sql<AudioRow[]>`
+        SELECT * FROM audio_files
+        WHERE competition_id = ${rec.competitionId}
+          AND competitor_id = ${rec.competitorId} AND kind = ${rec.kind}`;
+      await sql`
+        INSERT INTO audio_files
+          (competition_id, competitor_id, kind, storage_key, content_type, bytes, sha256)
+        VALUES (${rec.competitionId}, ${rec.competitorId}, ${rec.kind},
+          ${rec.storageKey}, ${rec.contentType}, ${rec.bytes}, ${rec.sha256})
+        ON CONFLICT (competition_id, competitor_id, kind) DO UPDATE SET
+          storage_key = EXCLUDED.storage_key, content_type = EXCLUDED.content_type,
+          bytes = EXCLUDED.bytes, sha256 = EXCLUDED.sha256, created_at = NOW()`;
+      return old[0] && toAudioRecord(old[0]);
+    },
+    async get(ref: AudioRef) {
+      const rows = await sql<AudioRow[]>`
+        SELECT * FROM audio_files
+        WHERE competition_id = ${ref.competitionId}
+          AND competitor_id = ${ref.competitorId} AND kind = ${ref.kind}`;
+      return rows[0] && toAudioRecord(rows[0]);
+    },
+    async listForCompetitions(ids: number[]) {
+      if (ids.length === 0) return [];
+      const rows = await sql<AudioRow[]>`
+        SELECT * FROM audio_files WHERE competition_id IN ${sql(ids)}`;
+      return rows.map(toAudioRecord);
+    },
+  }
+  : undefined;
+
+/** The next session (by start time) on a track that has not finished. */
+export async function getNextSessionForTrack(
+  trackId: number,
+): Promise<{ id: number; startTime: Date } | undefined> {
+  if (!sql) return undefined;
+  const rows = await sql<{ id: number; start_time: Date }[]>`
+    SELECT id, start_time FROM sessions
+    WHERE track_id = ${trackId} AND status IN ('upcoming', 'active')
+    ORDER BY (status = 'active') DESC, start_time, id LIMIT 1`;
+  return rows[0] && { id: rows[0].id, startTime: rows[0].start_time };
 }

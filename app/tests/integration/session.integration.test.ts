@@ -3,12 +3,18 @@
 // (no server): 1 DJ, 2 judges, 1 scoreboard, 1 competition with 2 competitors.
 // Requires DATABASE_URL pointing at a database with the schema loaded (empty tables).
 import { assert, assertEquals } from "@std/assert";
-import { saveScore, sql } from "../../src/db.ts";
-import { app } from "../../src/main.ts";
+import {
+  getNextSessionForTrack,
+  getSessionCompetitionsWithRubrics,
+  saveScore,
+  sql,
+} from "../../src/db.ts";
+import { app, audio } from "../../src/main.ts";
+import { announceAudio } from "../../src/audioAnnouncer.ts";
 import { SessionManager } from "../../src/sessionManager.ts";
 import { clearAllResolvers } from "../../src/resolveTag.ts";
 import { perfTag, scoreTag } from "../../src/contract.ts";
-import { delay } from "../test-utils.ts";
+import { createMockClient, delay } from "../test-utils.ts";
 import { adminHeaders, cookieFor } from "../auth-utils.ts";
 
 // These tests need a database and are skipped without one. CI sets REQUIRE_DB=1
@@ -639,6 +645,206 @@ Deno.test({
       assert(rejected, "insert with an unlinked judge should be refused");
     } finally {
       await unseed(db);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "Audio: upload, DJ-only playback with ranges, and cut-off at session start",
+  ignore: !sql,
+  fn: async () => {
+    const db = sql!;
+    const dir = await Deno.makeTempDir();
+    Deno.env.set("AUDIO_DIR", dir);
+    await seed(db);
+    // Session starts in 2h: uploads are open (cut-off is 30 min before).
+    await db`UPDATE sessions SET start_time = NOW() + interval '2 hours' WHERE id = 1`;
+    const streams: SSEStream[] = [];
+    try {
+      const bytes = new Uint8Array(1000).map((_, i) => i % 251);
+      bytes.set([0x49, 0x44, 0x33]); // "ID3"
+      const put = async (
+        path: string,
+        body: Uint8Array<ArrayBuffer>,
+        query = "",
+      ) => {
+        const res = await app.fetch(
+          new Request(`http://localhost/admin/audio/${path}${query}`, {
+            method: "PUT",
+            headers: adminHeaders,
+            body,
+          }),
+        );
+        const json = await res.json();
+        return { status: res.status, json };
+      };
+      const get = async (who: string, headers: HeadersInit = {}) => {
+        const res = await app.fetch(
+          new Request("http://localhost/audio/10/100/music", {
+            headers: { cookie: await cookieFor(who), ...headers },
+          }),
+        );
+        return { res, body: new Uint8Array(await res.arrayBuffer()) };
+      };
+      const manifest = async (who: string) => {
+        const res = await app.fetch(
+          new Request("http://localhost/audio-manifest", {
+            headers: { cookie: await cookieFor(who) },
+          }),
+        );
+        return { status: res.status, json: await res.json() };
+      };
+
+      assertEquals((await put("10/100/music", bytes)).status, 201);
+      assertEquals((await put("10/100/bogus", bytes)).status, 400);
+      assertEquals(
+        (await put("10/100/music", new TextEncoder().encode("nope"))).status,
+        400,
+      );
+      // Competitor 999 is not in competition 10.
+      assertEquals((await put("10/999/music", bytes)).status, 404);
+
+      // The track's DJ gets the file, whole and by range.
+      const full = await get("dj1");
+      assertEquals(full.res.status, 200);
+      assertEquals(full.res.headers.get("content-type"), "audio/mpeg");
+      assertEquals(full.body, bytes);
+      const part = await get("dj1", { range: "bytes=10-19" });
+      assertEquals(part.res.status, 206);
+      assertEquals(part.res.headers.get("content-range"), "bytes 10-19/1000");
+      assertEquals(part.body, bytes.subarray(10, 20));
+      const tail = await get("dj1", { range: "bytes=-5" });
+      assertEquals(tail.body, bytes.subarray(995));
+      assertEquals(
+        (await get("dj1", { range: "bytes=5000-" })).res.status,
+        416,
+      );
+
+      // Nobody else: another track's DJ, judges, scoreboards.
+      assertEquals((await get("dj2")).res.status, 403);
+      assertEquals((await get("judge2")).res.status, 403);
+      assertEquals((await get("sb1")).res.status, 403);
+      // Not uploaded: announce.
+      const none = await app.fetch(
+        new Request("http://localhost/audio/10/100/announce", {
+          headers: { cookie: await cookieFor("dj1") },
+        }),
+      );
+      assertEquals(none.status, 404);
+      await none.body?.cancel();
+
+      // Before the cut-off the DJ is offered nothing, but is told when.
+      const early = await manifest("dj1");
+      assertEquals(early.status, 425);
+      assertEquals(early.json.available, false);
+      assert(early.json.available_at, "says when the set becomes available");
+      assertEquals(early.json.files, []);
+      assertEquals((await manifest("judge2")).status, 403);
+
+      // The cut-off passes (start in 10 min, cut-off is 30 min before start).
+      await db`UPDATE sessions SET start_time = NOW() + interval '10 minutes' WHERE id = 1`;
+      const m1 = await manifest("dj1");
+      assertEquals(m1.status, 200);
+      assertEquals(m1.json.available, true);
+      assertEquals(m1.json.files.length, 1);
+      assertEquals(m1.json.files[0].url, "/audio/10/100/music");
+      assertEquals(m1.json.files[0].bytes, 1000);
+      assert(/^[0-9a-f]{64}$/.test(m1.json.digest));
+
+      // Uploads are now closed; the administrator can force a replacement.
+      const closed = await put("10/100/music", bytes);
+      assertEquals(closed.status, 409);
+      assert(closed.json.closed_at);
+      const bytes2 = bytes.map((b) => 255 - b) as Uint8Array<ArrayBuffer>;
+      bytes2.set([0x49, 0x44, 0x33]);
+      assertEquals((await put("10/100/music", bytes2, "?force=1")).status, 201);
+      const m2 = await manifest("dj1");
+      assert(m2.json.digest !== m1.json.digest, "digest follows the change");
+
+      // The DJ is told (once per change) that the set is final.
+      const source = {
+        nextSession: getNextSessionForTrack,
+        competitions: getSessionCompetitionsWithRubrics,
+      };
+      const mock = createMockClient("dj1");
+      const deps = { audio, source, connectedClients: () => [mock] };
+      await announceAudio(deps);
+      await announceAudio(deps);
+      const told = (mock as any).__messages.filter((m: string) =>
+        m.startsWith("event: audio_available")
+      );
+      assertEquals(told.length, 1);
+      assertEquals(
+        JSON.parse(told[0].split("data: ")[1]).digest,
+        m2.json.digest,
+      );
+
+      // Start the session: it reports the audio that never arrived...
+      const dj = await SSEStream.open("dj1");
+      const j2 = await SSEStream.open("judge2");
+      const j3 = await SSEStream.open("judge3");
+      const sb = await SSEStream.open("sb1");
+      streams.push(dj, j2, j3, sb);
+      const start = await app.fetch(
+        new Request("http://localhost/sessions/1/start", {
+          method: "POST",
+          headers: adminHeaders,
+        }),
+      );
+      const started = await start.json();
+      assertEquals(start.status, 200);
+      assertEquals(started.missing_audio.length, 3); // 2 announce + 101 music
+
+      // ...and holds the start until the DJ reports holding the current set.
+      const ready = async (who: string, digest: string) => {
+        const res = await app.fetch(
+          new Request("http://localhost/audio-ready", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              cookie: await cookieFor(who),
+            },
+            body: JSON.stringify({ digest }),
+          }),
+        );
+        await res.body?.cancel();
+        return res.status;
+      };
+      await delay(150);
+      assertEquals(
+        SessionManager.getSession(1)!.status().waiting_for,
+        ["audio:dj1"],
+      );
+      assertEquals(await ready("judge2", m2.json.digest), 403);
+      assertEquals(await ready("dj1", "not-a-digest"), 400);
+      assertEquals(await ready("dj1", m1.json.digest), 200); // the old set
+      await delay(100);
+      assertEquals(
+        SessionManager.getSession(1)!.status().waiting_for,
+        ["audio:dj1"],
+      );
+      assertEquals(await ready("dj1", m2.json.digest), 200);
+      await dj.next("competition_start");
+
+      // Uploads stay closed during the session, even with force.
+      assertEquals((await put("10/100/music", bytes, "?force=1")).status, 409);
+
+      const abort = await app.fetch(
+        new Request("http://localhost/admin/sessions/1/abort", {
+          method: "POST",
+          headers: adminHeaders,
+        }),
+      );
+      await abort.body?.cancel();
+      await delay(100);
+    } finally {
+      await Promise.all(streams.map((s) => s.close()));
+      await delay(50);
+      await db`DELETE FROM audio_files`;
+      await unseed(db);
+      Deno.env.delete("AUDIO_DIR");
+      await Deno.remove(dir, { recursive: true });
     }
   },
 });

@@ -1,7 +1,7 @@
 {
   "tasks": {
-    "dev": "deno run --allow-net --allow-env --allow-read app/src/main.ts",
-    "start": "deno run --allow-net --allow-env --allow-read app/src/main.ts",
+    "dev": "deno run --allow-net --allow-env --allow-read --allow-write app/src/main.ts",
+    "start": "deno run --allow-net --allow-env --allow-read --allow-write app/src/main.ts",
     "check": "deno check --quiet app scripts",
     "fmt": "deno fmt",
     "fmt:check": "deno fmt --check",
@@ -14,10 +14,10 @@
     "docker:postgres:db-init": "docker compose -f docker/docker-compose.yml run --rm db-init",
     "docker:postgres:reinit": "docker compose -f docker/docker-compose.yml down -v && docker compose -f docker/docker-compose.yml up -d db && deno task docker:postgres:db-init",
     "init-db:all": "deno task docker:postgres:compose:up && deno task docker:postgres:db-init",
-    "test:unit": "deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost app/tests/unit",
+    "test:unit": "deno test --allow-read --allow-write --allow-env --allow-net=127.0.0.1,localhost app/tests/unit",
     "test:frontend": "deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost app/tests/frontend",
-    "test:integration": "deno test --allow-read --allow-env --allow-net app/tests/integration",
-    "test:contract": "deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost app/tests/contract",
+    "test:integration": "deno test --allow-read --allow-write --allow-env --allow-net app/tests/integration",
+    "test:contract": "deno test --allow-read --allow-write --allow-env --allow-net=127.0.0.1,localhost app/tests/contract",
     "build:artifacts": "deno run --allow-read --allow-write --allow-run scripts/build_artifacts.ts",
     "links": "deno run --allow-net --allow-env scripts/issue-links.ts",
     "build:verify": "deno task build:artifacts && git diff --exit-code -- public",

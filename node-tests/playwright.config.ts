@@ -1,4 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // Browser tests drive the real pages against the real app and a real database.
 // The app is started here; the database must already have the schema and seed
@@ -25,7 +27,7 @@ export default defineConfig({
         headless: true,
     },
     webServer: {
-        command: "deno run --allow-net --allow-env --allow-read app/src/main.ts",
+        command: "deno run --allow-net --allow-env --allow-read --allow-write app/src/main.ts",
         cwd: "..",
         url: `http://localhost:${PORT}/_health`,
         timeout: 60_000,
@@ -37,6 +39,7 @@ export default defineConfig({
             DATABASE_URL: process.env.DATABASE_URL ??
                 "postgres://postgres:test@localhost:5432/test_db",
             JUDGE_SCORE_TIMEOUT_MS: "60000",
+            AUDIO_DIR: join(tmpdir(), "sse-e2e-audio"),
         },
     },
     projects: [

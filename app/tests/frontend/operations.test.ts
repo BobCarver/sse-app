@@ -175,7 +175,7 @@ Deno.test("dj: performance_skipped stops playback and reports the act as skipped
   sse.emit("performance_start", { competition_id: 10, position: 0 });
   await tick();
   // announcement is playing
-  assertEquals(audio.src, "10-100-announce");
+  assertEquals(audio.src, "/audio/10/100/announce");
 
   const f = interceptFetch();
   try {
@@ -237,7 +237,7 @@ Deno.test("dj: a performance that starts before 'Enable audio' waits instead of 
   await tick();
   await tick();
   assertEquals(btn("#unlock").hidden, true);
-  assertEquals(audio.src, "10-100-announce"); // now the announcement plays
+  assertEquals(audio.src, "/audio/10/100/announce"); // now the announcement plays
   assertEquals(text(doc, "status"), "");
   client.destroy();
 });

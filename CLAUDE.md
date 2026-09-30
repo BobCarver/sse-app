@@ -25,7 +25,7 @@ ADMIN_TOKEN=... deno task links issue --tracks 1,2 --judges 2,3   # see "Operati
 Always check **exit codes**, not just "N passed" (see Gotchas). Environment:
 `DATABASE_URL`, `ADMIN_TOKEN` (admin routes return 503 without it), `PORT`
 (3000), `PUBLIC_URL` (base for issued links), `JUDGE_SCORE_TIMEOUT_MS` (60000),
-`PERFORMANCE_TIMEOUT_MS` (0 = none), `REQUIRE_DB=1` (integration tests fail
+`PERFORMANCE_TIMEOUT_MS` (0 = none), `AUDIO_DIR` (./audio, gitignored), `MAX_AUDIO_BYTES` (50 MB), `AUDIO_CUTOFF_MINUTES` (30), `REQUIRE_DB=1` (integration tests fail
 instead of skipping), `E2E_PORT` (8000), `DEBUG=1`.
 
 ## Layout
@@ -37,6 +37,9 @@ app/src/            server
   sessionManager.ts sessions map; findConflict (one session per track, judges held)
   sse.ts            per-connection lifecycle (identity-guarded cleanup, ping)
   responseService.ts  /response logic (validate, ownership, scores); route stays thin
+  audioStorage.ts   AudioStorage interface + disk impl (swap for a bucket later)
+  audioLibrary.ts   upload validation (sniffs mp3/wav), metadata, missing()
+  audioManifest.ts  frozen per-session file list + digest;  audioAnnouncer.ts  audio_available ticks
   resolveTag.ts     waitForTag/resolveTag rendezvous (takes AbortSignal)
   contract.ts       tag builders + payload validation, shared with the browser
   credentials.ts    admin-issued credentials (hashes only), in-memory cache
@@ -79,6 +82,27 @@ validates against the rubric, rounds to 1 decimal, upserts to `scores`, sends
 `competitions.status`, `sessions.current_competition/competitor`,
 `tracks.current_session`. Issuing a credential returns 404 if the judge/track
 doesn't exist.
+
+**Audio.** Bytes on disk in `AUDIO_DIR` (content-addressed `<sha256>.<ext>`),
+metadata in `audio_files` (one row per competition/competitor/kind, kind =
+`announce`|`music`). Order of events for a session:
+1. Uploads (`PUT /admin/audio/:competition/:competitor/:kind`, admin, raw mp3/wav;
+   the portal must reuse `audio.add` and this rule) are open until the **cut-off**:
+   `sessions.start_time - AUDIO_CUTOFF_MINUTES`, or the session starting, whichever
+   is first. After that 409, except admin `?force=1` (logged; never during a run).
+2. After the cut-off the set is final. `GET /audio-manifest` (DJ only) returns the
+   next session's files + a `digest` (425 + `available_at` before the cut-off). The
+   server announces it with the small SSE event `audio_available` (ticker every
+   15 s, once per connection/change; audio itself never travels over SSE).
+3. The DJ page (`audioCache.ts`) downloads each file over HTTP, verifies sha256 +
+   size, stores it in Cache Storage under its hash (a replaced song = new key, old
+   one evicted), shows "Audio: N/M ready", plays from the local copy (network URL
+   as fallback), and POSTs `/audio-ready {digest}` when it holds everything.
+4. `runSession` waits (as `audio:dj<N>` in `waiting_for`; operator `skip` releases
+   it) until that DJ's reported digest equals the expected one. Sessions with no
+   audio are not gated.
+`GET /audio/:competition/:competitor/:kind` serves files (Range supported) to the
+DJ of that track only. `/start` lists `missing_audio` but does not block.
 
 **Client -> server contract** (`contract.ts`): `POST /response {tag, payload}`.
 Ownership is enforced (only the session's DJ answers `perf:*`; only `judge<N>`
@@ -162,12 +186,11 @@ integration, 7 browser tests; all green with exit code 0.
 
 ## Open items (next session)
 
-1. **Audio files are not served.** The DJ page requests
-   `/<competitionId>-<competitorId>-announce` and `-music` from the server root;
-   there is no route and no files, so a real performance 404s and is reported as
-   skipped. Proposed: `GET /audio/<name>` from `AUDIO_DIR`, DJ page uses `/audio/...`,
-   and `/start` reports competitors with missing audio up front. Need from the owner:
-   where the music comes from and its format (mp3/wav).
+1. **Audio, next steps.** Decide whether a missing announce is fatal; transcode/
+   normalise loudness; the competitor portal (accounts, registration, uploads via
+   `audio.add`, `audio_files.owner_user_id`); the DJ report map is in memory (DJ
+   re-reports on its next sync); `sessions.start_time` must be accurate for the
+   cut-off to mean anything (seed data uses NOW(), i.e. already past).
 2. **Server restart loses the running session** (in-memory). Idea: on start, skip
    competitors already fully scored. Needs a decision on what "start" means.
 3. Missing-judge-score records are in memory only; persist if results/audit need them.

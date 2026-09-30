@@ -23,6 +23,62 @@ export const scoreTag = (
 export const requiredTag = (clientId: string) =>
   `required:${clientId}` as const;
 
+/** Which audio a competitor performs with: announcer intro or the music itself. */
+export type AudioKind = "announce" | "music";
+export const AUDIO_KINDS: readonly AudioKind[] = ["announce", "music"];
+
+/** Where the DJ page fetches a performance's audio (see GET /audio/...). */
+export const audioUrl = (
+  competitionId: number,
+  competitorId: number,
+  kind: AudioKind,
+) => `/audio/${competitionId}/${competitorId}/${kind}` as const;
+
+/** One downloadable audio file in a DJ's manifest. */
+export interface AudioManifestFile {
+  competition_id: number;
+  competitor_id: number;
+  kind: AudioKind;
+  /** Fetch from here (the DJ page stores it under its sha256). */
+  url: string;
+  sha256: string;
+  bytes: number;
+}
+
+/** What a DJ should hold before a session: the frozen audio set of its next session. */
+export interface AudioManifest {
+  session_id: number | null;
+  /** False until the upload cut-off has passed (the set may still change). */
+  available: boolean;
+  available_at: string | null;
+  /** Identifies exactly this set of files; "" when there are none. */
+  digest: string;
+  files: AudioManifestFile[];
+}
+
+/**
+ * Digest of a set of files, independent of order. Server and DJ page both
+ * compute it, so a DJ can prove it holds exactly the files the server expects.
+ */
+export async function manifestDigest(
+  files: Pick<
+    AudioManifestFile,
+    "competition_id" | "competitor_id" | "kind" | "sha256"
+  >[],
+): Promise<string> {
+  if (files.length === 0) return "";
+  const lines = files
+    .map((f) => `${f.competition_id}:${f.competitor_id}:${f.kind}:${f.sha256}`)
+    .sort()
+    .join("\n");
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(lines),
+  );
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 // --- request body ----------------------------------------------------------
 
 export type ResponseBody =

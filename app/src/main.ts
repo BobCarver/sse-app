@@ -7,6 +7,21 @@ import { streamSSE } from "@hono/hono/streaming";
 // ============================================================================
 
 import { ProgressEvent, ScoreSubmission, SSEClient } from "./types.ts";
+import {
+  AudioLibrary,
+  AudioRejectedError,
+  DEFAULT_MAX_AUDIO_BYTES,
+  MemoryAudioMetadata,
+  uploadCutoff,
+} from "./audioLibrary.ts";
+import { DiskAudioStorage } from "./audioStorage.ts";
+import {
+  buildManifest,
+  type ManifestSource,
+  sessionAudioDigest,
+} from "./audioManifest.ts";
+import { startAudioAnnouncer } from "./audioAnnouncer.ts";
+import { AUDIO_KINDS, type AudioKind } from "./contract.ts";
 import { handleResponse } from "./responseService.ts";
 import { handleSSEConnection } from "./sse.ts";
 import { SessionManager } from "./sessionManager.ts";
@@ -17,8 +32,11 @@ import {
   parseClientId,
 } from "./credentials.ts";
 import {
+  audioStore,
   clientExists,
   credentialStore,
+  getCompetitionSession,
+  getNextSessionForTrack,
   getSessionCompetitionsWithRubrics,
   getSessionTrackId,
   recordProgress,
@@ -100,6 +118,19 @@ app.get(
 // Admin operations use a separate bearer token (ADMIN_TOKEN).
 
 export const credentials = new Credentials(credentialStore);
+/** Competitors' music and announcements, stored on disk under AUDIO_DIR. */
+export const audio = new AudioLibrary(
+  new DiskAudioStorage(() => Deno.env.get("AUDIO_DIR") ?? "./audio"),
+  audioStore ?? new MemoryAudioMetadata(),
+  Number(Deno.env.get("MAX_AUDIO_BYTES")) || DEFAULT_MAX_AUDIO_BYTES,
+);
+/** What each DJ last reported holding (see POST /audio-ready). */
+const audioReports = new Map<string, string>();
+
+const manifestSource: ManifestSource = {
+  nextSession: getNextSessionForTrack,
+  competitions: getSessionCompetitionsWithRubrics,
+};
 /** Whether the judge/track behind a client id exists (replaceable in contract tests). */
 export const clientCheck = { exists: clientExists };
 
@@ -393,6 +424,16 @@ app.post(
     ];
     const permanentClientIds = [`dj${trackId}`, `sb${trackId}`];
 
+    // Report (don't block on) audio that never arrived: those performances
+    // would be skipped.
+    const missingAudio = (await audio.missing(competitions, AUDIO_KINDS)).map(
+      (m) => ({
+        competition_id: m.competitionId,
+        competitor_id: m.competitorId,
+        kind: m.kind,
+      }),
+    );
+
     // No await between this check and createSession: the claim is atomic.
     const conflict = SessionManager.findConflict(
       sessionId,
@@ -418,6 +459,10 @@ app.post(
         },
         recordProgress: (event: ProgressEvent) =>
           recordProgress(sessionId, event),
+        audioGate: {
+          expectedDigest: () => sessionAudioDigest(audio, competitions),
+          reported: (djId: string) => audioReports.get(djId),
+        },
       });
     } catch (err) {
       return c.json({ error: String(err) }, 500);
@@ -436,15 +481,203 @@ app.post(
         console.log(`Session ${sessionId} completed`);
       });
 
+    if (missingAudio.length > 0) {
+      console.warn(
+        `Session ${sessionId}: ${missingAudio.length} audio file(s) missing`,
+      );
+    }
+
     return c.json({
       success: true,
       message: "Session started",
       sessionId,
       trackId,
+      missing_audio: missingAudio,
       clients: { permanent: permanentClientIds, judges: judgeClients },
     });
   },
 );
+
+// --- audio -------------------------------------------------------------------
+
+function parseAudioParams(c: Ctx) {
+  const competitionId = Number(c.req.param("competitionId"));
+  const competitorId = Number(c.req.param("competitorId"));
+  const kind = c.req.param("kind") as AudioKind;
+  if (
+    !Number.isInteger(competitionId) || !Number.isInteger(competitorId) ||
+    !AUDIO_KINDS.includes(kind)
+  ) return undefined;
+  return { competitionId, competitorId, kind };
+}
+
+// What a DJ should download before its next session. Nothing is offered until
+// the upload cut-off has passed: 425 with the time it will be available.
+app.get("/audio-manifest", requireClient, async (c: Ctx) => {
+  const who = parseClientId(c.get("client").sub);
+  if (who?.kind !== "dj") return c.json({ error: "DJs only" }, 403);
+  try {
+    const manifest = await buildManifest(audio, manifestSource, who.num);
+    c.header("cache-control", "no-store");
+    return c.json(
+      manifest,
+      manifest.session_id !== null && !manifest.available ? 425 : 200,
+    );
+  } catch (err) {
+    console.error("audio manifest failed:", err);
+    return c.json({ error: "could not build manifest" }, 500);
+  }
+});
+
+// The DJ page reports the digest of the audio set it holds and has verified.
+// Releases the session's start gate if that is the expected set.
+app.post("/audio-ready", requireClient, async (c: Ctx) => {
+  const sender = c.get("client").sub;
+  if (parseClientId(sender)?.kind !== "dj") {
+    return c.json({ error: "DJs only" }, 403);
+  }
+  if (!(c.req.header("content-type") ?? "").includes("application/json")) {
+    return c.json({ error: "content-type must be application/json" }, 415);
+  }
+  const body = await c.req.json().catch(() => null) as
+    | { digest?: unknown }
+    | null;
+  if (typeof body?.digest !== "string" || !/^[0-9a-f]{64}$/.test(body.digest)) {
+    return c.json({ error: "digest must be a sha256 hex string" }, 400);
+  }
+  audioReports.set(sender, body.digest);
+  await SessionManager.findSessionForClient(sender)?.audioReported(
+    sender,
+    body.digest,
+  );
+  return c.json({ success: true });
+});
+
+// Upload (admin for now; the competitor portal will reuse audio.add). Raw bytes
+// in the body. Closes when the competition's session starts.
+app.put(
+  "/admin/audio/:competitionId/:competitorId/:kind",
+  requireAdmin,
+  async (c: Ctx) => {
+    const ref = parseAudioParams(c);
+    if (!ref) return c.json({ error: "invalid audio reference" }, 400);
+
+    // Uploads close before the session starts (AUDIO_CUTOFF_MINUTES before
+    // start_time) so DJs can fetch a final set. `?force=1` is the administrator's
+    // logged emergency override (DJs are told the set changed).
+    const session = SessionManager.findSessionForCompetition(ref.competitionId);
+    const info = await getCompetitionSession(ref.competitionId);
+    const cutoff = info && uploadCutoff(info.startTime);
+    const closed = session?.isRunning() ||
+      (info && info.status !== "upcoming") ||
+      (cutoff !== undefined && new Date() >= cutoff);
+    if (closed) {
+      if (c.req.query("force") !== "1") {
+        return c.json({
+          error: "audio uploads are closed for this session",
+          closed_at: cutoff?.toISOString() ?? null,
+        }, 409);
+      }
+      if (session?.isRunning()) {
+        return c.json({ error: "cannot replace audio during a session" }, 409);
+      }
+      console.warn(
+        `AUDIO OVERRIDE: replacing ${JSON.stringify(ref)} after cut-off`,
+      );
+    }
+
+    const data = new Uint8Array(await c.req.arrayBuffer());
+    try {
+      const rec = await audio.add(ref, data);
+      return c.json({
+        ...ref,
+        bytes: rec.bytes,
+        content_type: rec.contentType,
+        sha256: rec.sha256,
+      }, 201);
+    } catch (err) {
+      if (err instanceof AudioRejectedError) {
+        return c.json({ error: err.message }, err.status);
+      }
+      // 23503: the competitor is not registered in that competition.
+      if ((err as { code?: string })?.code === "23503") {
+        return c.json({ error: "competitor is not in that competition" }, 404);
+      }
+      console.error("audio upload failed:", err);
+      return c.json({ error: "could not store audio" }, 500);
+    }
+  },
+);
+
+// Playback: only a DJ of the competition's track. Supports Range requests so
+// the browser can seek.
+app.get(
+  "/audio/:competitionId/:competitorId/:kind",
+  requireClient,
+  async (c: Ctx) => {
+    const ref = parseAudioParams(c);
+    if (!ref) return c.json({ error: "invalid audio reference" }, 400);
+
+    const who = parseClientId(c.get("client").sub);
+    if (who?.kind !== "dj") return c.json({ error: "DJs only" }, 403);
+    const info = await getCompetitionSession(ref.competitionId);
+    if (info && info.trackId !== who.num) {
+      return c.json({ error: "not your track" }, 403);
+    }
+
+    const rec = await audio.get(ref);
+    const opened = rec && await audio.open(rec);
+    if (!rec || !opened) return c.json({ error: "no audio" }, 404);
+    const { size, file } = opened;
+
+    const headers = new Headers({
+      "content-type": rec.contentType,
+      "accept-ranges": "bytes",
+      "cache-control": "private, max-age=0, must-revalidate",
+      etag: `"${rec.sha256}"`,
+    });
+    if (c.req.header("if-none-match") === headers.get("etag")) {
+      file.close();
+      return new Response(null, { status: 304, headers });
+    }
+
+    let start = 0, end = size - 1, status = 200;
+    const range = /^bytes=(\d*)-(\d*)$/.exec(c.req.header("range") ?? "");
+    if (range && (range[1] || range[2])) {
+      if (range[1]) {
+        start = Number(range[1]);
+        if (range[2]) end = Math.min(Number(range[2]), size - 1);
+      } else {
+        start = Math.max(0, size - Number(range[2])); // last N bytes
+      }
+      if (start > end || start >= size) {
+        file.close();
+        headers.set("content-range", `bytes */${size}`);
+        return new Response(null, { status: 416, headers });
+      }
+      status = 206;
+      headers.set("content-range", `bytes ${start}-${end}/${size}`);
+    }
+    const length = end - start + 1;
+    headers.set("content-length", String(length));
+    await file.seek(start, Deno.SeekMode.Start);
+    const body = file.readable.pipeThrough(limitBytes(length));
+    return new Response(body, { status, headers });
+  },
+);
+
+/** Pass through at most `n` bytes, then end the stream (closing the file). */
+function limitBytes(n: number): TransformStream<Uint8Array, Uint8Array> {
+  let left = n;
+  return new TransformStream({
+    transform(chunk, controller) {
+      if (left <= 0) return controller.terminate();
+      controller.enqueue(chunk.length > left ? chunk.subarray(0, left) : chunk);
+      left -= chunk.length;
+      if (left <= 0) controller.terminate();
+    },
+  });
+}
 
 // Consolidated tag-based responder endpoint. Body shape: see ResponseBody in contract.ts
 app.post(
@@ -504,6 +737,16 @@ export default app.fetch;
 
 // When run directly, start an HTTP listener to allow real network e2e tests.
 if (import.meta.main) {
+  startAudioAnnouncer({
+    audio,
+    source: manifestSource,
+    connectedClients: () => [
+      ...unassignedClients.values(),
+      ...SessionManager.getRunningSessions().flatMap((sess) =>
+        [...sess.clients.values()].filter((x) => x !== undefined)
+      ),
+    ],
+  });
   (async () => {
     console.log(`Server running on http://localhost:${port}`);
     await Deno.serve({ port }, app.fetch);

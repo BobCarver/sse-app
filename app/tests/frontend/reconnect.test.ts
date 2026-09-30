@@ -150,11 +150,11 @@ Deno.test("dj: performance_recovery for the performance already in progress is i
   sse.emit("competition_start", { competition: competition() });
   sse.emit("performance_start", { competition_id: 10, position: 0 });
   await tick();
-  assertEquals([audio.plays, audio.src], [1, "10-100-announce"]);
+  assertEquals([audio.plays, audio.src], [1, "/audio/10/100/announce"]);
 
   sse.emit("performance_recovery", { competition_id: 10, position: 0 });
   await tick();
-  assertEquals([audio.plays, audio.src], [1, "10-100-announce"]); // untouched
+  assertEquals([audio.plays, audio.src], [1, "/audio/10/100/announce"]); // untouched
   client.destroy();
 });
 
@@ -163,7 +163,7 @@ Deno.test("dj: after a reload, recovery skips the announcement, waits for the DJ
   sse.emit("competition_start", { competition: competition() });
   sse.emit("performance_recovery", { competition_id: 10, position: 1 });
   await tick();
-  assertEquals(audio.src, "10-101-music"); // straight to the music
+  assertEquals(audio.src, "/audio/10/101/music"); // straight to the music
   assertEquals(audio.plays, 0); // no autoplay (browsers would reject it and skip the act)
   assertEquals([btn("#start").disabled, btn("#skip").disabled], [false, false]);
 

@@ -1,11 +1,13 @@
 /// <reference lib="dom" />
 import { assert } from "@std/assert";
 import {
+  AudioAvailableMessage,
   PerformanceRecoveryMessage,
   PerformanceSkippedMessage,
   PerformanceStartMessage,
 } from "../src/protocol.ts";
-import { perfTag } from "../src/contract.ts";
+import { audioUrl, perfTag } from "../src/contract.ts";
+import { AudioPrefetcher } from "./audioCache.ts";
 import { postResponse, type SseLike } from "./connect.ts";
 import { sseClient } from "./sseClient.ts";
 
@@ -17,6 +19,10 @@ export interface DjDependencies {
   sse?: SseLike;
   document?: Document;
   audio?: HTMLAudioElement;
+  /** Downloads the session's audio ahead of time; absent = play from the network. */
+  prefetcher?: AudioPrefetcher;
+  /** For tests: how long to wait before retrying an incomplete download. */
+  audioRetryMs?: number;
 }
 
 /*
@@ -62,6 +68,9 @@ export class DjClient extends sseClient {
   /** Browsers block audio until a click; resolves once the DJ has enabled it. */
   private audioUnlocked = false;
   private unlockWaiters: Array<() => void> = [];
+  private prefetcher?: AudioPrefetcher;
+  private audioRetryMs: number;
+  private audioRetry?: ReturnType<typeof setTimeout>;
 
   constructor(deps: DjDependencies = {}) {
     super({
@@ -71,6 +80,8 @@ export class DjClient extends sseClient {
 
     const doc = deps.document || document;
     this.audio = deps.audio || new Audio();
+    this.prefetcher = deps.prefetcher;
+    this.audioRetryMs = deps.audioRetryMs ?? 10_000;
 
     this.startPauseButton = doc.querySelector("#start") as HTMLButtonElement;
     this.skipButton = doc.querySelector("#skip") as HTMLButtonElement;
@@ -90,6 +101,12 @@ export class DjClient extends sseClient {
     // Sent when this DJ (re)connects mid-performance. If this page is already
     // handling that performance (a network blip) do nothing; if the page was
     // reloaded, resume without repeating the announcement or auto-playing.
+    // The upload cut-off passed (or the set changed): fetch what is missing.
+    this.sse.addEventListener("audio_available", ({ data }) => {
+      const msg = JSON.parse(data) as AudioAvailableMessage;
+      assert(typeof msg.digest === "string");
+      void this.syncAudio();
+    });
     this.sse.addEventListener("performance_skipped", ({ data }) => {
       const { position } = JSON.parse(data) as PerformanceSkippedMessage;
       if (this.activePosition === position) this.cancelActive();
@@ -100,6 +117,70 @@ export class DjClient extends sseClient {
       if (this.activePosition === position) return;
       this.handlePerformanceStart(position, { resume: true });
     });
+  }
+
+  /**
+   * Download the next session's audio (if it is final), show progress, and tell
+   * the server once everything is held and verified. Safe to call any time;
+   * retries itself while files are still missing.
+   */
+  async syncAudio(): Promise<void> {
+    if (!this.prefetcher) return;
+    clearTimeout(this.audioRetry);
+    try {
+      const r = await this.prefetcher.sync();
+      if (!r.available) {
+        this.setAudioStatus("");
+        return;
+      }
+      this.setAudioStatus(
+        r.total === 0
+          ? ""
+          : r.complete
+          ? `Audio ready (${r.ready}/${r.total})`
+          : `Audio: ${r.ready}/${r.total} ready`,
+      );
+      if (r.complete && r.total > 0) {
+        // Always (re)report: the server forgets reports when it restarts.
+        if (!await this.reportReady(r.digest)) this.scheduleAudioRetry();
+        return;
+      }
+      if (!r.complete) this.scheduleAudioRetry();
+    } catch (err) {
+      console.warn("audio sync failed:", err);
+      this.scheduleAudioRetry();
+    }
+  }
+
+  private scheduleAudioRetry(): void {
+    if (this.audioRetryMs <= 0) return;
+    this.audioRetry = setTimeout(
+      () => void this.syncAudio(),
+      this.audioRetryMs,
+    );
+  }
+
+  private async reportReady(digest: string): Promise<boolean> {
+    try {
+      const res = await fetch("/audio-ready", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ digest }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  private setAudioStatus(text: string): void {
+    const el = this.doc.getElementById("audioStatus");
+    if (el) el.textContent = text;
+  }
+
+  /** Play from the verified local copy when there is one. */
+  private async sourceFor(url: string): Promise<string> {
+    return this.prefetcher ? await this.prefetcher.srcFor(url) : url;
   }
 
   private setupAudioControls(): void {
@@ -194,12 +275,16 @@ export class DjClient extends sseClient {
       // Play announcement (skipped when resuming after a reload)
       if (!resume) {
         await this.playAudio(
-          `${this.competition!.id}-${competitorId}-announce`,
+          await this.sourceFor(
+            audioUrl(this.competition!.id, competitorId, "announce"),
+          ),
         );
       }
 
       // Play music
-      this.audio.src = `${this.competition!.id}-${competitorId}-music`;
+      this.audio.src = await this.sourceFor(
+        audioUrl(this.competition!.id, competitorId, "music"),
+      );
       this.startPauseButton.disabled = false;
       this.skipButton.disabled = false;
 
