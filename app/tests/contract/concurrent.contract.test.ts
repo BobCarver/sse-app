@@ -54,6 +54,8 @@ Deno.test("two tracks run concurrently without crossing messages", async () => {
     });
   const s1 = mk(1, 1, 5);
   const s2 = mk(2, 2, 6);
+  sessions.set(1, s1);
+  sessions.set(2, s2);
   const clients = {
     dj1: createMockClient("dj1"),
     sb1: createMockClient("sb1"),

@@ -84,6 +84,14 @@ export class SessionManager {
     return null;
   }
 
+  /** The running session currently working on this competition, if any. */
+  static findSessionForCompetition(competitionId: number): Session | undefined {
+    for (const s of sessions.values()) {
+      if (s.currentCompetition?.id === competitionId) return s;
+    }
+    return undefined;
+  }
+
   /**
    * Check whether a new session can start without stealing another session's
    * track or clients. Returns a human-readable reason, or undefined if clear.

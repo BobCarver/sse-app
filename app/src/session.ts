@@ -1,13 +1,30 @@
 import type { ClientStatusMessage, ServerToClientMessage } from "./protocol.ts";
 import { resolveTag, waitForTag } from "./resolveTag.ts";
 import { perfTag, requiredTag, scoreTag } from "./contract.ts";
-import { type Competition, type ScoreSubmission, SSEClient } from "./types.ts";
+import {
+  type Competition,
+  type Scores,
+  type ScoreSubmission,
+  SSEClient,
+} from "./types.ts";
 
 // ============================================================================
 // SESSION
 // ============================================================================
 
 const timeOut = 30000;
+
+// saveScore is retried before giving up (delays in ms between attempts).
+const SAVE_RETRY_DELAYS = [100, 300];
+
+export const MIN_SCORE = 1;
+export const MAX_SCORE = 10;
+
+/** Why a score submission was refused. `closed` = not accepting right now. */
+export type ScoreRejection = {
+  kind: "closed" | "forbidden" | "invalid";
+  message: string;
+};
 
 /**
  * Dependencies for Session
@@ -30,6 +47,8 @@ export class Session {
   currentPosition: number = -1;
   currentPhase: "idle" | "performing" | "scoring" = "idle";
   submittedScores: Set<string> = new Set(); // "competitionId:position:judgeId"
+  /** Submissions that could not be saved after retries (kept for recovery/audit). */
+  unsavedScores: ScoreSubmission[] = [];
 
   constructor(
     public id: number,
@@ -39,6 +58,46 @@ export class Session {
 
   isRunning(): boolean {
     return this.running;
+  }
+
+  /**
+   * Check a judge's scores against the live state and rubric. Returns why it is
+   * refused, or undefined if acceptable. Called by /response before resolving.
+   */
+  validateScoreSubmission(
+    competitionId: number,
+    competitorId: number,
+    judgeId: number,
+    scores: Scores,
+  ): ScoreRejection | undefined {
+    const comp = this.currentCompetition;
+    if (
+      this.currentPhase !== "scoring" || !comp || comp.id !== competitionId ||
+      comp.competitors[this.currentPosition]?.id !== competitorId
+    ) {
+      return { kind: "closed", message: "not accepting scores for this competitor" };
+    }
+    const judge = comp.rubric.judges.find((j) => j.id === judgeId);
+    if (!judge) {
+      return { kind: "forbidden", message: "judge is not part of this competition" };
+    }
+    const expected = [...judge.criteria].sort((a, b) => a - b);
+    const got = scores.map((s) => s.criteria_id).sort((a, b) => a - b);
+    if (
+      expected.length !== got.length || expected.some((id, i) => id !== got[i])
+    ) {
+      return {
+        kind: "invalid",
+        message: `expected exactly one score for each of criteria [${expected}]`,
+      };
+    }
+    if (scores.some((s) => s.score < MIN_SCORE || s.score > MAX_SCORE)) {
+      return {
+        kind: "invalid",
+        message: `scores must be between ${MIN_SCORE} and ${MAX_SCORE}`,
+      };
+    }
+    return undefined;
   }
 
   get trackId(): number | undefined {
@@ -405,6 +464,31 @@ export class Session {
   }
 
   /**
+   * Save a submission, retrying transient failures. If it still fails the
+   * submission is kept in `unsavedScores` and logged loudly; scoring continues
+   * (the live event must not stop because the database hiccuped).
+   */
+  private async saveWithRetry(submission: ScoreSubmission): Promise<void> {
+    for (let attempt = 0;; attempt++) {
+      try {
+        await this.deps.saveScore(submission);
+        return;
+      } catch (err) {
+        if (attempt >= SAVE_RETRY_DELAYS.length) {
+          this.unsavedScores.push(submission);
+          console.error(
+            `SCORE NOT SAVED after ${attempt + 1} attempts`,
+            JSON.stringify(submission),
+            err,
+          );
+          return;
+        }
+        await new Promise((r) => setTimeout(r, SAVE_RETRY_DELAYS[attempt]));
+      }
+    }
+  }
+
+  /**
    * Scoring phase - judges submit scores for competitor
    */
   private async scorePhase(competition: Competition): Promise<void> {
@@ -437,7 +521,7 @@ export class Session {
           judge_id: id,
           scores,
         };
-        await this.deps.saveScore(submission);
+        await this.saveWithRetry(submission);
 
         // Broadcast to scoreboards
         this.broadcast({

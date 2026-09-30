@@ -3,7 +3,7 @@
 // (no server): 1 DJ, 2 judges, 1 scoreboard, 1 competition with 2 competitors.
 // Requires DATABASE_URL pointing at a database with the schema loaded (empty tables).
 import { assert, assertEquals } from "@std/assert";
-import { sql } from "../../src/db.ts";
+import { saveScore, sql } from "../../src/db.ts";
 import { app } from "../../src/main.ts";
 import { SessionManager } from "../../src/sessionManager.ts";
 import { perfTag, scoreTag } from "../../src/contract.ts";
@@ -144,6 +144,24 @@ Deno.test({
         }
 
         const scores = [{ criteria_id: 1, score: 8.5 }];
+
+        // Bad submissions are refused and don't use up the judge's turn.
+        const badTag = scoreTag(10, competitorId, 2);
+        assertEquals(
+          await respond(j2, {
+            tag: badTag,
+            payload: [{ criteria_id: 1, score: 11 }],
+          }),
+          400,
+        );
+        assertEquals(
+          await respond(j2, {
+            tag: badTag,
+            payload: [{ criteria_id: 99, score: 5 }],
+          }),
+          400,
+        );
+
         assertEquals(
           await respond(j2, {
             tag: scoreTag(10, competitorId, 2),
@@ -175,6 +193,36 @@ Deno.test({
         await delay(20);
       }
       assertEquals(SessionManager.getSession(1), undefined);
+
+      // Every judge's score for every competitor was persisted (4 rows).
+      const rows = await db`
+        SELECT competitor_id, judge_id, criteria_id, score::float AS score
+        FROM scores WHERE competition_id = 10
+        ORDER BY competitor_id, judge_id`;
+      assertEquals(
+        rows.map((r: any) => [r.competitor_id, r.judge_id, r.criteria_id, r.score]),
+        [[100, 2, 1, 8.5], [100, 3, 1, 8.5], [101, 2, 1, 8.5], [
+          101,
+          3,
+          1,
+          8.5,
+        ]],
+      );
+
+      // Saving again updates in place (idempotent), it does not fail or duplicate.
+      await saveScore({
+        competition_id: 10,
+        competitor_id: 100,
+        judge_id: 2,
+        scores: [{ criteria_id: 1, score: 6.5 }],
+      });
+      const [{ n }] =
+        await db`SELECT count(*)::int AS n FROM scores WHERE competition_id = 10`;
+      assertEquals(n, 4);
+      const [{ score }] = await db`
+        SELECT score::float AS score FROM scores
+        WHERE competition_id = 10 AND competitor_id = 100 AND judge_id = 2`;
+      assertEquals(score, 6.5);
 
       // Track and judges are free again: the session can be started once more.
       assert(

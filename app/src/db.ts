@@ -4,22 +4,39 @@ import { Competition, Competitor, Rubric, ScoreSubmission } from "./types.ts";
 
 const DATABASE_URL = Deno.env.get("DATABASE_URL") || "";
 
+/** Hide the password in a connection URL before logging it. */
+export function redactUrl(url: string): string {
+  try {
+    const u = new URL(url);
+    if (u.password) u.password = "***";
+    return u.toString();
+  } catch {
+    return "<unparseable DATABASE_URL>";
+  }
+}
+
 export const sql = DATABASE_URL ? postgres(DATABASE_URL) : undefined;
 if (!sql) {
   console.warn(
     "DB not configured - DATABASE_URL not set; running in memory/disabled DB mode",
   );
 } else {
-  console.log("DB configured, connecting to", DATABASE_URL);
+  console.log("DB configured, connecting to", redactUrl(DATABASE_URL));
 }
 
 export const db = {
-  saveScore({ scores, ...rest }: ScoreSubmission): Promise<void> {
+  /**
+   * Insert a judge's scores for one competitor. Idempotent: re-saving the same
+   * (competition, judge, competitor, criteria) updates the score, so retries and
+   * re-runs never fail on the unique constraint. All rows go in one statement.
+   */
+  async saveScore({ scores, ...rest }: ScoreSubmission): Promise<void> {
+    if (!sql || scores.length === 0) return;
     const values = scores.map((s) => ({ ...rest, ...s }));
-    if (!sql) return Promise.resolve();
-    return sql `INSERT INTO scores ${
-      sql(values)
-    }` as unknown as Promise<void>;
+    await sql`
+      INSERT INTO scores ${sql(values)}
+      ON CONFLICT (competition_id, judge_id, competitor_id, criteria_id)
+      DO UPDATE SET score = EXCLUDED.score, created_at = NOW()`;
   },
 };
 
@@ -71,19 +88,19 @@ export async function getSessionCompetitionsWithRubrics(
 
   const rubrics = await sql<Rubric[]>`
     SELECT r.id,
-      ( SELECT json_agg( json_build_object( 'id', cr.id, 'name', cr.name, 'weight', rc.weight))
+      ( SELECT COALESCE(json_agg( json_build_object( 'id', cr.id, 'name', cr.name, 'weight', rc.weight)), '[]'::json)
         FROM rubric_criteria rc
         JOIN criteria cr ON rc.criteria_id = cr.id
         WHERE rc.rubric_id = r.id
       ) AS criteria,
-      ( SELECT json_agg(
+      ( SELECT COALESCE(json_agg(
           json_build_object( 'id', j.id, 'name', u.name, 'criteria', (
               SELECT COALESCE(array_agg(rjc.criteria_id ORDER BY rjc.criteria_id), ARRAY[]::int[])
               FROM rubric_judge_criteria rjc
               WHERE rjc.rubric_id = r.id AND rjc.judge_id = j.id
             )
           )
-        )
+        ), '[]'::json)
         FROM rubric_judges rj
         JOIN judges j ON rj.judge_id = j.id
         JOIN users u ON j.user_id = u.id

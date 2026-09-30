@@ -6,7 +6,7 @@ import { streamSSE } from "@hono/hono/streaming";
 // TYPES
 // ============================================================================
 
-import { ScoreSubmission, SSEClient } from "./types.ts";
+import { Scores, ScoreSubmission, SSEClient } from "./types.ts";
 import { resolvers } from "./resolveTag.ts";
 import { parseTag, validatePayload } from "./contract.ts";
 import { handleSSEConnection } from "./sse.ts";
@@ -14,6 +14,7 @@ import { SessionManager } from "./sessionManager.ts";
 import {
   getSessionCompetitionsWithRubrics,
   getSessionTrackId,
+  saveScore,
 } from "./db.ts";
 
 export type JWTPayload = {
@@ -77,7 +78,8 @@ app.get(
       }
       return c.json({ ok: true });
     } catch (err) {
-      return c.json({ ok: false, error: String(err) }, 500);
+      console.error("health check failed:", err);
+      return c.json({ ok: false, error: "database unavailable" }, 500);
     }
   },
 );
@@ -219,8 +221,10 @@ app.post(
     try {
       competitions = await getSessionCompetitionsWithRubrics(sessionId);
       trackId = await getSessionTrackId(sessionId);
-    } catch (_err) {
-      return c.json({ error: "No competitions found for session" }, 400);
+    } catch (err) {
+      // A real database failure is not "no competitions": say so.
+      console.error(`Session ${sessionId}: database error on start:`, err);
+      return c.json({ error: "Database error while loading session" }, 500);
     }
     if (!competitions || competitions.length === 0) {
       return c.json({
@@ -260,9 +264,8 @@ app.post(
         trackId,
         claimedClients: judgeClients,
         saveScore: (scoreData: ScoreSubmission) => {
-          // TODO(phase 3): persist via db.saveScore
           dlog("Saving score data:", scoreData);
-          return Promise.resolve();
+          return saveScore(scoreData);
         },
       });
     } catch (err) {
@@ -310,9 +313,37 @@ app.post(
 
     const resolver = resolvers.get(body.tag as string);
     if (!resolver) return c.json({ error: "no resolver for tag" }, 404);
+
+    let payload = body.payload;
+    if (parsed.kind === "score") {
+      const session = SessionManager.findSessionForCompetition(
+        parsed.competitionId,
+      );
+      if (!session) return c.json({ error: "no active session" }, 404);
+      const scores = body.payload as Scores;
+      const rejected = session.validateScoreSubmission(
+        parsed.competitionId,
+        parsed.competitorId,
+        parsed.judgeId,
+        scores,
+      );
+      if (rejected) {
+        const status = { closed: 404, forbidden: 403, invalid: 400 }[
+          rejected.kind
+        ] as 404 | 403 | 400;
+        return c.json({ error: rejected.message }, status);
+      }
+      // Stored as NUMERIC(3,1): round to one decimal so what is saved is what
+      // the scoreboard shows.
+      payload = scores.map((s) => ({
+        criteria_id: s.criteria_id,
+        score: Math.round(s.score * 10) / 10,
+      }));
+    }
+
     // TODO(phase 5): verify the JWT sub is allowed to resolve this tag
     resolvers.delete(body.tag as string); // first response wins
-    resolver(body.payload);
+    resolver(payload);
     return c.json({ success: true });
   },
 );
