@@ -6,10 +6,14 @@ import { assert, assertEquals } from "@std/assert";
 import {
   getNextSessionForTrack,
   getSessionCompetitionsWithRubrics,
+  getSessionTrackId,
+  resetSession,
   saveScore,
   sql,
 } from "../../src/db.ts";
-import { app, audio } from "../../src/main.ts";
+import { Hono } from "@hono/hono";
+import { app, audio, credentials } from "../../src/main.ts";
+import { registerDemoRoutes } from "../../src/demo.ts";
 import { announceAudio } from "../../src/audioAnnouncer.ts";
 import { SessionManager } from "../../src/sessionManager.ts";
 import { clearAllResolvers } from "../../src/resolveTag.ts";
@@ -843,6 +847,174 @@ Deno.test({
       await delay(50);
       await db`DELETE FROM audio_files`;
       await unseed(db);
+      Deno.env.delete("AUDIO_DIR");
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
+
+const DEMO_SEED = new URL(
+  "../../../docker/postgres/demo/demo_seed.sql",
+  import.meta.url,
+).pathname;
+
+Deno.test({
+  name: "Demo: the seed loads twice, and the demo page, audio and reset work",
+  ignore: !sql,
+  fn: async () => {
+    const db = sql!;
+    const dir = await Deno.makeTempDir();
+    Deno.env.set("AUDIO_DIR", dir);
+    // psql runs the file in a transaction; the driver runs it as one statement.
+    const seedSql = (await Deno.readTextFile(DEMO_SEED)).replace(
+      /^(BEGIN|COMMIT);$/gm,
+      "",
+    );
+    try {
+      await db.unsafe(seedSql);
+      await db.unsafe(seedSql); // idempotent
+      const [{ n }] =
+        await db`SELECT COUNT(*)::int AS n FROM competitors WHERE id >= 1000`;
+      assertEquals(n, 5);
+
+      const demo = new Hono();
+      let running = false;
+      registerDemoRoutes(demo, {
+        adminToken: () => Deno.env.get("ADMIN_TOKEN"),
+        safeEqual: (a, b) => Promise.resolve(a === b),
+        credentials,
+        audio,
+        getSessionTrackId,
+        getSessionCompetitions: getSessionCompetitionsWithRubrics,
+        resetSession,
+        isRunning: () => running,
+        announceNow: () => Promise.resolve(),
+      });
+      const token = Deno.env.get("ADMIN_TOKEN")!;
+      const bearer = { authorization: `Bearer ${token}` };
+
+      // Wrong or missing token: nothing is handed out.
+      assertEquals((await demo.request("http://lvh.me/demo")).status, 401);
+      assertEquals(
+        (await demo.request("http://lvh.me/demo?token=nope")).status,
+        401,
+      );
+      // From another host, the page moves to the demo domain (frames need siblings).
+      const moved = await demo.request(
+        `http://localhost:8000/demo?token=${token}`,
+        { redirect: "manual" },
+      );
+      assertEquals(moved.status, 302);
+      assertEquals(
+        moved.headers.get("location"),
+        `http://lvh.me:8000/demo?token=${token}`,
+      );
+
+      const page = await demo.request(`http://lvh.me:8000/demo?token=${token}`);
+      assertEquals(page.status, 200);
+      const html = await page.text();
+      const srcs = [...html.matchAll(/<iframe src="([^"]+)"/g)].map((m) =>
+        m[1]
+      );
+      assertEquals(srcs.length, 4);
+      const hosts = srcs.map((u) => new URL(u).host);
+      assertEquals(hosts, [
+        "scoreboard.lvh.me:8000",
+        "dj.lvh.me:8000",
+        "judge1.lvh.me:8000",
+        "judge2.lvh.me:8000",
+      ]);
+      assert(html.includes("dj1000") && html.includes("sb1000"));
+      assert(html.includes("judge1001") && html.includes("judge1002"));
+      assert(html.includes("Judge Ada") && html.includes("Judge Ben"));
+
+      // Each link signs in as exactly that device.
+      const who = [];
+      for (const src of srcs) {
+        const secret = new URL(src).pathname.split("/").pop()!;
+        who.push((await credentials.authenticate(secret))?.clientId);
+      }
+      assertEquals(who, ["sb1000", "dj1000", "judge1001", "judge1002"]);
+
+      // Reloading revokes the previous links and issues new ones.
+      const again = await (await demo.request(
+        `http://lvh.me:8000/demo?token=${token}`,
+      )).text();
+      const oldSecret = new URL(srcs[1]).pathname.split("/").pop()!;
+      assertEquals(await credentials.authenticate(oldSecret), undefined);
+      assert(again.includes("/join/") && again !== html);
+
+      // Audio: 5 competitors x (announce + music), all valid WAVs on disk.
+      assertEquals(
+        (await demo.request("/demo/audio/1000", { method: "POST" })).status,
+        401,
+      );
+      const made = await demo.request("/demo/audio/1000", {
+        method: "POST",
+        headers: bearer,
+      });
+      assertEquals((await made.json()).files, 10);
+      assertEquals(
+        (await audio.missing(
+          await getSessionCompetitionsWithRubrics(1000),
+          ["announce", "music"],
+        )).length,
+        0,
+      );
+
+      // Reset clears scores and status; refused while running.
+      await db`UPDATE sessions SET status = 'completed' WHERE id = 1000`;
+      await db`INSERT INTO scores (competition_id, competitor_id, judge_id, criteria_id, score)
+        VALUES (1000, 1001, 1001, 1000, 7.5)`;
+      running = true;
+      assertEquals(
+        (await demo.request("/demo/reset/1000", {
+          method: "POST",
+          headers: bearer,
+        }))
+          .status,
+        409,
+      );
+      running = false;
+      assertEquals(
+        (await demo.request("/demo/reset/1000", {
+          method: "POST",
+          headers: bearer,
+        }))
+          .status,
+        200,
+      );
+      const [ses] = await db`SELECT status FROM sessions WHERE id = 1000`;
+      assertEquals(ses.status, "upcoming");
+      const [{ scores }] = await db`SELECT COUNT(*)::int AS scores FROM scores
+        WHERE competition_id >= 1000`;
+      assertEquals(scores, 0);
+
+      // A session with no competitions says how to get demo data.
+      const empty = await demo.request(
+        `http://lvh.me:8000/demo?token=${token}&session=424242`,
+      );
+      assertEquals(empty.status, 404);
+      assert((await empty.text()).includes("demo:seed"));
+    } finally {
+      await db.unsafe(`
+        DELETE FROM client_credentials;
+        DELETE FROM audio_files WHERE competition_id >= 1000;
+        DELETE FROM scores WHERE competition_id >= 1000;
+        DELETE FROM competition_competitors WHERE competition_id >= 1000;
+        DELETE FROM competitions WHERE id >= 1000;
+        DELETE FROM rubric_judge_criteria WHERE rubric_id = 1000;
+        DELETE FROM rubric_judges WHERE rubric_id = 1000;
+        DELETE FROM rubric_criteria WHERE rubric_id = 1000;
+        DELETE FROM criteria WHERE id >= 1000;
+        DELETE FROM judges WHERE id >= 1000;
+        DELETE FROM users WHERE id >= 1000;
+        DELETE FROM competitors WHERE id >= 1000;
+        DELETE FROM sessions WHERE id = 1000;
+        DELETE FROM tracks WHERE id = 1000;
+        DELETE FROM rubrics WHERE id = 1000;
+        DELETE FROM festivals WHERE id = 1000;
+      `);
       Deno.env.delete("AUDIO_DIR");
       await Deno.remove(dir, { recursive: true });
     }

@@ -2,6 +2,8 @@ import { assert, assertEquals } from "@std/assert";
 import {
   AudioPrefetcher,
   type CacheLike,
+  MemoryCache,
+  openDefaultCache,
 } from "../../frontend-src/audioCache.ts";
 import {
   type AudioManifest,
@@ -218,4 +220,41 @@ Deno.test("prefetch: overlapping syncs share one run", async () => {
   });
   await Promise.all([p.sync(), p.sync(), p.sync()]);
   assertEquals(requests.filter((u) => u === "/audio-manifest").length, 1);
+});
+
+Deno.test("prefetch: without Cache Storage or crypto.subtle (plain-http origin) it still downloads, verifies and plays", async () => {
+  const fa = await file(100, A);
+  const m = await manifestOf(fa);
+  const { fetchFn } = server(() => Promise.resolve(m), new Map([[fa.url, A]]));
+  // No `caches` on the page: the default cache falls back to memory.
+  const cache = await openDefaultCache({});
+  assert(cache instanceof MemoryCache);
+  const p = new AudioPrefetcher({
+    fetch: fetchFn,
+    openCache: () => Promise.resolve(cache),
+    createObjectURL: () => "blob:mem/1",
+    retryDelaysMs: [],
+  });
+  const original = Object.getOwnPropertyDescriptor(globalThis, "crypto")!;
+  try {
+    Object.defineProperty(globalThis, "crypto", {
+      value: {},
+      configurable: true,
+    });
+    const r = await p.sync();
+    assertEquals([r.complete, r.digest], [true, m.digest]);
+    assertEquals(await p.srcFor(fa.url), "blob:mem/1");
+  } finally {
+    Object.defineProperty(globalThis, "crypto", original);
+  }
+});
+
+Deno.test("openDefaultCache: uses Cache Storage when the browser has it", async () => {
+  const opened: string[] = [];
+  const fake = new FakeCache();
+  const cache = await openDefaultCache({
+    caches: { open: (n: string) => (opened.push(n), Promise.resolve(fake)) },
+  });
+  assertEquals(cache, fake);
+  assertEquals(opened, ["dj-audio-v1"]);
 });

@@ -20,8 +20,13 @@ import {
   type ManifestSource,
   sessionAudioDigest,
 } from "./audioManifest.ts";
-import { startAudioAnnouncer } from "./audioAnnouncer.ts";
+import {
+  announceAudio,
+  type AnnouncerDeps,
+  startAudioAnnouncer,
+} from "./audioAnnouncer.ts";
 import { AUDIO_KINDS, type AudioKind } from "./contract.ts";
+import { DEFAULT_DEMO_SESSION, registerDemoRoutes } from "./demo.ts";
 import { handleResponse } from "./responseService.ts";
 import { handleSSEConnection } from "./sse.ts";
 import { SessionManager } from "./sessionManager.ts";
@@ -40,6 +45,7 @@ import {
   getSessionCompetitionsWithRubrics,
   getSessionTrackId,
   recordProgress,
+  resetSession,
   saveScore,
   sql,
 } from "./db.ts";
@@ -697,6 +703,38 @@ app.post(
     return c.json({ success: true });
   },
 );
+/** Who is told when a session's audio set is final (see audioAnnouncer.ts). */
+const announcerDeps: AnnouncerDeps = {
+  audio,
+  source: manifestSource,
+  connectedClients: () => [
+    ...unassignedClients.values(),
+    ...SessionManager.getRunningSessions().flatMap((sess) =>
+      [...sess.clients.values()].filter((x) => x !== undefined)
+    ),
+  ],
+};
+
+// Development demo page: scoreboard, DJ and two judges in one tab. Off unless
+// DEMO=1 (it hands out sign-in links to anyone holding the admin token).
+if (Deno.env.get("DEMO") === "1") {
+  console.warn(
+    `DEMO mode: /demo is enabled (default session ${DEFAULT_DEMO_SESSION}). Do not use in production.`,
+  );
+  registerDemoRoutes(app, {
+    adminToken: () => Deno.env.get("ADMIN_TOKEN"),
+    safeEqual,
+    credentials,
+    audio,
+    getSessionTrackId,
+    getSessionCompetitions: getSessionCompetitionsWithRubrics,
+    resetSession,
+    announceNow: () => announceAudio(announcerDeps),
+    isRunning: (id: number) =>
+      SessionManager.getSession(id)?.isRunning() ?? false,
+  });
+}
+
 // ============================================================================
 // CLEANUP
 // ============================================================================
@@ -734,16 +772,7 @@ export default app.fetch;
 
 // When run directly, start an HTTP listener to allow real network e2e tests.
 if (import.meta.main) {
-  startAudioAnnouncer({
-    audio,
-    source: manifestSource,
-    connectedClients: () => [
-      ...unassignedClients.values(),
-      ...SessionManager.getRunningSessions().flatMap((sess) =>
-        [...sess.clients.values()].filter((x) => x !== undefined)
-      ),
-    ],
-  });
+  startAudioAnnouncer(announcerDeps);
   (async () => {
     console.log(`Server running on http://localhost:${port}`);
     await Deno.serve({ port }, app.fetch);

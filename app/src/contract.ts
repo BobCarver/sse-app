@@ -5,6 +5,7 @@
  * Clients answer a server-side wait by POSTing `ResponseBody` to /response.
  * The tag identifies which wait is being resolved; `payload` is its value.
  */
+import { sha256Hex } from "./sha256.ts";
 import type { Scores } from "./types.ts";
 
 // --- tag builders (the only place tag strings are constructed) -------------
@@ -60,23 +61,18 @@ export interface AudioManifest {
  * Digest of a set of files, independent of order. Server and DJ page both
  * compute it, so a DJ can prove it holds exactly the files the server expects.
  */
-export async function manifestDigest(
+export function manifestDigest(
   files: Pick<
     AudioManifestFile,
     "competition_id" | "competitor_id" | "kind" | "sha256"
   >[],
 ): Promise<string> {
-  if (files.length === 0) return "";
+  if (files.length === 0) return Promise.resolve("");
   const lines = files
     .map((f) => `${f.competition_id}:${f.competitor_id}:${f.kind}:${f.sha256}`)
     .sort()
     .join("\n");
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(lines),
-  );
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  return sha256Hex(new TextEncoder().encode(lines));
 }
 
 // --- request body ----------------------------------------------------------

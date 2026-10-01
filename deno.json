@@ -2,6 +2,8 @@
   "tasks": {
     "dev": "deno run --watch --allow-net --allow-env --allow-read --allow-write app/src/main.ts",
     "start": "deno run --allow-net --allow-env --allow-read --allow-write app/src/main.ts",
+    "demo": "DEMO=1 deno run --watch --allow-net --allow-env --allow-read --allow-write app/src/main.ts",
+    "demo:seed": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f docker/postgres/demo/demo_seed.sql",
     "check": "deno check --quiet app scripts",
     "fmt": "deno fmt",
     "fmt:check": "deno fmt --check",

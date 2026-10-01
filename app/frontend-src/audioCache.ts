@@ -4,6 +4,7 @@ import {
   type AudioManifestFile,
   manifestDigest,
 } from "../src/contract.ts";
+import { sha256Hex } from "../src/sha256.ts";
 
 /** The slice of the Cache API the prefetcher uses (also what tests inject). */
 export interface CacheLike {
@@ -40,13 +41,46 @@ export interface PrefetcherDeps {
 const CACHE_NAME = "dj-audio-v1";
 // Files are stored under their hash, so a replaced song is simply a new key.
 const keyFor = (sha256: string) => `https://audio.cache/${sha256}`;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-async function sha256Hex(data: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+/**
+ * Cache Storage only exists on secure origins (https, localhost). Elsewhere (a
+ * laptop opened by LAN address over http) audio is kept in memory instead: it
+ * still downloads ahead and is verified, but a page reload fetches it again.
+ */
+export class MemoryCache implements CacheLike {
+  private items = new Map<string, { buf: ArrayBuffer; type: string }>();
+  match(key: string) {
+    const hit = this.items.get(key);
+    return Promise.resolve(
+      hit &&
+        new Response(hit.buf.slice(0), {
+          headers: { "content-type": hit.type },
+        }),
+    );
+  }
+  async put(key: string, res: Response) {
+    this.items.set(key, {
+      buf: await res.arrayBuffer(),
+      type: res.headers.get("content-type") ?? "audio/mpeg",
+    });
+  }
+  delete(key: string) {
+    return Promise.resolve(this.items.delete(key));
+  }
+  keys() {
+    return Promise.resolve([...this.items.keys()].map((url) => ({ url })));
+  }
 }
+
+/** Cache Storage where the browser has it, otherwise memory. */
+export function openDefaultCache(
+  g: { caches?: { open(name: string): Promise<unknown> } } = globalThis,
+): Promise<CacheLike> {
+  return g.caches
+    ? g.caches.open(CACHE_NAME) as Promise<CacheLike>
+    : Promise.resolve(new MemoryCache());
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Downloads the DJ's audio ahead of the session and keeps it in Cache Storage.
@@ -63,8 +97,7 @@ export class AudioPrefetcher {
 
   constructor(private deps: PrefetcherDeps = {}) {
     this.fetchFn = deps.fetch ?? ((...a) => fetch(...a));
-    this.openCache = deps.openCache ??
-      (() => caches.open(CACHE_NAME) as unknown as Promise<CacheLike>);
+    this.openCache = deps.openCache ?? (() => openDefaultCache());
   }
 
   private getCache(): Promise<CacheLike> {

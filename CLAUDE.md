@@ -18,6 +18,7 @@ deno task test:e2e      # Playwright, needs DATABASE_URL with schema AND seed (s
 ./tools/run-e2e.sh      # same, with Docker providing Postgres
 deno task build         # rebuild public/*.js (tracked in git; deno bundle)
 deno task fmt           # fix formatting (covers app/ and scripts/ only)
+deno task demo          # DEMO=1 server + /demo page (see "Demo"); deno task demo:seed loads its data
 deno task dev           # run the server, restarting on file changes (needs ADMIN_TOKEN, DATABASE_URL to be useful)
 ADMIN_TOKEN=... deno task links issue --tracks 1,2 --judges 2,3   # see "Operating"
 ```
@@ -39,6 +40,8 @@ app/src/            server
   responseService.ts  /response logic (validate, ownership, scores); route stays thin
   audioStorage.ts   AudioStorage interface + disk impl (swap for a bucket later)
   audioLibrary.ts   upload validation (sniffs mp3/wav), metadata, missing()
+  demo.ts           DEMO=1 only: /demo page (4 frames), demo audio, reset
+  sha256.ts         sha256 with a pure-JS fallback (no crypto.subtle on plain http)
   audioManifest.ts  frozen per-session file list + digest;  audioAnnouncer.ts  audio_available ticks
   resolveTag.ts     waitForTag/resolveTag rendezvous (takes AbortSignal)
   contract.ts       tag builders + payload validation, shared with the browser
@@ -103,6 +106,23 @@ metadata in `audio_files` (one row per competition/competitor/kind, kind =
    audio are not gated.
 `GET /audio/:competition/:competitor/:kind` serves files (Range supported) to the
 DJ of that track only. `/start` lists `missing_audio` but does not block.
+
+**Demo (development only).** `DEMO=1` enables `GET /demo?token=<ADMIN_TOKEN>&session=<id>`
+(default session 1000 = `docker/postgres/demo/demo_seed.sql`, ids 1000+, loaded with
+`deno task demo:seed`, deliberately not in `db-init/`). One tab, four iframes
+(scoreboard, DJ, two judges), each a separate device. Cookies are per host, so the
+frames use sibling hosts of `DEMO_DOMAIN` (default `lvh.me` -> 127.0.0.1): own cookie
+each, yet same-site with the page so `SameSite=Strict` still works. The page issues
+fresh credentials (labelled `demo`; old ones are revoked) and has buttons that call
+the admin API plus `POST /demo/audio/:id` (generated tones) and `POST /demo/reset/:id`.
+The browser test is `node-tests/e2e/demo.spec.ts` (Chromium maps `*.lvh.me` to
+127.0.0.1, no DNS needed).
+
+**Insecure origins.** `caches` (Cache Storage) and `crypto.subtle` exist only on https
+and localhost. A DJ laptop opened by LAN address over http has neither, so the
+prefetcher falls back to an in-memory cache (reload re-downloads) and `sha256.ts`
+computes hashes in JS. Without that the start gate would wait forever for the DJ's
+ready report. Prefer https or `localhost` for real events.
 
 **Client -> server contract** (`contract.ts`): `POST /response {tag, payload}`.
 Ownership is enforced (only the session's DJ answers `perf:*`; only `judge<N>`

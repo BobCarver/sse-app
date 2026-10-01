@@ -93,3 +93,40 @@ need the seed. Playwright starts the app on port 8000 (`E2E_PORT` to change),
 or reuses one already running there.
 
 If `/sessions/1/start` returns `No competitions found`, the seed is not loaded.
+
+## Demo: see the whole system in one tab
+
+A development page shows a scoreboard, a DJ and two judges side by side, each
+signed in as its own device, with buttons to start, skip, abort and reset the
+session. It is off unless `DEMO=1` (it hands out sign-in links to whoever holds
+the admin token), so never enable it in production.
+
+```sh
+# 1. a database with the schema, then the demo data (psql required)
+export DATABASE_URL=postgres://postgres:test@localhost:5432/test_db
+psql "$DATABASE_URL" -f docker/postgres/db-init/01_schema.sql
+deno task demo:seed          # one track, one session, two competitions, five competitors, two judges
+
+# 2. the server in demo mode
+ADMIN_TOKEN=demo deno task demo
+
+# 3. open the page (it moves itself to lvh.me, see below)
+open "http://localhost:3000/demo?token=demo"
+```
+
+In the page: **1. Reset + make audio** (generates a short beep and a tone melody
+per competitor), wait for the DJ frame to say *Audio ready*, click **Enable
+audio** in the DJ frame once, then **2. Start session**. The DJ plays each act;
+the judges get sliders when it ends; the scoreboard fills in. **Reset** clears it
+to run again. The demo data is `docker/postgres/demo/demo_seed.sql` (ids 1000+, so
+it can sit next to the test seed; it is deliberately not in `db-init/`). Use
+`&session=<id>` to demo a different session, for example `1` with the test seed.
+
+**Why `lvh.me`?** A device is identified by one cookie and cookies are shared by
+everything on a host, so four frames on `localhost` would all be the same device.
+The page puts each frame on its own subdomain (`dj.lvh.me`, `judge1.lvh.me`, ...;
+`lvh.me` resolves to 127.0.0.1) and keeps them same-site with the page, so the
+`SameSite=Strict` cookie works unchanged. Offline, add
+`127.0.0.1 scoreboard.lvh.me dj.lvh.me judge1.lvh.me judge2.lvh.me lvh.me` to
+`/etc/hosts`, or set `DEMO_DOMAIN` to a domain you control.
+

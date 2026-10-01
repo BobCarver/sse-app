@@ -335,3 +335,22 @@ export async function getNextSessionForTrack(
     ORDER BY (status = 'active') DESC, start_time, id LIMIT 1`;
   return rows[0] && { id: rows[0].id, startTime: rows[0].start_time };
 }
+
+/**
+ * Put a session back to its starting state so a demo can be run again: scores
+ * removed, statuses and pointers reset, start time moved to now.
+ */
+export async function resetSession(sessionId: number): Promise<void> {
+  if (!sql) return;
+  await sql.begin(async (tx: typeof sql) => {
+    await tx`DELETE FROM scores WHERE competition_id IN
+      (SELECT id FROM competitions WHERE session_id = ${sessionId})`;
+    await tx`UPDATE competitions SET status = 'upcoming'
+      WHERE session_id = ${sessionId}`;
+    await tx`UPDATE sessions SET status = 'upcoming', start_time = NOW(),
+      current_competition = NULL, current_competitor = NULL
+      WHERE id = ${sessionId}`;
+    await tx`UPDATE tracks SET current_session = NULL
+      WHERE current_session = ${sessionId}`;
+  });
+}
