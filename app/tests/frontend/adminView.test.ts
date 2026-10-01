@@ -6,6 +6,8 @@ import {
   type ViewState,
 } from "../../frontend-src/adminView.ts";
 import { qrSvg, shareLinks } from "../../frontend-src/admin.ts";
+// Test-only: an independent decoder, to prove the codes actually scan.
+import { decode } from "@pinta365/qr/decode";
 import type { AdminOverview, OverviewSession } from "../../src/adminTypes.ts";
 
 const state = (
@@ -256,4 +258,32 @@ Deno.test("qr: produces an inline SVG for a join link", () => {
   const svg = qrSvg("http://192.168.1.5:3000/join/" + "a".repeat(43));
   assert(svg.startsWith("<svg"));
   assertStringIncludes(svg, "viewBox");
+});
+
+Deno.test("qr: the code decodes back to exactly the link (it would scan)", () => {
+  const secret = btoa(
+    String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))),
+  )
+    .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+  for (
+    const base of [
+      "http://localhost:3000",
+      "https://scoring.example.org",
+      "http://192.168.100.200:3000",
+    ]
+  ) {
+    const link = `${base}/join/${secret}`;
+    const svg = qrSvg(link);
+    assert(svg.startsWith("<svg"), "the XML prolog is stripped");
+    const side = Number(/viewBox="0 0 (\d+) \d+"/.exec(svg)![1]);
+    const dark = new Set(
+      [...svg.matchAll(/M(\d+),(\d+)h1v1h-1z/g)].map((m) => `${m[1]},${m[2]}`),
+    );
+    const border = 2; // the quiet zone around the symbol
+    const result = decode({
+      size: side - 2 * border,
+      isDark: (x: number, y: number) => dark.has(`${x + border},${y + border}`),
+    });
+    assertEquals(result.text, link);
+  }
 });

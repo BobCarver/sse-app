@@ -1,5 +1,6 @@
 // Bundles browser entry points -> public/*.js (served at /js/*.js).
 // Usage: deno task build
+import { normalizeBundle } from "./normalize_bundle.ts";
 
 const entries = [
   { src: "app/frontend-src/main-dj.ts", out: "public/dj.js" },
@@ -17,5 +18,7 @@ for (const { src, out } of entries) {
     stderr: "inherit",
   }).output();
   if (!success) throw new Error(`bundle failed for ${src}`);
+  // Machine-specific cache paths would make the output differ between machines.
+  await Deno.writeTextFile(out, normalizeBundle(await Deno.readTextFile(out)));
 }
 console.log("Artifacts built to ./public/");

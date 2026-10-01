@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-import qrcode from "qrcode-generator";
+import { qrcode } from "@libs/qrcode";
 import type { AdminOverview } from "../src/adminTypes.ts";
 import { renderJudges, renderOverview, type ViewState } from "./adminView.ts";
 
@@ -21,12 +21,9 @@ export function shareLinks(
   };
 }
 
-/** QR code for `text` as inline SVG. */
+/** QR code for `text` as inline SVG (without the XML prolog, which does not belong in HTML). */
 export function qrSvg(text: string): string {
-  const qr = qrcode(0, "M");
-  qr.addData(text);
-  qr.make();
-  return qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+  return qrcode(text, { output: "svg" }).replace(/^[\s\S]*?(?=<svg)/, "");
 }
 
 function readOpen(): Map<string, boolean> {

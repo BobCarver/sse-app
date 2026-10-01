@@ -119,8 +119,11 @@ statuses, live session state, judges, audio flags, connected devices and active 
 Statuses map `upcoming|active|completed` -> upcoming|in_progress|finished; a competitor
 is finished when every rubric judge has scored it. The page is vanilla TS: pure
 functions return HTML strings (every value through `escapeHtml`), native `<details>`
-gives the triangles, QR codes come from the bundled `qrcode-generator` npm package, and
+gives the triangles, QR codes come from the JSR package `@libs/qrcode` (SVG, no dependencies), and
 Copy falls back to select-and-copy because `navigator.clipboard` needs https/localhost.
+Browser bundles must stay reproducible across machines: prefer JSR packages (bundled by
+URL); an npm dependency makes `deno bundle` embed the machine's npm-cache path, which is
+why `scripts/normalize_bundle.ts` rewrites those paths (CI failed on this once).
 Use `credentials.all()` (not `list()`) to list links: it loads from the database first.
 Tests: `adminAuth`/`adminOverview`/`credentials` (unit), `adminView` (frontend),
 `admin.contract` (login/cookie/CSRF), the overview in the integration suite, and
