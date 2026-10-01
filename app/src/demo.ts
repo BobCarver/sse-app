@@ -253,7 +253,7 @@ export function registerDemoRoutes(app: Hono<any>, deps: DemoDeps): void {
     ].slice(0, 2);
 
     // Fresh links every time; last time's demo links stop working.
-    for (const old of deps.credentials.list()) {
+    for (const old of await deps.credentials.all()) {
       if (old.label === DEMO_LABEL && !old.revokedAt) {
         await deps.credentials.revoke(old.id);
       }

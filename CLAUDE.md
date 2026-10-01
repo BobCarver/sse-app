@@ -40,6 +40,7 @@ app/src/            server
   responseService.ts  /response logic (validate, ownership, scores); route stays thin
   audioStorage.ts   AudioStorage interface + disk impl (swap for a bucket later)
   audioLibrary.ts   upload validation (sniffs mp3/wav), metadata, missing()
+  adminAuth.ts      admin cookie sessions;  adminOverview.ts  festival tree for /admin;  adminTypes.ts  shared shapes
   demo.ts           DEMO=1 only: /demo page (4 frames), demo audio, reset
   sha256.ts         sha256 with a pure-JS fallback (no crypto.subtle on plain http)
   audioManifest.ts  frozen per-session file list + digest;  audioAnnouncer.ts  audio_available ticks
@@ -49,7 +50,8 @@ app/src/            server
   protocol.ts types.ts db.ts
 app/frontend-src/   browser code (TS) + the three HTML pages (dj, jd, sb)
   connect.ts        ResilientEventSource, whoami/connect/bootstrap, postResponse
-  sseClient.ts (base) dj.ts jd.ts sb.ts   main-{dj,jd,sb}.ts (bundle entry points)
+  sseClient.ts (base) dj.ts jd.ts sb.ts   main-{dj,jd,sb,admin}.ts (bundle entry points)
+  admin.html/admin.ts/adminView.ts   the admin page (adminView = pure render functions)
 public/             built bundles dj.js jd.js sb.js (generated, tracked)
 app/tests/          unit/ frontend/ contract/ integration/ + auth-utils.ts test-utils.ts
 node-tests/         Playwright (Node only): e2e/pages.spec.ts, playwright.config.ts
@@ -106,6 +108,23 @@ metadata in `audio_files` (one row per competition/competitor/kind, kind =
    audio are not gated.
 `GET /audio/:competition/:competitor/:kind` serves files (Range supported) to the
 DJ of that track only. `/start` lists `missing_audio` but does not block.
+
+**Admin page.** `GET /admin` (page, no login needed to load) + `/js/admin.js`. Browser
+sign-in: `POST /admin/login {token}` -> random session id in the `admin_session`
+cookie (HttpOnly, SameSite=Strict, 12 h, in memory; `/admin/logout`, `/admin/me`).
+`requireAdmin` accepts the bearer token (CLI) or that cookie; a cookie-authenticated
+change must also send `x-admin-request: 1`. `GET /admin/overview` returns the whole
+tree (`adminOverview.ts`: festival > track > session > competition > competitor, with
+statuses, live session state, judges, audio flags, connected devices and active links).
+Statuses map `upcoming|active|completed` -> upcoming|in_progress|finished; a competitor
+is finished when every rubric judge has scored it. The page is vanilla TS: pure
+functions return HTML strings (every value through `escapeHtml`), native `<details>`
+gives the triangles, QR codes come from the bundled `qrcode-generator` npm package, and
+Copy falls back to select-and-copy because `navigator.clipboard` needs https/localhost.
+Use `credentials.all()` (not `list()`) to list links: it loads from the database first.
+Tests: `adminAuth`/`adminOverview`/`credentials` (unit), `adminView` (frontend),
+`admin.contract` (login/cookie/CSRF), the overview in the integration suite, and
+`node-tests/e2e/admin.spec.ts`.
 
 **Demo (development only).** `DEMO=1` enables `GET /demo?token=<ADMIN_TOKEN>&session=<id>`
 (default session 1000 = `docker/postgres/demo/demo_seed.sql`, ids 1000+, loaded with

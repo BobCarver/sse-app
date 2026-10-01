@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --upcoming: #6b7280; --upcoming-bg: #6b728018;
+    --in_progress: #d97706; --in_progress-bg: #d9770622;
+    --finished: #16a34a; --finished-bg: #16a34a18;
+    --line: #8884; --muted: #888;
+  }
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: Canvas; z-index: 2; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; }
+  [role=tablist] { display: flex; gap: 4px; }
+  [role=tab] { font: inherit; padding: 4px 12px; border: 1px solid var(--line); border-radius: 6px; background: transparent; cursor: pointer; color: inherit; }
+  [role=tab][aria-selected=true] { background: #2563eb; color: #fff; border-color: #2563eb; }
+  #conn { color: #dc2626; margin-left: auto; }
+  main { padding: 12px 16px 60px; max-width: 1100px; }
+  #login { max-width: 320px; margin: 15vh auto; display: flex; flex-direction: column; gap: 8px; }
+  #login input { font: inherit; padding: 6px 8px; }
+  #loginError { color: #dc2626; min-height: 1.2em; }
+  button { font: inherit; cursor: pointer; padding: 5px 12px; }
+  button.small { padding: 1px 8px; font-size: 12px; }
+  button.primary { background: #2563eb; color: #fff; border: 1px solid #2563eb; border-radius: 4px; }
+  button.danger { color: #dc2626; }
+  button:disabled { opacity: .4; cursor: default; }
+  details { margin: 2px 0 2px 0; }
+  details > details, details > .devices, details > p, details > ul { margin-left: 22px; }
+  summary { cursor: pointer; padding: 3px 6px; border-radius: 4px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  summary:hover { background: #8881; }
+  details.festival > summary { font-size: 16px; font-weight: 600; }
+  details.track > summary { font-weight: 600; }
+  .name { font-weight: 600; }
+  .muted { color: var(--muted); font-weight: normal; }
+  .empty { color: var(--muted); padding: 24px 0; }
+  .badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; font-weight: 600; border: 1px solid currentColor; }
+  .badge.upcoming { color: var(--upcoming); background: var(--upcoming-bg); }
+  .badge.in_progress { color: var(--in_progress); background: var(--in_progress-bg); }
+  .badge.finished { color: var(--finished); background: var(--finished-bg); }
+  details.session, details.competition { border-left: 4px solid var(--upcoming); padding-left: 2px; }
+  details.in_progress { border-left-color: var(--in_progress); }
+  details.finished { border-left-color: var(--finished); }
+  details.upcoming { border-left-color: var(--upcoming); }
+  details.competition.in_progress > summary { background: var(--in_progress-bg); }
+  details.competition.finished > summary { background: var(--finished-bg); }
+  .controls { margin-left: auto; display: flex; gap: 4px; }
+  .live { color: var(--in_progress); font-weight: 600; }
+  .audio-note { margin: 2px 22px; font-size: 12px; }
+  ul { list-style: none; padding: 0; }
+  li.competitor { display: flex; align-items: center; gap: 8px; padding: 3px 8px; border-left: 4px solid var(--upcoming); margin: 2px 0; border-radius: 0 4px 4px 0; flex-wrap: wrap; }
+  li.competitor.in_progress { border-left-color: var(--in_progress); background: var(--in_progress-bg); }
+  li.competitor.finished { border-left-color: var(--finished); background: var(--finished-bg); }
+  .order { width: 1.5em; text-align: right; color: var(--muted); }
+  .cname { font-weight: 600; }
+  .audios { margin-left: auto; display: flex; gap: 6px; }
+  label.audio { font-size: 12px; padding: 1px 8px; border: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
+  label.audio.have { color: var(--finished); }
+  label.audio.missing { color: #dc2626; }
+  .devices { display: flex; flex-direction: column; gap: 4px; padding: 4px 0 6px; }
+  .device { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .dot.on { background: var(--finished); } .dot.off { background: var(--line); }
+  .link-chip { font-size: 12px; border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; }
+  li.judge { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  code { font-size: 12px; color: var(--muted); }
+  #toast { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); padding: 6px 14px; border-radius: 6px; background: #111; color: #fff; z-index: 5; }
+  #toast:empty { display: none; } #toast.bad { background: #b91c1c; }
+  dialog { border: 1px solid var(--line); border-radius: 8px; max-width: 420px; width: calc(100% - 32px); }
+  dialog input { width: 100%; box-sizing: border-box; font: 12px monospace; padding: 6px; }
+  #qr svg { width: 200px; height: 200px; display: block; margin: 8px auto; background: #fff; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Admin</h1>
+  <div role="tablist">
+    <button role="tab" id="tab-festival" aria-selected="true">Festival</button>
+    <button role="tab" id="tab-judges" aria-selected="false">Judges</button>
+  </div>
+  <span id="conn"></span>
+  <button id="logout" type="button" class="small">Sign out</button>
+</header>
+
+<form id="login" hidden>
+  <h2>Admin sign-in</h2>
+  <label>Admin token <input id="token" type="password" autocomplete="current-password" required></label>
+  <button type="submit" class="primary">Sign in</button>
+  <div id="loginError" role="alert"></div>
+</form>
+
+<main id="app" hidden>
+  <div id="tree"></div>
+  <div id="judges" hidden></div>
+</main>
+
+<dialog id="linkDialog">
+  <h3 id="linkTitle">Link</h3>
+  <p class="muted">Shown once: the server keeps only a hash, so copy or send it now. Anyone with this link can act as this device.</p>
+  <input id="linkText" readonly>
+  <div class="row" style="margin-top:8px">
+    <button id="copy" type="button" class="primary">Copy link</button>
+    <a id="mailto" href="#">Email…</a>
+    <a id="sms" href="#">Text message…</a>
+  </div>
+  <p id="linkNote" class="muted"></p>
+  <div id="qr" aria-label="QR code of the link"></div>
+  <div class="row"><button id="closeDialog" type="button">Done</button></div>
+</dialog>
+<div id="toast" role="status"></div>
+<script type="module" src="/js/admin.js"></script>
+</body>
+</html>

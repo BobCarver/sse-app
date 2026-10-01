@@ -120,6 +120,17 @@ export class Credentials {
     return true;
   }
 
+  /**
+   * Every credential, loading from the database first if that has not happened
+   * yet (it otherwise happens on the first issue/revoke/authenticate, so a
+   * freshly restarted server would list nothing).
+   */
+  async all(): Promise<Credential[]> {
+    await this.ensureLoaded();
+    return this.list();
+  }
+
+  /** What is in memory now; use `all()` to be sure the database was read. */
   list(): Credential[] {
     return [...this.byId.values()].sort((a, b) => a.id - b.id);
   }

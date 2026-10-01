@@ -5,6 +5,7 @@ import type {
   AudioRecord,
   AudioRef,
 } from "./audioLibrary.ts";
+import type { OverviewRows } from "./adminOverview.ts";
 import {
   Competition,
   Competitor,
@@ -353,4 +354,57 @@ export async function resetSession(sessionId: number): Promise<void> {
     await tx`UPDATE tracks SET current_session = NULL
       WHERE current_session = ${sessionId}`;
   });
+}
+
+/** Everything the admin overview needs, in a handful of queries. */
+export async function getOverviewRows(): Promise<OverviewRows> {
+  if (!sql) {
+    return {
+      festivals: [],
+      tracks: [],
+      sessions: [],
+      competitions: [],
+      competitors: [],
+      rubricJudges: [],
+      judges: [],
+      scores: [],
+    };
+  }
+  const [
+    festivals,
+    tracks,
+    sessions,
+    competitions,
+    competitors,
+    rubricJudges,
+    judges,
+    scores,
+  ] = await Promise.all([
+    sql`SELECT id, name FROM festivals ORDER BY id`,
+    sql`SELECT id, festival_id, name, location FROM tracks ORDER BY id`,
+    sql`SELECT id, track_id, name, status, start_time, current_competition,
+          current_competitor FROM sessions ORDER BY start_time, id`,
+    sql`SELECT id, session_id, order_number, name, status, rubric_id
+        FROM competitions ORDER BY session_id, order_number`,
+    sql`SELECT cc.competition_id, c.id, c.name, c.type, cc.duration, cc.order_number
+        FROM competition_competitors cc JOIN competitors c ON c.id = cc.competitor_id
+        ORDER BY cc.competition_id, cc.order_number`,
+    sql`SELECT rj.rubric_id, j.id AS judge_id, u.name, u.email
+        FROM rubric_judges rj JOIN judges j ON j.id = rj.judge_id
+        JOIN users u ON u.id = j.user_id ORDER BY j.id`,
+    sql`SELECT j.id, u.name, u.email FROM judges j JOIN users u ON u.id = j.user_id
+        ORDER BY j.id`,
+    sql`SELECT competition_id, competitor_id, COUNT(DISTINCT judge_id)::int AS judges
+        FROM scores GROUP BY competition_id, competitor_id`,
+  ]);
+  return {
+    festivals,
+    tracks,
+    sessions,
+    competitions,
+    competitors,
+    rubricJudges,
+    judges,
+    scores,
+  } as unknown as OverviewRows;
 }

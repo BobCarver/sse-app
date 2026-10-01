@@ -94,6 +94,29 @@ or reuses one already running there.
 
 If `/sessions/1/start` returns `No competitions found`, the seed is not loaded.
 
+## Admin page
+
+Open `/admin` (for example `http://localhost:3000/admin`) and sign in with the
+admin token (`ADMIN_TOKEN`). The token is entered once into a form; the server
+answers with a separate `HttpOnly`, `SameSite=Strict` cookie that expires after 12
+hours, so the token never appears in a URL or the page. The command-line tool keeps
+using the bearer token.
+
+- **Festival tab**: the whole festival as a tree with a hide/reveal triangle at every
+  level: festival, track, session, competition, competitor. Upcoming, in progress and
+  finished are shown in grey, amber and green (and as text, not colour alone).
+  Everything refreshes every three seconds; which triangles are open is remembered.
+- **Sessions** have Start, Skip and Abort (Skip stops waiting for whatever the session
+  is stuck on), what the running session is doing, and who it is waiting for.
+- **Competitors** show how many judges have scored them and whether announcement and
+  music audio exist; click an audio badge to upload or replace it (after the cut-off
+  you are asked to confirm).
+- **Links**: every track's DJ and scoreboard, and every judge (Judges tab), has a
+  **New link** button. The link is shown once with **Copy**, a **QR code** to scan,
+  and **Email** / **Text message** buttons that open your own mail or messages app
+  with the link filled in (a judge's email is prefilled when it is on file). Existing
+  links are listed with **Revoke**, which locks the device out at once.
+
 ## Demo: see the whole system in one tab
 
 A development page shows a scoreboard, a DJ and two judges side by side, each

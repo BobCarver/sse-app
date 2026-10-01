@@ -182,3 +182,21 @@ Deno.test("persistence: a failed load is retried, and does not authenticate anyo
   await creds.authenticate("abc");
   assertEquals(s.loads(), 2); // loaded once; cache serves the rest
 });
+
+Deno.test("persistence: all() reads the database first, so a restarted server lists what was issued before", async () => {
+  const rows = [{
+    id: 7,
+    clientId: "dj1",
+    label: "Main DJ",
+    createdAt: new Date(),
+    revokedAt: null,
+    secretHash: await hashSecret("old-secret"),
+  }];
+  const s = fakeStore(rows);
+  const creds = new Credentials(s.store);
+  assertEquals(creds.list(), []); // nothing in memory yet
+  assertEquals((await creds.all()).map((c) => c.id), [7]);
+  assertEquals(s.loads(), 1);
+  assertEquals((await creds.all()).length, 1);
+  assertEquals(s.loads(), 1); // loaded once
+});

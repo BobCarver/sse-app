@@ -27,6 +27,8 @@ import {
 } from "./audioAnnouncer.ts";
 import { AUDIO_KINDS, type AudioKind } from "./contract.ts";
 import { DEFAULT_DEMO_SESSION, registerDemoRoutes } from "./demo.ts";
+import { ADMIN_COOKIE, AdminSessions } from "./adminAuth.ts";
+import { buildOverview } from "./adminOverview.ts";
 import { handleResponse } from "./responseService.ts";
 import { handleSSEConnection } from "./sse.ts";
 import { SessionManager } from "./sessionManager.ts";
@@ -42,6 +44,7 @@ import {
   credentialStore,
   getCompetitionSession,
   getNextSessionForTrack,
+  getOverviewRows,
   getSessionCompetitionsWithRubrics,
   getSessionTrackId,
   recordProgress,
@@ -154,17 +157,38 @@ if (!Deno.env.get("ADMIN_TOKEN")) {
   );
 }
 
-/** Admin bearer token. Fails closed when ADMIN_TOKEN is unset. */
+/** Browser sign-ins for the admin pages (the CLI uses the bearer token). */
+const adminSessions = new AdminSessions();
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/**
+ * Administrator: the admin bearer token, or the cookie set by POST /admin/login.
+ * A cookie-authenticated change must also carry `x-admin-request: 1`, which a
+ * cross-site page cannot send (on top of the SameSite=Strict cookie). Fails
+ * closed when ADMIN_TOKEN is unset.
+ */
 async function requireAdmin(c: Ctx, next: Next) {
   const expected = Deno.env.get("ADMIN_TOKEN");
   if (!expected) {
     return c.json({ error: "admin access is not configured" }, 503);
   }
   const given = /^Bearer (.+)$/.exec(c.req.header("authorization") ?? "")?.[1];
-  if (!given || !(await safeEqual(given, expected))) {
-    return c.json({ error: "admin credentials required" }, 401);
+  if (given) {
+    if (!(await safeEqual(given, expected))) {
+      return c.json({ error: "admin credentials required" }, 401);
+    }
+    return await next();
   }
-  await next();
+  if (adminSessions.valid(getCookie(c, ADMIN_COOKIE))) {
+    if (
+      !SAFE_METHODS.has(c.req.method) &&
+      c.req.header("x-admin-request") !== "1"
+    ) {
+      return c.json({ error: "missing x-admin-request header" }, 403);
+    }
+    return await next();
+  }
+  return c.json({ error: "admin credentials required" }, 401);
 }
 
 /** A device with a valid, unrevoked credential cookie. */
@@ -219,6 +243,84 @@ app.post("/logout", (c: Ctx) => {
   return c.json({ success: true });
 });
 
+// --- admin: browser sign-in and the festival overview -----------------------
+
+app.post("/admin/login", async (c: Ctx) => {
+  const expected = Deno.env.get("ADMIN_TOKEN");
+  if (!expected) {
+    return c.json({ error: "admin access is not configured" }, 503);
+  }
+  if (!(c.req.header("content-type") ?? "").includes("application/json")) {
+    return c.json({ error: "content-type must be application/json" }, 415);
+  }
+  const body = await c.req.json().catch(() => null) as
+    | { token?: unknown }
+    | null;
+  if (
+    typeof body?.token !== "string" || !(await safeEqual(body.token, expected))
+  ) {
+    await new Promise((r) => setTimeout(r, 400)); // slow down guessing
+    return c.json({ error: "wrong token" }, 401);
+  }
+  setCookie(c, ADMIN_COOKIE, adminSessions.create(), {
+    path: "/",
+    maxAge: 12 * 60 * 60,
+    httpOnly: true,
+    sameSite: "Strict",
+    secure: new URL(c.req.url).protocol === "https:" ||
+      c.req.header("x-forwarded-proto") === "https",
+  });
+  c.header("cache-control", "no-store");
+  return c.json({ success: true });
+});
+
+app.post("/admin/logout", (c: Ctx) => {
+  adminSessions.destroy(getCookie(c, ADMIN_COOKIE));
+  deleteCookie(c, ADMIN_COOKIE, { path: "/" });
+  return c.json({ success: true });
+});
+
+/** 200 when signed in; the page uses it to decide between the form and the tree. */
+app.get("/admin/me", requireAdmin, (c: Ctx) => c.json({ admin: true }));
+
+/** Connected devices: waiting in the pool, or inside a session. */
+function connectedClientIds(): Set<string> {
+  return new Set([
+    ...unassignedClients.keys(),
+    ...SessionManager.getAllSessions().flatMap((sess) =>
+      [...sess.clients].filter(([, client]) => client).map(([id]) => id)
+    ),
+  ]);
+}
+
+/** The whole festival at once: tracks, sessions, competitions, competitors, links. */
+app.get("/admin/overview", requireAdmin, async (c: Ctx) => {
+  try {
+    const rows = await getOverviewRows();
+    const overview = buildOverview(rows, {
+      audio: await audio.list(rows.competitions.map((x) => x.id)),
+      credentials: await credentials.all(),
+      connected: connectedClientIds(),
+      live: (id: number) => {
+        const sess = SessionManager.getSession(id);
+        if (!sess?.isRunning()) return null;
+        const st = sess.status();
+        return {
+          phase: st.phase,
+          competition_name: st.competition_name,
+          position: st.position,
+          waiting_for: st.waiting_for,
+        };
+      },
+    });
+    c.header("cache-control", "no-store");
+    return c.json(overview);
+  } catch (err) {
+    console.error("admin overview failed:", err);
+    return c.json({ error: "could not load the overview" }, 500);
+  }
+});
+
 // --- admin: issue / list / revoke -------------------------------------------
 
 app.post("/admin/credentials", requireAdmin, async (c: Ctx) => {
@@ -256,9 +358,9 @@ app.post("/admin/credentials", requireAdmin, async (c: Ctx) => {
 app.get(
   "/admin/credentials",
   requireAdmin,
-  (c: Ctx) =>
+  async (c: Ctx) =>
     c.json(
-      credentials.list().map((x) => ({
+      (await credentials.all()).map((x) => ({
         id: x.id,
         client_id: x.clientId,
         label: x.label,
@@ -354,6 +456,7 @@ const pages: Record<string, string> = {
   "/dj": "dj.html",
   "/judge": "jd.html",
   "/scoreboard": "sb.html",
+  "/admin": "admin.html",
 };
 for (const [route, file] of Object.entries(pages)) {
   app.get(
@@ -366,7 +469,7 @@ for (const [route, file] of Object.entries(pages)) {
   );
 }
 
-const bundles = new Set(["dj.js", "jd.js", "sb.js"]);
+const bundles = new Set(["dj.js", "jd.js", "sb.js", "admin.js"]);
 app.get("/js/:file", (c) => {
   const file = c.req.param("file");
   if (!bundles.has(file)) return c.notFound();

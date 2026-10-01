@@ -37,6 +37,7 @@
     "@std/testing": "jsr:@std/testing@^1.0.17",
     "b-fuze/deno-dom": "jsr:@b-fuze/deno-dom@0.1.56",
 
+    "qrcode-generator": "npm:qrcode-generator@1.4.4",
     "postgres": "https://deno.land/x/postgresjs@v3.4.5/mod.js"
   },
   "compilerOptions": {

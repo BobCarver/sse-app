@@ -1020,3 +1020,141 @@ Deno.test({
     }
   },
 });
+
+Deno.test({
+  name:
+    "Admin overview: the whole festival tree comes from the database, with live statuses",
+  ignore: !sql,
+  fn: async () => {
+    const db = sql!;
+    const seedSql = (await Deno.readTextFile(DEMO_SEED)).replace(
+      /^(BEGIN|COMMIT);$/gm,
+      "",
+    );
+    const dir = await Deno.makeTempDir();
+    Deno.env.set("AUDIO_DIR", dir);
+    try {
+      await db.unsafe(seedSql);
+      const cookie = await adminCookie();
+      const overview = async () => {
+        const res = await app.fetch(
+          new Request("http://localhost/admin/overview", {
+            headers: { cookie },
+          }),
+        );
+        assertEquals(res.status, 200);
+        return await res.json();
+      };
+
+      let o = await overview();
+      const fest = o.festivals.find((f: any) => f.id === 1000);
+      assertEquals(fest.name, "Demo Festival");
+      const track = fest.tracks[0];
+      assertEquals(track.devices.map((d: any) => d.client_id), [
+        "dj1000",
+        "sb1000",
+      ]);
+      const session = track.sessions[0];
+      assertEquals([session.id, session.status, session.running], [
+        1000,
+        "upcoming",
+        false,
+      ]);
+      assertEquals(
+        session.competitions.map((
+          c: any,
+        ) => [c.name, c.status, c.competitors.length]),
+        [["Solo Jive", "upcoming", 3], ["Showcase Waltz", "upcoming", 2]],
+      );
+      assertEquals(
+        session.competitions[0].judges.map((j: any) => j.name),
+        ["Judge Ada", "Judge Ben"],
+      );
+      assertEquals(
+        session.competitions[0].competitors.map((c: any) => c.name),
+        ["Alex Rivera", "Sam Okafor", "Jordan Lee"],
+      );
+      assertEquals(
+        o.judges.filter((j: any) => j.id >= 1000).map((j: any) => j.email),
+        [
+          "ada@demo.example",
+          "ben@demo.example",
+        ],
+      );
+
+      // Progress shows up as colours: one competitor scored by both judges, the
+      // competition under way.
+      await db`UPDATE sessions SET status = 'active', current_competition = 1000,
+        current_competitor = 1002 WHERE id = 1000`;
+      await db`UPDATE competitions SET status = 'active' WHERE id = 1000`;
+      await db`INSERT INTO scores (competition_id, competitor_id, judge_id, criteria_id, score)
+        VALUES (1000, 1001, 1001, 1000, 8), (1000, 1001, 1002, 1000, 7)`;
+      o = await overview();
+      const jive = o.festivals.find((f: any) =>
+        f.id === 1000
+      ).tracks[0].sessions[0]
+        .competitions[0];
+      assertEquals(jive.status, "in_progress");
+      assertEquals(
+        jive.competitors.map((c: any) => [c.name, c.status, c.scored_by]),
+        [["Alex Rivera", "finished", 2], ["Sam Okafor", "in_progress", 0], [
+          "Jordan Lee",
+          "upcoming",
+          0,
+        ]],
+      );
+
+      // Audio and issued links appear too.
+      await audio.add(
+        { competitionId: 1000, competitorId: 1002, kind: "music" },
+        new Uint8Array([0x49, 0x44, 0x33, 1, 2, 3]),
+      );
+      const linksOf = (x: any) =>
+        x.judges.find((j: any) => j.id === 1001).device.links.length;
+      const before = linksOf(o);
+      await credentials.issue("judge1001", "test");
+      o = await overview();
+      const sam = o.festivals.find((f: any) =>
+        f.id === 1000
+      ).tracks[0].sessions[0]
+        .competitions[0].competitors[1];
+      assertEquals(sam.audio, { announce: false, music: true });
+      assertEquals(linksOf(o), before + 1);
+    } finally {
+      await db.unsafe(`
+        DELETE FROM client_credentials;
+        DELETE FROM audio_files WHERE competition_id >= 1000;
+        DELETE FROM scores WHERE competition_id >= 1000;
+        DELETE FROM competition_competitors WHERE competition_id >= 1000;
+        DELETE FROM competitions WHERE id >= 1000;
+        DELETE FROM rubric_judge_criteria WHERE rubric_id = 1000;
+        DELETE FROM rubric_judges WHERE rubric_id = 1000;
+        DELETE FROM rubric_criteria WHERE rubric_id = 1000;
+        DELETE FROM criteria WHERE id >= 1000;
+        DELETE FROM judges WHERE id >= 1000;
+        DELETE FROM users WHERE id >= 1000;
+        DELETE FROM competitors WHERE id >= 1000;
+        DELETE FROM sessions WHERE id = 1000;
+        DELETE FROM tracks WHERE id = 1000;
+        DELETE FROM rubrics WHERE id = 1000;
+        DELETE FROM festivals WHERE id = 1000;
+      `);
+      Deno.env.delete("AUDIO_DIR");
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
+
+/** Sign in as the administrator the way the page does; returns the cookie. */
+async function adminCookie(): Promise<string> {
+  const res = await app.fetch(
+    new Request("http://localhost/admin/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: Deno.env.get("ADMIN_TOKEN") }),
+    }),
+  );
+  await res.body?.cancel();
+  assertEquals(res.status, 200);
+  return res.headers.get("set-cookie")!.split(";")[0];
+}

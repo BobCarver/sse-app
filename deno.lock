@@ -16,7 +16,8 @@
     "jsr:@std/internal@^1.0.12": "1.0.12",
     "jsr:@std/path@1": "1.1.4",
     "jsr:@std/path@^1.1.4": "1.1.4",
-    "jsr:@std/testing@^1.0.17": "1.0.17"
+    "jsr:@std/testing@^1.0.17": "1.0.17",
+    "npm:qrcode-generator@1.4.4": "1.4.4"
   },
   "jsr": {
     "@b-fuze/deno-dom@0.1.56": {
@@ -97,6 +98,11 @@
         "jsr:@std/internal",
         "jsr:@std/path@^1.1.4"
       ]
+    }
+  },
+  "npm": {
+    "qrcode-generator@1.4.4": {
+      "integrity": "sha512-HM7yY8O2ilqhmULxGMpcHSF1EhJJ9yBj8gvDEuZ6M+KGJ0YY2hKpnXvRD+hZPLrDVck3ExIGhmPtSdcjC+guuw=="
     }
   },
   "remote": {
@@ -465,7 +471,8 @@
       "jsr:@b-fuze/deno-dom@0.1.56",
       "jsr:@hono/hono@^4.11.7",
       "jsr:@std/assert@^1.0.18",
-      "jsr:@std/testing@^1.0.17"
+      "jsr:@std/testing@^1.0.17",
+      "npm:qrcode-generator@1.4.4"
     ]
   }
 }
