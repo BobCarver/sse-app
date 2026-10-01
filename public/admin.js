@@ -1742,6 +1742,7 @@ function readOpen() {
 function startAdminPage(doc = document) {
   const $ = (id) => doc.getElementById(id);
   const login = $("login");
+  const loginDialog = $("loginDialog");
   const app = $("app");
   const tree = $("tree");
   const judges = $("judges");
@@ -1778,11 +1779,11 @@ function startAdminPage(doc = document) {
   function showLogin() {
     clearTimeout(timer);
     app.hidden = true;
-    login.hidden = false;
+    if (!loginDialog.open) loginDialog.showModal();
     $("token").focus();
   }
   function showApp() {
-    login.hidden = true;
+    loginDialog.close();
     app.hidden = false;
     void refresh();
   }
@@ -1808,6 +1809,7 @@ function startAdminPage(doc = document) {
     }
     if (!app.hidden) timer = setTimeout(refresh, POLL_MS);
   }
+  loginDialog.addEventListener("cancel", (e) => e.preventDefault());
   login.onsubmit = async (e) => {
     e.preventDefault();
     const input = $("token");

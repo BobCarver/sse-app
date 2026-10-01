@@ -53,6 +53,7 @@ function readOpen(): Map<string, boolean> {
 export function startAdminPage(doc: Document = document): void {
   const $ = <T extends HTMLElement>(id: string) => doc.getElementById(id) as T;
   const login = $<HTMLFormElement>("login");
+  const loginDialog = $<HTMLDialogElement>("loginDialog");
   const app = $("app");
   const tree = $("tree");
   const judges = $("judges");
@@ -97,12 +98,12 @@ export function startAdminPage(doc: Document = document): void {
   function showLogin(): void {
     clearTimeout(timer);
     app.hidden = true;
-    login.hidden = false;
+    if (!loginDialog.open) loginDialog.showModal();
     ($("token") as HTMLInputElement).focus();
   }
 
   function showApp(): void {
-    login.hidden = true;
+    loginDialog.close();
     app.hidden = false;
     void refresh();
   }
@@ -131,6 +132,8 @@ export function startAdminPage(doc: Document = document): void {
   }
 
   // --- sign in / out --------------------------------------------------------
+  // The sign-in popup cannot be dismissed (Esc) without a valid token.
+  loginDialog.addEventListener("cancel", (e) => e.preventDefault());
   login.onsubmit = async (e) => {
     e.preventDefault();
     const input = $("token") as HTMLInputElement;

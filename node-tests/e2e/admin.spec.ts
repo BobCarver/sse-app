@@ -23,6 +23,8 @@ test("admin page: sign in, browse the festival tree, issue and revoke a link, si
     await page.locator("#token").fill(TOKEN);
     await page.getByRole("button", { name: "Sign in" }).click();
     await expect(page.locator("#app")).toBeVisible();
+    // The sign-in popup goes away once the token is accepted.
+    await expect(page.locator("#login")).toBeHidden();
     // The token is not left in the page, the URL or the cookie jar.
     await expect(page.locator("#token")).toHaveValue("");
     expect(page.url()).not.toContain(TOKEN);
