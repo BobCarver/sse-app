@@ -6,18 +6,34 @@ import { renderJudges, renderOverview, type ViewState } from "./adminView.ts";
 const OPEN_KEY = "admin-open";
 const POLL_MS = 3000;
 
+/**
+ * A phone number as WhatsApp wants it: international format, digits only (no
+ * "+", spaces, dashes, brackets or leading "00"). Returns "" if what was typed
+ * cannot be a full international number, so the caller falls back to letting
+ * the person pick a contact.
+ */
+export function whatsappNumber(raw: string): string {
+  const digits = raw.replace(/\D/g, "").replace(/^00/, "");
+  return digits.length >= 8 && digits.length <= 15 ? digits : "";
+}
+
 /** The link someone can open to act as a device, plus how to hand it over. */
 export function shareLinks(
   link: string,
   name: string,
   email?: string,
-): { mailto: string; sms: string } {
+  phone?: string,
+): { mailto: string; sms: string; whatsapp: string } {
   const text = `Your link for ${name}. Open it on your device: ${link}`;
+  const number = whatsappNumber(phone ?? "");
   return {
     mailto: `mailto:${encodeURIComponent(email ?? "")}?subject=${
       encodeURIComponent(`Your link: ${name}`)
     }&body=${encodeURIComponent(text)}`,
-    sms: `sms:?&body=${encodeURIComponent(text)}`,
+    sms: `sms:${number ? `+${number}` : ""}?&body=${encodeURIComponent(text)}`,
+    // wa.me opens WhatsApp with the message ready to send; without a number it
+    // opens the contact chooser.
+    whatsapp: `https://wa.me/${number}?text=${encodeURIComponent(text)}`,
   };
 }
 
@@ -165,6 +181,29 @@ export function startAdminPage(doc: Document = document): void {
   }, true);
 
   // --- links ----------------------------------------------------------------
+  /** Who the open dialog is for, so the share buttons can follow the phone field. */
+  let shareTarget: { link: string; name: string; email?: string } | undefined;
+
+  function updateShare(): void {
+    if (!shareTarget) return;
+    const phone = ($("phone") as HTMLInputElement).value;
+    const share = shareLinks(
+      shareTarget.link,
+      shareTarget.name,
+      shareTarget.email,
+      phone,
+    );
+    ($("mailto") as HTMLAnchorElement).href = share.mailto;
+    ($("sms") as HTMLAnchorElement).href = share.sms;
+    ($("whatsapp") as HTMLAnchorElement).href = share.whatsapp;
+    $("phoneHint").textContent = !phone.trim()
+      ? "Add a number (with country code) to send straight to one person."
+      : whatsappNumber(phone)
+      ? ""
+      : "Use the full international number, for example +44 7700 900123.";
+  }
+  $("phone").oninput = updateShare;
+
   async function newLink(
     clientId: string,
     name: string,
@@ -183,12 +222,12 @@ export function startAdminPage(doc: Document = document): void {
         true,
       );
     }
-    const share = shareLinks(body.link, name, email || undefined);
+    shareTarget = { link: body.link, name, email: email || undefined };
+    ($("phone") as HTMLInputElement).value = "";
+    updateShare();
     $("linkTitle").textContent = `Link for ${name}`;
     ($("linkText") as HTMLInputElement).value = body.link;
     $("qr").innerHTML = qrSvg(body.link);
-    ($("mailto") as HTMLAnchorElement).href = share.mailto;
-    ($("sms") as HTMLAnchorElement).href = share.sms;
     $("linkNote").textContent = email
       ? `Email goes to ${email}.`
       : "No email on file: your mail app will ask for the address.";
@@ -214,6 +253,8 @@ export function startAdminPage(doc: Document = document): void {
     dialog.close();
     ($("linkText") as HTMLInputElement).value = ""; // shown once
     $("qr").innerHTML = "";
+    shareTarget = undefined;
+    ($("phone") as HTMLInputElement).value = ""; // phone numbers are not kept
   };
 
   // --- actions --------------------------------------------------------------

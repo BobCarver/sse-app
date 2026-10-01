@@ -1710,11 +1710,19 @@ function renderJudges(o) {
 // app/frontend-src/admin.ts
 var OPEN_KEY = "admin-open";
 var POLL_MS = 3e3;
-function shareLinks(link, name, email) {
+function whatsappNumber(raw) {
+  const digits = raw.replace(/\D/g, "").replace(/^00/, "");
+  return digits.length >= 8 && digits.length <= 15 ? digits : "";
+}
+function shareLinks(link, name, email, phone) {
   const text = `Your link for ${name}. Open it on your device: ${link}`;
+  const number = whatsappNumber(phone ?? "");
   return {
     mailto: `mailto:${encodeURIComponent(email ?? "")}?subject=${encodeURIComponent(`Your link: ${name}`)}&body=${encodeURIComponent(text)}`,
-    sms: `sms:?&body=${encodeURIComponent(text)}`
+    sms: `sms:${number ? `+${number}` : ""}?&body=${encodeURIComponent(text)}`,
+    // wa.me opens WhatsApp with the message ready to send; without a number it
+    // opens the contact chooser.
+    whatsapp: `https://wa.me/${number}?text=${encodeURIComponent(text)}`
   };
 }
 function qrSvg(text) {
@@ -1847,6 +1855,17 @@ function startAdminPage(doc = document) {
       }
     }
   }, true);
+  let shareTarget;
+  function updateShare() {
+    if (!shareTarget) return;
+    const phone = $("phone").value;
+    const share = shareLinks(shareTarget.link, shareTarget.name, shareTarget.email, phone);
+    $("mailto").href = share.mailto;
+    $("sms").href = share.sms;
+    $("whatsapp").href = share.whatsapp;
+    $("phoneHint").textContent = !phone.trim() ? "Add a number (with country code) to send straight to one person." : whatsappNumber(phone) ? "" : "Use the full international number, for example +44 7700 900123.";
+  }
+  $("phone").oninput = updateShare;
   async function newLink(clientId, name, email) {
     const res = await api("POST", "/admin/credentials", JSON.stringify({
       client_id: clientId,
@@ -1856,12 +1875,16 @@ function startAdminPage(doc = document) {
     if (!res.ok) {
       return toast(body.error ?? `Could not create a link (${res.status})`, true);
     }
-    const share = shareLinks(body.link, name, email || void 0);
+    shareTarget = {
+      link: body.link,
+      name,
+      email: email || void 0
+    };
+    $("phone").value = "";
+    updateShare();
     $("linkTitle").textContent = `Link for ${name}`;
     $("linkText").value = body.link;
     $("qr").innerHTML = qrSvg(body.link);
-    $("mailto").href = share.mailto;
-    $("sms").href = share.sms;
     $("linkNote").textContent = email ? `Email goes to ${email}.` : "No email on file: your mail app will ask for the address.";
     dialog.showModal();
     last = "";
@@ -1883,6 +1906,8 @@ function startAdminPage(doc = document) {
     dialog.close();
     $("linkText").value = "";
     $("qr").innerHTML = "";
+    shareTarget = void 0;
+    $("phone").value = "";
   };
   async function act(method, path, label) {
     const res = await api(method, path);

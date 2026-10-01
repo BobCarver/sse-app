@@ -113,8 +113,11 @@ using the bearer token.
   you are asked to confirm).
 - **Links**: every track's DJ and scoreboard, and every judge (Judges tab), has a
   **New link** button. The link is shown once with **Copy**, a **QR code** to scan,
-  and **Email** / **Text message** buttons that open your own mail or messages app
-  with the link filled in (a judge's email is prefilled when it is on file). Existing
+  and **Email** / **Text message** / **WhatsApp** buttons that open your own mail,
+  messages or WhatsApp with the link filled in (a judge's email is prefilled when it is
+  on file). Type a phone number (with country code) in the dialog to send straight to
+  one person; it is used for that send only and is not saved. Without a number, WhatsApp
+  opens its contact chooser. Existing
   links are listed with **Revoke**, which locks the device out at once.
 
 ## Demo: see the whole system in one tab

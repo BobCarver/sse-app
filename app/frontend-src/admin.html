@@ -72,6 +72,8 @@
   dialog { border: 1px solid var(--line); border-radius: 8px; max-width: 420px; width: calc(100% - 32px); }
   dialog input { width: 100%; box-sizing: border-box; font: 12px monospace; padding: 6px; }
   #qr svg { width: 200px; height: 200px; display: block; margin: 8px auto; background: #fff; }
+  label.phone { display: block; margin-top: 8px; font-size: 12px; }
+  label.phone input { font: inherit; margin-top: 2px; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 </style>
 </head>
@@ -106,7 +108,10 @@
     <button id="copy" type="button" class="primary">Copy link</button>
     <a id="mailto" href="#">Email…</a>
     <a id="sms" href="#">Text message…</a>
+    <a id="whatsapp" href="#" target="_blank" rel="noopener noreferrer">WhatsApp…</a>
   </div>
+  <label class="phone">Phone (optional, not saved) <input id="phone" type="tel" inputmode="tel" autocomplete="off" placeholder="+44 7700 900123"></label>
+  <p id="phoneHint" class="muted"></p>
   <p id="linkNote" class="muted"></p>
   <div id="qr" aria-label="QR code of the link"></div>
   <div class="row"><button id="closeDialog" type="button">Done</button></div>

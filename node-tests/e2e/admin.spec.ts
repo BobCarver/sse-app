@@ -75,11 +75,20 @@ test("admin page: sign in, browse the festival tree, issue and revoke a link, si
     expect(await page.locator("#mailto").getAttribute("href")).toMatch(/^mailto:/);
     expect(await page.locator("#sms").getAttribute("href")).toMatch(/^sms:/);
     expect(decodeURIComponent((await page.locator("#sms").getAttribute("href"))!)).toContain(link);
+    // WhatsApp: opens the chooser until a number is typed, then goes to that person.
+    const whatsapp = page.locator("#whatsapp");
+    expect(await whatsapp.getAttribute("href")).toMatch(/^https:\/\/wa\.me\/\?text=/);
+    expect(decodeURIComponent((await whatsapp.getAttribute("href"))!)).toContain(link);
+    expect(await whatsapp.getAttribute("target")).toBe("_blank");
+    await page.locator("#phone").fill("+44 7700 900123");
+    expect(await whatsapp.getAttribute("href")).toMatch(/^https:\/\/wa\.me\/447700900123\?text=/);
+    expect(await page.locator("#sms").getAttribute("href")).toMatch(/^sms:\+447700900123/);
     await dialog.getByRole("button", { name: "Copy link" }).click();
     await expect(page.locator("#toast")).toHaveText("Link copied");
     await dialog.getByRole("button", { name: "Done" }).click();
     await expect(dialog).toBeHidden();
     await expect(page.locator("#linkText")).toHaveValue(""); // not kept around
+    await expect(page.locator("#phone")).toHaveValue(""); // the phone number is not kept either
 
     // The new link is listed, and works for a device.
     await expect.poll(async () => (await linkIds()).length).toBe(before.length + 1);

@@ -5,7 +5,7 @@ import {
   renderOverview,
   type ViewState,
 } from "../../frontend-src/adminView.ts";
-import { qrSvg, shareLinks } from "../../frontend-src/admin.ts";
+import { qrSvg, shareLinks, whatsappNumber } from "../../frontend-src/admin.ts";
 // Test-only: an independent decoder, to prove the codes actually scan.
 import { decode } from "@pinta365/qr/decode";
 import type { AdminOverview, OverviewSession } from "../../src/adminTypes.ts";
@@ -286,4 +286,44 @@ Deno.test("qr: the code decodes back to exactly the link (it would scan)", () =>
     });
     assertEquals(result.text, link);
   }
+});
+
+Deno.test("whatsapp: numbers are normalised to what wa.me wants, or refused", () => {
+  assertEquals(whatsappNumber("+44 7700 900123"), "447700900123");
+  assertEquals(whatsappNumber("(0044) 7700-900123"), "447700900123"); // 00 prefix dropped
+  assertEquals(whatsappNumber("+1 (415) 555-2671"), "14155552671");
+  assertEquals(whatsappNumber(""), "");
+  assertEquals(whatsappNumber("12345"), ""); // too short to be international
+  assertEquals(whatsappNumber("1".repeat(16)), ""); // longer than any number
+  assertEquals(whatsappNumber("call me"), "");
+});
+
+Deno.test("whatsapp: the link carries the message, with or without a number", () => {
+  const link = "http://192.168.1.5:3000/join/abc_DEF-123";
+  const open = shareLinks(link, "Main DJ").whatsapp;
+  assert(
+    open.startsWith("https://wa.me/?text="),
+    "no number: opens the contact chooser",
+  );
+  assertStringIncludes(decodeURIComponent(open), link);
+  assertStringIncludes(decodeURIComponent(open), "Main DJ");
+
+  const direct = shareLinks(link, "Main DJ", undefined, "+44 7700 900123");
+  assert(direct.whatsapp.startsWith("https://wa.me/447700900123?text="));
+  assert(direct.sms.startsWith("sms:+447700900123?&body="));
+  // A half-typed number is ignored rather than producing a broken link.
+  assert(
+    shareLinks(link, "x", undefined, "07700").whatsapp.startsWith(
+      "https://wa.me/?text=",
+    ),
+  );
+  // The text is encoded: no raw "&" or "?" from the link can break the URL.
+  const tricky =
+    shareLinks("http://x/join/a?b=1&c=2", "N&M", undefined, "+44 7700 900123")
+      .whatsapp;
+  assertEquals(tricky.split("?").length, 2);
+  assertEquals(
+    new URL(tricky).searchParams.get("text")!.includes("a?b=1&c=2"),
+    true,
+  );
 });
