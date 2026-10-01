@@ -98,6 +98,8 @@ and `competition_competitors.status` becomes `skipped` (`performed` when the DJ 
 (`Status` includes `skipped`). The DJ page's cleanup runs before it reports, and only if no
 newer performance has taken over: the server starts the next performance the moment it hears
 a skip, and cleaning up afterwards used to wipe the new one's audio listeners.
+A missing or broken **announcement** is not a skip: the DJ page logs it and goes on to the
+song (only a cancel by an administrator, or a broken song, reports `false`).
 
 **Progress is persisted** (best effort, in order, via `recordProgress` in `db.ts`):
 `sessions.status` (active; completed, or back to `upcoming` if aborted/failed),
@@ -251,10 +253,10 @@ static mount). Keep new code within the spirit of those rules; ask before restru
 ## Status
 
 Phases 0-7 of the "make it correctly functioning" plan are done and committed.
-Since then (latest: `8c4b4ff`): `/response` extracted to a service, session
+Since then (latest: `11af1b6`, then a missing announcement stops being fatal): `/response` extracted to a service, session
 progress persisted, FKs on `rubric_judge_criteria`, credential issue checks the
 judge/track exists, and competitor audio (storage, cut-off, manifest, DJ prefetch,
-start gate). Suites: ~101 unit, ~86 frontend, 27 contract, 9 integration (with a
+start gate). Suites: ~101 unit, ~114 frontend, 27 contract, 9 integration (with a
 DB), 7 browser tests; all green with exit code 0, with and without a database.
 `deno task static` only passes once generated `public/*.js` is committed.
 
@@ -262,10 +264,7 @@ Working style (owner): analysis only when asked to analyse; commit only when ask
 
 ## Open items (next session)
 
-1. **Audio, next steps.** Decide whether a missing announce is fatal (recommended:
-   skip only the announcement and still play the music; today the DJ page fails the
-   performance and it is reported as skipped); transcode/
-   normalise loudness; the competitor portal (accounts, registration, uploads via
+1. **Audio, next steps.** Transcode/normalise loudness; the competitor portal (accounts, registration, uploads via
    `audio.add`, `audio_files.owner_user_id`); the DJ report map is in memory (DJ
    re-reports on its next sync); `sessions.start_time` must be accurate for the
    cut-off to mean anything (seed data uses NOW(), i.e. already past).

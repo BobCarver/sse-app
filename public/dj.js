@@ -685,12 +685,17 @@ var DjClient = class extends sseClient {
   async runPerformance(competitorId, resume, skip) {
     const competitionId = this.competition.id;
     if (!resume) {
-      const src = await this.sourceFor(audioUrl(competitionId, competitorId, "announce"));
-      const result2 = await Promise.race([
-        this.playAudio(src).then(() => "ended"),
-        skip
-      ]);
-      if (result2 === "skip") return false;
+      try {
+        const src = await this.sourceFor(audioUrl(competitionId, competitorId, "announce"));
+        const result2 = await Promise.race([
+          this.playAudio(src).then(() => "ended"),
+          skip
+        ]);
+        if (result2 === "skip") return false;
+      } catch (err) {
+        if (this.cancelled) throw err;
+        console.warn("announcement unavailable, going on to the song:", err);
+      }
     }
     this.audio.src = await this.sourceFor(audioUrl(competitionId, competitorId, "music"));
     this.startPauseButton.disabled = false;

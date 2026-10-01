@@ -332,70 +332,82 @@ Deno.test("DjClient resets to initial state after performance", async () => {
   noopFetch.restore();
 });
 
-Deno.test("DjClient handles audio playback error", async () => {
+Deno.test("DjClient: an announcement that fails to play does not fail the performance", async () => {
   const doc = createTestDOM();
   const mockSse = new MockEventSource();
   const mockAudio = new MockAudio();
-  mockAudio.shouldFailPlay = true;
-
+  mockAudio.shouldFailPlay = true; // the announcement cannot play
   const fetchStub = interceptFetch();
-
-  new DjClient({
-    document: doc,
-    sse: mockSse as any,
-    audio: mockAudio as any,
-  });
+  new DjClient({ document: doc, sse: mockSse as any, audio: mockAudio as any });
+  const startButton = doc.querySelector("#start") as any;
 
   const competition = {
     id: 100,
     competitors: [{ id: 10, name: "Competitor 1", duration: 120 }],
     rubric: { id: 1, judges: [], criteria: [] },
   };
-
   mockSse.emit("competition_start", { competition });
   mockSse.emit("performance_start", { position: 0 });
-
   await delay(100);
 
-  // Check error message was sent via fetch
-  const f = fetchStub.getLastFetch();
-  assert(f !== null);
-  assertEquals(f!.url, "http://localhost/response");
-  assertEquals(f!.body.tag, "perf:100:0");
-  assertEquals(f!.body.payload, false);
+  // the song is loaded and waits for play; nothing was reported as skipped
+  assertEquals(mockAudio.src, "/audio/100/10/music");
+  assertEquals(startButton.disabled, false);
+  assertEquals(fetchStub.getLastFetch(), null);
 
   fetchStub.restore();
 });
 
-Deno.test("DjClient handles audio error event", async () => {
+Deno.test("DjClient: an announcement that errors out does not fail the performance", async () => {
   const doc = createTestDOM();
   const mockSse = new MockEventSource();
   const mockAudio = new MockAudio();
-  mockAudio.shouldFailOnError = true;
-
+  mockAudio.shouldFailOnError = true; // e.g. 404 on the announcement
   const fetchStub = interceptFetch();
-
-  new DjClient({
-    document: doc,
-    sse: mockSse as any,
-    audio: mockAudio as any,
-  });
+  new DjClient({ document: doc, sse: mockSse as any, audio: mockAudio as any });
+  const startButton = doc.querySelector("#start") as any;
 
   const competition = {
     id: 100,
     competitors: [{ id: 10, name: "Competitor 1", duration: 120 }],
     rubric: { id: 1, judges: [], criteria: [] },
   };
-
   mockSse.emit("competition_start", { competition });
   mockSse.emit("performance_start", { position: 0 });
-
   await delay(100);
 
-  // Check error message was sent via fetch
+  assertEquals(mockAudio.src, "/audio/100/10/music");
+  assertEquals(startButton.disabled, false);
+  assertEquals(fetchStub.getLastFetch(), null);
+
+  fetchStub.restore();
+});
+
+Deno.test("DjClient: a song that errors out is reported as skipped", async () => {
+  const doc = createTestDOM();
+  const mockSse = new MockEventSource();
+  const mockAudio = new MockAudio();
+  const fetchStub = interceptFetch();
+  new DjClient({ document: doc, sse: mockSse as any, audio: mockAudio as any });
+  const startButton = doc.querySelector("#start") as any;
+
+  const competition = {
+    id: 100,
+    competitors: [{ id: 10, name: "Competitor 1", duration: 120 }],
+    rubric: { id: 1, judges: [], criteria: [] },
+  };
+  mockSse.emit("competition_start", { competition });
+  mockSse.emit("performance_start", { position: 0 });
+  await delay(0);
+  mockAudio.triggerEnded(); // announcement over
+  await delay(0);
+
+  mockAudio.shouldFailOnError = true; // the song file is broken
+  startButton.onclick();
+  await delay(100);
+
   const f = fetchStub.getLastFetch();
   assert(f !== null);
-  assertEquals(f!.url, "http://localhost/response");
   assertEquals(f!.body.tag, "perf:100:0");
   assertEquals(f!.body.payload, false);
 

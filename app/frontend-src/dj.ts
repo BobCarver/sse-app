@@ -306,15 +306,21 @@ export class DjClient extends sseClient {
     const competitionId = this.competition!.id;
 
     // Announcement (not repeated when resuming after a reload).
+    // A missing or broken announcement is not fatal: go on to the song.
     if (!resume) {
-      const src = await this.sourceFor(
-        audioUrl(competitionId, competitorId, "announce"),
-      );
-      const result = await Promise.race([
-        this.playAudio(src).then(() => "ended" as const),
-        skip,
-      ]);
-      if (result === "skip") return false;
+      try {
+        const src = await this.sourceFor(
+          audioUrl(competitionId, competitorId, "announce"),
+        );
+        const result = await Promise.race([
+          this.playAudio(src).then(() => "ended" as const),
+          skip,
+        ]);
+        if (result === "skip") return false;
+      } catch (err) {
+        if (this.cancelled) throw err; // an administrator skipped it
+        console.warn("announcement unavailable, going on to the song:", err);
+      }
     }
 
     // The song is loaded but never starts by itself: the DJ presses play (a
