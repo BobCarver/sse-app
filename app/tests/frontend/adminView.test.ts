@@ -327,3 +327,19 @@ Deno.test("whatsapp: the link carries the message, with or without a number", ()
     true,
   );
 });
+
+Deno.test("admin view: a skipped competitor has its own colour class, badge and count", () => {
+  const s = session();
+  s.competitions[0].competitors[2].status = "skipped";
+  const html = renderOverview(overview(s), state());
+  assertStringIncludes(html, '<li class="competitor skipped">');
+  assertStringIncludes(html, '<span class="badge skipped">Skipped</span>');
+  assertStringIncludes(html, '<span class="badge skipped">1 skipped</span>'); // on the competition
+  assertStringIncludes(html, "not performed"); // no "scored 0/2" for it
+  assert(!html.includes("scored 0/2"));
+  // The other states are unchanged.
+  assertStringIncludes(html, '<li class="competitor finished">');
+  assertStringIncludes(html, '<li class="competitor in_progress">');
+  // No skipped badge on the competition when nothing was skipped.
+  assert(!renderOverview(overview(), state()).includes("skipped</span>"));
+});

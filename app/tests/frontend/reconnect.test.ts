@@ -213,13 +213,15 @@ Deno.test("scoreboard: replay (competition, position, scores so far) rebuilds th
   assertEquals(cells(), ["8"]);
 });
 
-Deno.test("scoreboard: a new performance starts with an empty board", () => {
+Deno.test("scoreboard: a new performance keeps the last scores until the new competitor is scored", () => {
   const { sse, cells } = board();
   sse.emit("competition_start", { competition: competition() });
   sse.emit("performance_start", { competition_id: 10, position: 0 });
   sse.emit("score_update", score(100, 8));
   sse.emit("performance_start", { competition_id: 10, position: 1 });
-  assertEquals(cells(), [""]);
+  assertEquals(cells(), ["8"]); // still showing the previous competitor's result
+  sse.emit("score_update", score(101, 5));
+  assertEquals(cells(), ["5"]); // replaced by the first score of the new competitor
 });
 
 Deno.test("scoreboard: a score arriving before any competition state does not throw", () => {

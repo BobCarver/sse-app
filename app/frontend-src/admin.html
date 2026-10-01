@@ -10,6 +10,7 @@
     --upcoming: #6b7280; --upcoming-bg: #6b728018;
     --in_progress: #d97706; --in_progress-bg: #d9770622;
     --finished: #16a34a; --finished-bg: #16a34a18;
+    --skipped: #c026d3; --skipped-bg: #c026d322;
     --line: #8884; --muted: #888;
   }
   body { margin: 0; font: 14px/1.4 system-ui, sans-serif; }
@@ -41,6 +42,7 @@
   .badge.upcoming { color: var(--upcoming); background: var(--upcoming-bg); }
   .badge.in_progress { color: var(--in_progress); background: var(--in_progress-bg); }
   .badge.finished { color: var(--finished); background: var(--finished-bg); }
+  .badge.skipped { color: var(--skipped); background: var(--skipped-bg); }
   details.session, details.competition { border-left: 4px solid var(--upcoming); padding-left: 2px; }
   details.in_progress { border-left-color: var(--in_progress); }
   details.finished { border-left-color: var(--finished); }
@@ -54,6 +56,9 @@
   li.competitor { display: flex; align-items: center; gap: 8px; padding: 3px 8px; border-left: 4px solid var(--upcoming); margin: 2px 0; border-radius: 0 4px 4px 0; flex-wrap: wrap; }
   li.competitor.in_progress { border-left-color: var(--in_progress); background: var(--in_progress-bg); }
   li.competitor.finished { border-left-color: var(--finished); background: var(--finished-bg); }
+  li.competitor.skipped { border-left-color: var(--skipped); background: var(--skipped-bg); }
+  li.competitor.skipped .cname { text-decoration: line-through; }
+  .legend { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
   .order { width: 1.5em; text-align: right; color: var(--muted); }
   .cname { font-weight: 600; }
   .audios { margin-left: auto; display: flex; gap: 6px; }
@@ -84,6 +89,7 @@
     <button role="tab" id="tab-festival" aria-selected="true">Festival</button>
     <button role="tab" id="tab-judges" aria-selected="false">Judges</button>
   </div>
+  <span class="legend" aria-label="Status colours"><span class="badge upcoming">Upcoming</span><span class="badge in_progress">In progress</span><span class="badge finished">Finished</span><span class="badge skipped">Skipped</span></span>
   <span id="conn"></span>
   <button id="logout" type="button" class="small">Sign out</button>
 </header>

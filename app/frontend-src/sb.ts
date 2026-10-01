@@ -18,7 +18,14 @@ export class ScoreboardClient extends sseClient {
   private readonly jId2Col = new Map<number, number>();
 
   private scoreboard: HTMLTableElement;
-  private scoreForCompetitor: CompetitorId | undefined = undefined;
+  /**
+   * Whose scores are on the board. They stay until the next competitor's first
+   * score arrives (not when their performance starts), so the audience can still
+   * read the last result while the next act is on.
+   */
+  private shown: { id: CompetitorId; name: string } | undefined = undefined;
+  /** The next competition's layout, applied when its first score arrives. */
+  private pendingRubric: Rubric | undefined = undefined;
   protected override doc: Document;
 
   constructor(deps: ScoreboardDependencies = {}) {
@@ -29,32 +36,59 @@ export class ScoreboardClient extends sseClient {
       "competition_start",
       ({ data }) => {
         const msg = JSON.parse(data) as CompetitionStartMessage;
-        this.makeScoreboard(msg.competition.rubric);
+        // With scores on display, keep that board until the new competition's
+        // first score arrives; otherwise build the (empty) layout right away.
+        if (this.shown) this.pendingRubric = msg.competition.rubric;
+        else this.makeScoreboard(msg.competition.rubric);
+        this.showLabel();
       },
     );
 
-    //.on("performance_start", ({ position }) => {})
-    // .on("enable_scoring", (msg) => {
-    //       msg.
-    //       const currentCompetition = document.querySelector(
-    //         "#current-competition",
-    //       );
-    //       this.clearTable(); // update competitor info
-    //     });
-    // A new performance starts with an empty board (also on replay: the scores
-    // so far follow as score_update events).
-    this.sse.addEventListener("performance_start", () => {
-      this.scoreForCompetitor = undefined;
-      this.clearTable();
-    });
+    // A new performance does NOT clear the board: the last scores stay up until
+    // the new competitor has at least one score (see score_update below). This
+    // also makes a replay after a reconnect harmless.
+    this.sse.addEventListener("performance_start", () => this.showLabel());
+
     this.sse.addEventListener("score_update", ({ data }) => {
       const msg = JSON.parse(data) as ScoreUpdateMessage;
-      if (msg.competitor_id != this.scoreForCompetitor) {
-        this.scoreForCompetitor = msg.competitor_id;
-        this.clearTable();
+      const competitor = this.currentCompetitor();
+      // Scores for anyone but the competitor on now are ignored and change nothing.
+      if (
+        !this.competition || !competitor ||
+        msg.competition_id !== this.competition.id ||
+        msg.competitor_id !== competitor.id
+      ) return;
+
+      if (msg.competitor_id !== this.shown?.id) {
+        // First score of a new competitor: only now does the old board give way.
+        if (this.pendingRubric) {
+          this.makeScoreboard(this.pendingRubric);
+          this.pendingRubric = undefined;
+        } else this.clearTable();
+        this.shown = { id: competitor.id, name: competitor.name };
       }
       this.updateScores(msg);
+      this.showLabel();
     });
+  }
+
+  private currentCompetitor() {
+    return this.position === undefined
+      ? undefined
+      : this.competition?.competitors[this.position];
+  }
+
+  /** Say whose scores are on the board, since the heading already shows the next act. */
+  private showLabel(): void {
+    const current = this.currentCompetitor();
+    this.setText(
+      "scoresFor",
+      !this.shown
+        ? ""
+        : current && current.id !== this.shown.id
+        ? `Last scores: ${this.shown.name}`
+        : `Scores: ${this.shown.name}`,
+    );
   }
 
   makeScoreboard({ judges, criteria }: Rubric): void {

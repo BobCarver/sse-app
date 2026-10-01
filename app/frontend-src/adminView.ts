@@ -22,6 +22,7 @@ export const STATUS_LABEL: Record<Status, string> = {
   upcoming: "Upcoming",
   in_progress: "In progress",
   finished: "Finished",
+  skipped: "Skipped",
 };
 
 const badge = (s: Status) =>
@@ -110,7 +111,11 @@ function renderCompetitor(
     c.duration ? ` · ${c.duration}s` : ""
   }</span>
     ${badge(c.status)}
-    <span class="muted" title="judges who have scored this competitor">scored ${c.scored_by}/${comp.judges.length}</span>
+    ${
+    c.status === "skipped"
+      ? `<span class="muted">not performed</span>`
+      : `<span class="muted" title="judges who have scored this competitor">scored ${c.scored_by}/${comp.judges.length}</span>`
+  }
     <span class="audios">${audioButton(comp, c, "announce")} ${
     audioButton(comp, c, "music")
   }</span>
@@ -126,11 +131,14 @@ function renderCompetition(
       c.judges.map((j) => esc(j.name)).join(", ")
     }</span>`
     : `<span class="muted">no judges assigned</span>`;
+  const skipped = c.competitors.filter((x) => x.status === "skipped").length;
   const summary = `<span class="name">${esc(c.name)}</span> ${
     badge(c.status)
   } <span class="muted">${c.competitors.length} competitor${
     c.competitors.length === 1 ? "" : "s"
-  }</span> ${judges}`;
+  }</span> ${
+    skipped ? `<span class="badge skipped">${skipped} skipped</span>` : ""
+  } ${judges}`;
   const body = c.competitors.length
     ? `<ul class="competitors">${
       c.competitors.map((x) => renderCompetitor(c, x)).join("")

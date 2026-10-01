@@ -314,7 +314,14 @@ var ScoreboardClient = class extends sseClient {
   cId2Row = /* @__PURE__ */ new Map();
   jId2Col = /* @__PURE__ */ new Map();
   scoreboard;
-  scoreForCompetitor = void 0;
+  /**
+   * Whose scores are on the board. They stay until the next competitor's first
+   * score arrives (not when their performance starts), so the audience can still
+   * read the last result while the next act is on.
+   */
+  shown = void 0;
+  /** The next competition's layout, applied when its first score arrives. */
+  pendingRubric = void 0;
   doc;
   constructor(deps = {}) {
     super(deps);
@@ -322,20 +329,36 @@ var ScoreboardClient = class extends sseClient {
     this.scoreboard = this.doc.querySelector("#scoreboard");
     this.sse.addEventListener("competition_start", ({ data }) => {
       const msg = JSON.parse(data);
-      this.makeScoreboard(msg.competition.rubric);
+      if (this.shown) this.pendingRubric = msg.competition.rubric;
+      else this.makeScoreboard(msg.competition.rubric);
+      this.showLabel();
     });
-    this.sse.addEventListener("performance_start", () => {
-      this.scoreForCompetitor = void 0;
-      this.clearTable();
-    });
+    this.sse.addEventListener("performance_start", () => this.showLabel());
     this.sse.addEventListener("score_update", ({ data }) => {
       const msg = JSON.parse(data);
-      if (msg.competitor_id != this.scoreForCompetitor) {
-        this.scoreForCompetitor = msg.competitor_id;
-        this.clearTable();
+      const competitor = this.currentCompetitor();
+      if (!this.competition || !competitor || msg.competition_id !== this.competition.id || msg.competitor_id !== competitor.id) return;
+      if (msg.competitor_id !== this.shown?.id) {
+        if (this.pendingRubric) {
+          this.makeScoreboard(this.pendingRubric);
+          this.pendingRubric = void 0;
+        } else this.clearTable();
+        this.shown = {
+          id: competitor.id,
+          name: competitor.name
+        };
       }
       this.updateScores(msg);
+      this.showLabel();
     });
+  }
+  currentCompetitor() {
+    return this.position === void 0 ? void 0 : this.competition?.competitors[this.position];
+  }
+  /** Say whose scores are on the board, since the heading already shows the next act. */
+  showLabel() {
+    const current = this.currentCompetitor();
+    this.setText("scoresFor", !this.shown ? "" : current && current.id !== this.shown.id ? `Last scores: ${this.shown.name}` : `Scores: ${this.shown.name}`);
   }
   makeScoreboard({ judges, criteria }) {
     const cells = `<td></td>

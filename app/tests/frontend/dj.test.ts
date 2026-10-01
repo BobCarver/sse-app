@@ -17,7 +17,15 @@ import { applyStyleShim, applyTableShims } from "./test-utils.ts";
 const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
 class MockAudio {
-  public src: string = "";
+  private _src: string = "";
+  // A real <audio> is paused after loading a new source and once a clip ends.
+  get src(): string {
+    return this._src;
+  }
+  set src(value: string) {
+    this._src = value;
+    this.paused = true;
+  }
   public paused: boolean = true;
   public currentTime: number = 0;
   public onended: (() => void) | null = null;
@@ -47,6 +55,7 @@ class MockAudio {
 
   // Helper to simulate audio ending
   triggerEnded(): void {
+    this.paused = true;
     if (this.onended) {
       this.onended();
     }
@@ -451,4 +460,194 @@ Deno.test("DjClient destroy cleans up", () => {
 
   assertEquals(startButton.disabled, true);
   assertEquals(skipButton.disabled, true);
+});
+
+// --- the DJ controls the song --------------------------------------------------
+
+/** A fetch whose reply is held back until `release()`, like a slow network. */
+function slowFetch() {
+  const original = globalThis.fetch;
+  const calls: { url: string; body: any }[] = [];
+  const waiting: Array<() => void> = [];
+  globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({
+      url: String(input),
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    });
+    return new Promise<Response>((resolve) =>
+      waiting.push(() => resolve(new Response("{}", { status: 200 })))
+    );
+  };
+  return {
+    calls,
+    release: () => waiting.splice(0).forEach((r) => r()),
+    restore: () => (globalThis.fetch = original),
+  };
+}
+
+const twoCompetitors = {
+  id: 100,
+  name: "Test Competition",
+  competitors: [
+    { id: 10, name: "Competitor 1", duration: 120 },
+    { id: 11, name: "Competitor 2", duration: 120 },
+  ],
+  rubric: { id: 1, judges: [], criteria: [] },
+};
+
+Deno.test("DjClient: the song does not start by itself after the announcement", async () => {
+  const doc = createTestDOM();
+  const mockSse = new MockEventSource();
+  const mockAudio = new MockAudio();
+  const noop = stubFetchNoop();
+  new DjClient({ document: doc, sse: mockSse as any, audio: mockAudio as any });
+  const startButton = doc.querySelector("#start") as any;
+
+  mockSse.emit("competition_start", { competition: twoCompetitors });
+  mockSse.emit("performance_start", { position: 0 });
+  await delay(0);
+  assertEquals(mockAudio.src, "/audio/100/10/announce");
+  assertEquals(mockAudio.playCallCount, 1); // the announcement
+
+  mockAudio.triggerEnded(); // announcement over
+  await delay(0);
+  assertEquals(mockAudio.src, "/audio/100/10/music"); // the song is loaded...
+  assertEquals(mockAudio.playCallCount, 1); // ...but not playing
+  assertEquals(mockAudio.paused, true);
+  assertEquals(startButton.disabled, false); // the DJ can press play
+  assertEquals(startButton.innerText, "play");
+
+  await delay(30); // it keeps waiting
+  assertEquals(mockAudio.playCallCount, 1);
+
+  startButton.onclick(); // the DJ presses play
+  await delay(0);
+  assertEquals(mockAudio.playCallCount, 2);
+  assertEquals(startButton.innerText, "pause");
+
+  mockAudio.triggerEnded(); // song over
+  await delay(0);
+  noop.restore();
+});
+
+Deno.test("DjClient: pausing and playing again carries on from where it stopped", async () => {
+  const doc = createTestDOM();
+  const mockSse = new MockEventSource();
+  const mockAudio = new MockAudio();
+  const noop = stubFetchNoop();
+  new DjClient({ document: doc, sse: mockSse as any, audio: mockAudio as any });
+  const startButton = doc.querySelector("#start") as any;
+
+  mockSse.emit("competition_start", { competition: twoCompetitors });
+  mockSse.emit("performance_start", { position: 0 });
+  await delay(0);
+  mockAudio.triggerEnded();
+  await delay(0);
+
+  startButton.onclick(); // play
+  await delay(0);
+  mockAudio.currentTime = 42; // 42 seconds in
+  startButton.onclick(); // pause
+  startButton.onclick(); // play again
+  await delay(0);
+  assertEquals(mockAudio.currentTime, 42, "resumes, does not restart");
+  noop.restore();
+});
+
+Deno.test("DjClient: skip works from the start of a performance, even during the announcement", async () => {
+  const doc = createTestDOM();
+  const mockSse = new MockEventSource();
+  const mockAudio = new MockAudio();
+  const fetchStub = interceptFetch();
+  new DjClient({ document: doc, sse: mockSse as any, audio: mockAudio as any });
+  const skipButton = doc.querySelector("#skip") as any;
+
+  mockSse.emit("competition_start", { competition: twoCompetitors });
+  mockSse.emit("performance_start", { position: 0 });
+  await delay(0);
+  assertEquals(
+    skipButton.disabled,
+    false,
+    "skip is available during the announcement",
+  );
+
+  skipButton.onclick(); // skip while the announcement plays
+  await delay(5);
+  const f = fetchStub.getLastFetch();
+  assertEquals(f!.body.tag, "perf:100:0");
+  assertEquals(f!.body.payload, false);
+  assertEquals(mockAudio.paused, true, "the announcement is stopped");
+  fetchStub.restore();
+});
+
+Deno.test("DjClient: skip before pressing play reports the performance as skipped", async () => {
+  const doc = createTestDOM();
+  const mockSse = new MockEventSource();
+  const mockAudio = new MockAudio();
+  const fetchStub = interceptFetch();
+  new DjClient({ document: doc, sse: mockSse as any, audio: mockAudio as any });
+  const skipButton = doc.querySelector("#skip") as any;
+
+  mockSse.emit("competition_start", { competition: twoCompetitors });
+  mockSse.emit("performance_start", { position: 0 });
+  await delay(0);
+  mockAudio.triggerEnded(); // announcement over, song waiting for play
+  await delay(0);
+  skipButton.onclick();
+  await delay(5);
+  const f = fetchStub.getLastFetch();
+  assertEquals([f!.body.tag, f!.body.payload], ["perf:100:0", false]);
+  fetchStub.restore();
+});
+
+Deno.test("DjClient: after Skip the next competitor starts cleanly, even if the server moves on before the reply arrives", async () => {
+  const doc = createTestDOM();
+  const mockSse = new MockEventSource();
+  const mockAudio = new MockAudio();
+  const net = slowFetch();
+  new DjClient({ document: doc, sse: mockSse as any, audio: mockAudio as any });
+  const startButton = doc.querySelector("#start") as any;
+  const skipButton = doc.querySelector("#skip") as any;
+
+  mockSse.emit("competition_start", { competition: twoCompetitors });
+  mockSse.emit("performance_start", { position: 0 });
+  await delay(0);
+  mockAudio.triggerEnded(); // announcement over
+  await delay(0);
+
+  skipButton.onclick(); // DJ skips competitor 1: the POST is now in flight
+  await delay(0);
+  assertEquals(net.calls.at(-1)!.body.payload, false);
+
+  // The server has already moved on: competitor 2 is announced before the
+  // reply to the skip has come back.
+  mockSse.emit("performance_start", { position: 1 });
+  await delay(0);
+  assertEquals(mockAudio.src, "/audio/100/11/announce");
+
+  net.release(); // now the reply to the skip arrives
+  await delay(5);
+
+  // Competitor 2's performance is intact: its announcement can finish, the song
+  // is loaded and waits for play, and both buttons work.
+  assert(
+    mockAudio.onended !== null,
+    "the new announcement is still being listened to",
+  );
+  assertEquals(skipButton.disabled, false);
+  mockAudio.triggerEnded();
+  await delay(0);
+  assertEquals(mockAudio.src, "/audio/100/11/music");
+  assertEquals(startButton.disabled, false);
+  assertEquals(mockAudio.playCallCount, 2, "announcements only, no song yet");
+
+  startButton.onclick();
+  await delay(0);
+  assertEquals(mockAudio.playCallCount, 3);
+  mockAudio.triggerEnded(); // song over
+  await delay(0);
+  assertEquals(net.calls.at(-1)!.body.tag, "perf:100:1");
+  assertEquals(net.calls.at(-1)!.body.payload, true);
+  net.release();
+  net.restore();
 });

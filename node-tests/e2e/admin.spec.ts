@@ -39,12 +39,17 @@ test("admin page: sign in, browse the festival tree, issue and revoke a link, si
     await expect(tree.locator("details.session").first()).toContainText("session1");
     await expect(tree.locator("details.session .badge").first()).toBeVisible(); // status shows as text and colour
 
-    // Competitions and competitors are one level further down; open them.
+    // Competitions and competitors are further down; open each level that is closed
+    // (a finished session starts collapsed, which depends on earlier test runs).
+    const openIfClosed = async (details: import("@playwright/test").Locator) => {
+        if (!(await details.evaluate((el: HTMLDetailsElement) => el.open))) {
+            await details.locator("summary").first().click();
+        }
+    };
+    await openIfClosed(tree.locator("details.session").first());
     const competition = tree.locator("details.competition").first();
     await expect(competition).toContainText("Competition 1");
-    if (!(await competition.evaluate((el: HTMLDetailsElement) => el.open))) {
-        await competition.locator("summary").first().click();
-    }
+    await openIfClosed(competition);
     await expect(competition.locator("li.competitor").first()).toContainText("Competitor 1");
 
     // The triangle hides and reveals (native <details>) and survives the 3s refresh.

@@ -3,8 +3,11 @@
  * and browser code: keep it free of Deno and DOM APIs.
  */
 
-/** upcoming = not started, in_progress = under way, finished = done. */
-export type Status = "upcoming" | "in_progress" | "finished";
+/**
+ * upcoming = not started, in_progress = under way, finished = done. A competitor
+ * can also be skipped (the DJ or an administrator skipped the performance).
+ */
+export type Status = "upcoming" | "in_progress" | "finished" | "skipped";
 
 export interface OverviewCompetitor {
   id: number;

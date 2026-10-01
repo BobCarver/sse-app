@@ -157,7 +157,7 @@ function renderPage(
   If those names do not resolve (offline), add <code>127.0.0.1 ${
     opts.hosts.map(esc).join(" ")
   }</code> to /etc/hosts.
-  Click <b>Enable audio</b> in the DJ frame once, then press <b>Start</b> there when a song is queued.
+  Click <b>Enable audio</b> in the DJ frame once. For each act the DJ frame plays the announcement; press <b>play</b> there to start the song, or <b>skip</b> to move on to the next competitor (skipped acts show in purple in the admin page).
 </details>
 <script>
 const { sid, token } = ${data};

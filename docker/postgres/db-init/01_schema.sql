@@ -176,8 +176,16 @@ CREATE TABLE IF NOT EXISTS competition_competitors (
     duration INT,  -- length of the performance, in SECONDS
     score FLOAT,
     order_number INT NOT NULL,
+    -- upcoming until the DJ finishes the performance (performed) or skips it (skipped)
+    status TEXT NOT NULL DEFAULT 'upcoming'
+        CHECK (status IN ('upcoming', 'performed', 'skipped')),
     PRIMARY KEY (competition_id, competitor_id)
 );
+
+-- Databases created before performance status existed get the column here.
+ALTER TABLE competition_competitors
+    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'upcoming'
+    CHECK (status IN ('upcoming', 'performed', 'skipped'));
 
 -- Scores Table
 CREATE TABLE IF NOT EXISTS scores (

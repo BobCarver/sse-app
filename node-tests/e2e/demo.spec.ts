@@ -45,6 +45,10 @@ test("demo page: four devices in one tab run a whole session", async ({ page }) 
     await page.getByRole("button", { name: /Start session/ }).click();
     await expect(page.locator("#msg")).toContainText("Starting: ok");
 
+    // The song waits for the DJ: play is pressed in the DJ frame once the announcement is over.
+    await expect(dj.locator("#start")).toBeEnabled({ timeout: 30_000 });
+    await dj.locator("#start").click();
+
     // The DJ plays the announcement and the song; then each judge gets sliders.
     for (const j of [j1, j2]) {
         await expect(j.locator("#sliders label")).toHaveText("Technique", { timeout: 40_000 });

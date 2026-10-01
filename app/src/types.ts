@@ -47,6 +47,12 @@ export type ProgressEvent =
     competitionId: number;
     competitorId: number;
   }
+  | {
+    kind: "competitor_performed";
+    competitionId: number;
+    competitorId: number;
+  }
+  | { kind: "competitor_skipped"; competitionId: number; competitorId: number }
   | { kind: "competition_completed"; competitionId: number }
   | { kind: "session_ended"; reason: "completed" | "aborted" | "error" };
 

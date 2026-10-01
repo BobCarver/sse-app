@@ -930,6 +930,7 @@ export class Session {
           const [position, competitor] of competition.competitors.entries()
         ) {
           this.signal.throwIfAborted();
+          let performed = false;
           try {
             const performanceCompleted = await this.performPhase(
               competition,
@@ -937,14 +938,36 @@ export class Session {
             );
 
             if (performanceCompleted) {
+              performed = true;
+              this.progress({
+                kind: "competitor_performed",
+                competitionId: competition.id,
+                competitorId: competitor.id,
+              });
               await this.scorePhase(competition);
             } else {
+              // The DJ skipped it (or an administrator did): no scoring, and
+              // the session goes on with the next competitor.
               console.log(
                 `Competitor at position ${position} skipped, no scoring`,
               );
+              this.progress({
+                kind: "competitor_skipped",
+                competitionId: competition.id,
+                competitorId: competitor.id,
+              });
             }
           } catch (err) {
             if (this.signal.aborted) throw err; // stopping: not a per-competitor error
+            // Never performed (the DJ's answer never came, or playback broke):
+            // record it as skipped rather than leaving it looking upcoming.
+            if (!performed) {
+              this.progress({
+                kind: "competitor_skipped",
+                competitionId: competition.id,
+                competitorId: competitor.id,
+              });
+            }
             console.error("Error during competitor", {
               competitionId: competition.id,
               competitorId: competitor.id,

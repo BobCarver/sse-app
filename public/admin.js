@@ -1619,7 +1619,8 @@ function escapeHtml(s) {
 var STATUS_LABEL = {
   upcoming: "Upcoming",
   in_progress: "In progress",
-  finished: "Finished"
+  finished: "Finished",
+  skipped: "Skipped"
 };
 var badge = (s) => `<span class="badge ${s}">${STATUS_LABEL[s]}</span>`;
 function fmtTime(iso) {
@@ -1658,13 +1659,14 @@ function renderCompetitor(comp, c) {
     <span class="cname">${escapeHtml(c.name)}</span>
     <span class="muted">${escapeHtml(c.type)}${c.duration ? ` \xB7 ${c.duration}s` : ""}</span>
     ${badge(c.status)}
-    <span class="muted" title="judges who have scored this competitor">scored ${c.scored_by}/${comp.judges.length}</span>
+    ${c.status === "skipped" ? `<span class="muted">not performed</span>` : `<span class="muted" title="judges who have scored this competitor">scored ${c.scored_by}/${comp.judges.length}</span>`}
     <span class="audios">${audioButton(comp, c, "announce")} ${audioButton(comp, c, "music")}</span>
   </li>`;
 }
 function renderCompetition(c, state) {
   const judges = c.judges.length ? `<span class="muted">judges: ${c.judges.map((j) => escapeHtml(j.name)).join(", ")}</span>` : `<span class="muted">no judges assigned</span>`;
-  const summary = `<span class="name">${escapeHtml(c.name)}</span> ${badge(c.status)} <span class="muted">${c.competitors.length} competitor${c.competitors.length === 1 ? "" : "s"}</span> ${judges}`;
+  const skipped = c.competitors.filter((x) => x.status === "skipped").length;
+  const summary = `<span class="name">${escapeHtml(c.name)}</span> ${badge(c.status)} <span class="muted">${c.competitors.length} competitor${c.competitors.length === 1 ? "" : "s"}</span> ${skipped ? `<span class="badge skipped">${skipped} skipped</span>` : ""} ${judges}`;
   const body = c.competitors.length ? `<ul class="competitors">${c.competitors.map((x) => renderCompetitor(c, x)).join("")}</ul>` : `<p class="muted">No competitors registered.</p>`;
   return section(`c${c.id}`, c.status === "in_progress", state, `competition ${c.status}`, summary, body);
 }

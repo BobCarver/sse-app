@@ -142,8 +142,10 @@ open "http://localhost:3000/demo?token=demo"
 
 In the page: **1. Reset + make audio** (generates a short beep and a tone melody
 per competitor), wait for the DJ frame to say *Audio ready*, click **Enable
-audio** in the DJ frame once, then **2. Start session**. The DJ plays each act;
-the judges get sliders when it ends; the scoreboard fills in. **Reset** clears it
+audio** in the DJ frame once, then **2. Start session**. For each act the DJ frame
+plays the announcement; press **play** there to start the song (it never starts by
+itself), or **skip** to move on to the next competitor. When the song ends the judges
+get sliders and the scoreboard fills in. **Reset** clears it
 to run again. The demo data is `docker/postgres/demo/demo_seed.sql` (ids 1000+, so
 it can sit next to the test seed; it is deliberately not in `db-init/`). Use
 `&session=<id>` to demo a different session, for example `1` with the test seed.

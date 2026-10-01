@@ -484,6 +484,7 @@ var sseClient = class {
 
 // app/frontend-src/dj.ts
 var SILENT_WAV = "data:audio/wav;base64,UklGRrQBAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YZABAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA";
+var PLAY_PROMPT = "Press play to start the song";
 var DjClient = class extends sseClient {
   startPauseButton;
   skipButton;
@@ -593,7 +594,6 @@ var DjClient = class extends sseClient {
     this.startPauseButton.onclick = () => {
       if (this.audio.paused) {
         this.startPauseButton.innerText = "pause";
-        this.audio.currentTime = 0;
         this.audio.play().catch((err) => console.error("play() failed:", err));
       } else {
         this.startPauseButton.innerText = "play";
@@ -658,23 +658,56 @@ var DjClient = class extends sseClient {
   async handlePerformanceStart(position, { resume = false } = {}) {
     this.activePosition = position;
     this.cancelled = false;
+    let completed = false;
     try {
       const competitorId = this.competition.competitors[position].id;
       await this.untilAudioUnlocked();
       if (this.cancelled) throw new Error("cancelled");
-      if (!resume) {
-        await this.playAudio(await this.sourceFor(audioUrl(this.competition.id, competitorId, "announce")));
-      }
-      this.audio.src = await this.sourceFor(audioUrl(this.competition.id, competitorId, "music"));
-      this.startPauseButton.disabled = false;
+      const skip = new Promise((resolve) => {
+        this.skipButton.onclick = () => resolve("skip");
+      });
       this.skipButton.disabled = false;
-      const completed = await this.playMusicWithControls(!resume);
-      await this.report(position, completed);
+      completed = await this.runPerformance(competitorId, resume, skip);
     } catch (_err) {
-      await this.report(position, false);
+      completed = false;
+    }
+    this.finish(position);
+    try {
+      await this.report(position, completed);
     } finally {
-      this.activePosition = void 0;
-      this.initialState();
+      if (this.activePosition === position) this.activePosition = void 0;
+    }
+  }
+  /**
+   * Play the announcement, then wait for the DJ to press play for the song.
+   * Resolves true when the song ends, false when the DJ skips.
+   */
+  async runPerformance(competitorId, resume, skip) {
+    const competitionId = this.competition.id;
+    if (!resume) {
+      const src = await this.sourceFor(audioUrl(competitionId, competitorId, "announce"));
+      const result2 = await Promise.race([
+        this.playAudio(src).then(() => "ended"),
+        skip
+      ]);
+      if (result2 === "skip") return false;
+    }
+    this.audio.src = await this.sourceFor(audioUrl(competitionId, competitorId, "music"));
+    this.startPauseButton.disabled = false;
+    this.setStatus(PLAY_PROMPT);
+    const result = await Promise.race([
+      this.waitForSongEnd(),
+      skip
+    ]);
+    return result !== "skip";
+  }
+  /** Stop playback and put the controls back, unless a newer performance has taken over. */
+  finish(position) {
+    if (this.activePosition !== position) return;
+    this.audio.pause();
+    this.initialState();
+    if (this.doc.getElementById("status")?.textContent === PLAY_PROMPT) {
+      this.setStatus("");
     }
   }
   /** Tell the server how the performance ended; never throws. */
@@ -697,12 +730,11 @@ var DjClient = class extends sseClient {
       this.audio.play().catch((err) => reject(err));
     });
   }
-  playMusicWithControls(autoplay = true) {
+  /** Resolves when the song has played to the end; rejects if playback fails. */
+  waitForSongEnd() {
     return new Promise((resolve, reject) => {
       this.audio.onended = () => resolve(true);
       this.audio.onerror = () => reject(new Error("audio_error"));
-      this.skipButton.onclick = () => resolve(false);
-      if (autoplay) this.audio.play().catch((err) => reject(err));
     });
   }
   destroy() {

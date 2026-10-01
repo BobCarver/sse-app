@@ -57,6 +57,7 @@ const rows = (): OverviewRows => ({
       type: "individual",
       duration: 15,
       order_number: 3,
+      status: "upcoming",
     },
     {
       competition_id: 100,
@@ -65,6 +66,7 @@ const rows = (): OverviewRows => ({
       type: "individual",
       duration: 15,
       order_number: 1,
+      status: "performed",
     },
     {
       competition_id: 100,
@@ -73,6 +75,7 @@ const rows = (): OverviewRows => ({
       type: "couple",
       duration: null,
       order_number: 2,
+      status: "upcoming",
     },
   ],
   rubricJudges: [
@@ -233,4 +236,34 @@ Deno.test("overview: an empty database gives an empty tree", () => {
     { audio: [], credentials: [], connected: new Set(), live: () => null },
   );
   assertEquals(o, { festivals: [], judges: [] });
+});
+
+Deno.test("overview: a skipped competitor is skipped, whatever the competition is doing", () => {
+  const r = rows();
+  r.competitors.find((c) => c.id === 3)!.status = "skipped";
+  const comp = buildOverview(r, {
+    audio: [],
+    credentials: [],
+    connected: new Set(),
+    live: () => null,
+  }).festivals[0].tracks[0].sessions[0].competitions[0];
+  assertEquals(comp.competitors.map((c) => [c.id, c.status]), [
+    [1, "finished"],
+    [2, "in_progress"],
+    [3, "skipped"],
+  ]);
+
+  // Even once the competition is finished, the skipped one stays skipped.
+  r.competitions.find((c) => c.id === 100)!.status = "completed";
+  const done = buildOverview(r, {
+    audio: [],
+    credentials: [],
+    connected: new Set(),
+    live: () => null,
+  }).festivals[0].tracks[0].sessions[0].competitions[0];
+  assertEquals(done.competitors.map((c) => c.status), [
+    "finished",
+    "finished",
+    "skipped",
+  ]);
 });

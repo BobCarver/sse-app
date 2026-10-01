@@ -76,11 +76,28 @@ runs `Session.runSession` in the background. **One running session per track**
 session until it ends** (`claimedClients`); a second start that needs a held judge
 or a busy track gets 409. Multiple tracks run concurrently.
 
-**Flow per competitor:** `performance_start` (all) -> DJ plays -> DJ POSTs
-`perf:<comp>:<position>` (true = done, false = skipped) -> `enable_scoring`
+**Flow per competitor:** `performance_start` (all) -> the DJ page plays the announcement,
+then the song waits for the DJ to press **play** (it never autoplays; skip works at any
+point) -> DJ POSTs `perf:<comp>:<position>` (true = done, false = skipped; a skip moves
+on to the next competitor and is recorded as `competition_competitors.status = 'skipped'`) -> `enable_scoring`
 (judges only) -> each judge POSTs `score:<comp>:<competitor>:<judge>` -> server
 validates against the rubric, rounds to 1 decimal, upserts to `scores`, sends
 `score_update` to **scoreboards only**. Judges never see each other's scores.
+
+**Scoreboard keeps the last result.** `sb.ts` does not clear on `performance_start` or
+`competition_start`: the previous competitor's scores stay (labelled "Last scores: <name>"
+in `#scoresFor`) until the first `score_update` for the competitor now on, which replaces
+the board (and applies the next competition's judges/criteria, deferred as `pendingRubric`).
+Scores for anyone not on now are ignored. A page loaded mid-performance has no previous
+scores to show (the server replays only the current competitor's).
+
+**Skipped performances.** `perf:` false (DJ skip, administrator skip, or the DJ not answering
+within `PERFORMANCE_TIMEOUT_MS`) -> no scoring, the session goes on to the next competitor,
+and `competition_competitors.status` becomes `skipped` (`performed` when the DJ finished,
+`upcoming` again when a session starts). The admin page shows skipped competitors in purple
+(`Status` includes `skipped`). The DJ page's cleanup runs before it reports, and only if no
+newer performance has taken over: the server starts the next performance the moment it hears
+a skip, and cleaning up afterwards used to wipe the new one's audio listeners.
 
 **Progress is persisted** (best effort, in order, via `recordProgress` in `db.ts`):
 `sessions.status` (active; completed, or back to `upcoming` if aborted/failed),

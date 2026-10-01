@@ -15,6 +15,8 @@ import { sseClient } from "./sseClient.ts";
 const SILENT_WAV =
   "data:audio/wav;base64,UklGRrQBAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YZABAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA";
 
+const PLAY_PROMPT = "Press play to start the song";
+
 export interface DjDependencies {
   sse?: SseLike;
   document?: Document;
@@ -181,8 +183,8 @@ export class DjClient extends sseClient {
   private setupAudioControls(): void {
     this.startPauseButton.onclick = () => {
       if (this.audio.paused) {
+        // A newly loaded song starts at 0; after a pause this carries on.
         this.startPauseButton.innerText = "pause";
-        this.audio.currentTime = 0;
         this.audio.play().catch((err) => console.error("play() failed:", err));
       } else {
         this.startPauseButton.innerText = "play";
@@ -261,38 +263,79 @@ export class DjClient extends sseClient {
   ): Promise<void> {
     this.activePosition = position;
     this.cancelled = false;
+    let completed = false;
     try {
       const competitorId = this.competition!.competitors[position].id;
 
       await this.untilAudioUnlocked();
       if (this.cancelled) throw new Error("cancelled");
 
-      // Play announcement (skipped when resuming after a reload)
-      if (!resume) {
-        await this.playAudio(
-          await this.sourceFor(
-            audioUrl(this.competition!.id, competitorId, "announce"),
-          ),
-        );
-      }
-
-      // Play music
-      this.audio.src = await this.sourceFor(
-        audioUrl(this.competition!.id, competitorId, "music"),
-      );
-      this.startPauseButton.disabled = false;
+      // Skip works from the moment the performance starts: during the
+      // announcement, while the song waits for play, or while it plays.
+      const skip = new Promise<"skip">((resolve) => {
+        this.skipButton.onclick = () => resolve("skip");
+      });
       this.skipButton.disabled = false;
 
-      // When resuming, wait for the DJ to press play: browsers block autoplay
-      // without a user gesture, and a rejected play() would skip the act.
-      const completed = await this.playMusicWithControls(!resume);
-      await this.report(position, completed);
+      completed = await this.runPerformance(competitorId, resume, skip);
     } catch (_err) {
       // playback failed: report the performance as not completed (skipped)
-      await this.report(position, false);
+      completed = false;
+    }
+
+    // Stop and reset the controls BEFORE telling the server. It may start the
+    // next performance the moment it hears from us (always, after a skip), and
+    // this performance's cleanup must not disturb that one.
+    this.finish(position);
+    try {
+      await this.report(position, completed);
     } finally {
-      this.activePosition = undefined;
-      this.initialState();
+      if (this.activePosition === position) this.activePosition = undefined;
+    }
+  }
+
+  /**
+   * Play the announcement, then wait for the DJ to press play for the song.
+   * Resolves true when the song ends, false when the DJ skips.
+   */
+  private async runPerformance(
+    competitorId: number,
+    resume: boolean,
+    skip: Promise<"skip">,
+  ): Promise<boolean> {
+    const competitionId = this.competition!.id;
+
+    // Announcement (not repeated when resuming after a reload).
+    if (!resume) {
+      const src = await this.sourceFor(
+        audioUrl(competitionId, competitorId, "announce"),
+      );
+      const result = await Promise.race([
+        this.playAudio(src).then(() => "ended" as const),
+        skip,
+      ]);
+      if (result === "skip") return false;
+    }
+
+    // The song is loaded but never starts by itself: the DJ presses play (a
+    // browser would also refuse autoplay without a click, and a rejected
+    // play() would count as a skipped act).
+    this.audio.src = await this.sourceFor(
+      audioUrl(competitionId, competitorId, "music"),
+    );
+    this.startPauseButton.disabled = false;
+    this.setStatus(PLAY_PROMPT);
+    const result = await Promise.race([this.waitForSongEnd(), skip]);
+    return result !== "skip";
+  }
+
+  /** Stop playback and put the controls back, unless a newer performance has taken over. */
+  private finish(position: number): void {
+    if (this.activePosition !== position) return;
+    this.audio.pause();
+    this.initialState();
+    if (this.doc.getElementById("status")?.textContent === PLAY_PROMPT) {
+      this.setStatus("");
     }
   }
 
@@ -319,12 +362,11 @@ export class DjClient extends sseClient {
     });
   }
 
-  private playMusicWithControls(autoplay = true): Promise<boolean> {
+  /** Resolves when the song has played to the end; rejects if playback fails. */
+  private waitForSongEnd(): Promise<boolean> {
     return new Promise<boolean>((resolve, reject) => {
       this.audio.onended = () => resolve(true);
       this.audio.onerror = () => reject(new Error("audio_error"));
-      this.skipButton.onclick = () => resolve(false);
-      if (autoplay) this.audio.play().catch((err) => reject(err));
     });
   }
 

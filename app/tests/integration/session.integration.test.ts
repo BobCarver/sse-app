@@ -7,6 +7,7 @@ import {
   getNextSessionForTrack,
   getSessionCompetitionsWithRubrics,
   getSessionTrackId,
+  recordProgress,
   resetSession,
   saveScore,
   sql,
@@ -1158,3 +1159,98 @@ async function adminCookie(): Promise<string> {
   assertEquals(res.status, 200);
   return res.headers.get("set-cookie")!.split(";")[0];
 }
+
+Deno.test({
+  name:
+    "Skip: the DJ skips the first competitor, the second still performs, and the database and admin overview show it",
+  ignore: !sql,
+  fn: async () => {
+    const db = sql!;
+    await seed(db);
+    const streams: SSEStream[] = [];
+    try {
+      const dj = await SSEStream.open("dj1");
+      const j2 = await SSEStream.open("judge2");
+      const j3 = await SSEStream.open("judge3");
+      const sb = await SSEStream.open("sb1");
+      streams.push(dj, j2, j3, sb);
+      const start = await app.fetch(
+        new Request("http://localhost/sessions/1/start", {
+          method: "POST",
+          headers: adminHeaders,
+        }),
+      );
+      assertEquals(start.status, 200);
+      await start.body?.cancel();
+
+      // Competitor 100: the DJ presses skip.
+      assertEquals((await dj.next("performance_start")).position, 0);
+      assertEquals(
+        await respond(dj, { tag: perfTag(10, 0), payload: false }),
+        200,
+      );
+
+      // The session goes straight on to competitor 101 (it does not end).
+      assertEquals((await dj.next("performance_start")).position, 1);
+      assertEquals(
+        j2.queued().includes("enable_scoring"),
+        false,
+        "no scoring for a skipped competitor",
+      );
+      assertEquals(
+        await respond(dj, { tag: perfTag(10, 1), payload: true }),
+        200,
+      );
+      for (const j of [j2, j3]) {
+        assertEquals((await j.next("enable_scoring")).position, 1);
+      }
+      const scores = [{ criteria_id: 1, score: 7 }];
+      assertEquals(
+        await respond(j2, { tag: scoreTag(10, 101, 2), payload: scores }),
+        200,
+      );
+      assertEquals(
+        await respond(j3, { tag: scoreTag(10, 101, 3), payload: scores }),
+        200,
+      );
+      assertEquals((await dj.next("session_end")).reason, "completed");
+      await delay(100); // let the progress writes finish
+
+      const rows =
+        await db`SELECT competitor_id, status FROM competition_competitors
+        WHERE competition_id = 10 ORDER BY order_number`;
+      assertEquals(rows.map((r: any) => [r.competitor_id, r.status]), [
+        [100, "skipped"],
+        [101, "performed"],
+      ]);
+
+      // The admin overview shows it, in its own state.
+      const res = await app.fetch(
+        new Request("http://localhost/admin/overview", {
+          headers: { cookie: await adminCookie() },
+        }),
+      );
+      const overview = await res.json();
+      const competitors =
+        overview.festivals[0].tracks[0].sessions[0].competitions[0]
+          .competitors;
+      assertEquals(competitors.map((c: any) => [c.id, c.status]), [
+        [100, "skipped"],
+        [101, "finished"],
+      ]);
+
+      // Starting the session again begins from scratch: the old outcome is cleared.
+      await db`UPDATE sessions SET status = 'upcoming' WHERE id = 1`;
+      await db`UPDATE competition_competitors SET status = 'skipped' WHERE competition_id = 10`;
+      await recordProgress(1, { kind: "session_started" });
+      const [{ n }] =
+        await db`SELECT COUNT(*)::int AS n FROM competition_competitors
+        WHERE competition_id = 10 AND status = 'upcoming'`;
+      assertEquals(n, 2);
+    } finally {
+      await Promise.all(streams.map((s) => s.close()));
+      await delay(50);
+      await unseed(db);
+    }
+  },
+});

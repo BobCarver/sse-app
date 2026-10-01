@@ -1,4 +1,4 @@
-import { type APIRequestContext, type Browser, expect, test } from "@playwright/test";
+import { type APIRequestContext, type Browser, expect, type Page, test } from "@playwright/test";
 
 // Drives the REAL pages through admin-issued links:
 //   admin issues links -> devices open them -> session start -> DJ plays ->
@@ -103,15 +103,31 @@ async function finish(request: APIRequestContext, all: { context: { close(): Pro
     await Promise.all(all.map((c) => c.context.close()));
 }
 
+/**
+ * The song waits for the DJ: once the announcement is over the play button is
+ * enabled but nothing starts by itself. Then the DJ presses play. With
+ * `judges`, also check that no song has played meanwhile (the clip is 0.3 s, so
+ * an autoplaying song would long since have opened scoring).
+ */
+async function playSong(dj: { page: Page }, judges: { page: Page }[] = []) {
+    await expect(dj.page.locator("#start")).toBeEnabled({ timeout: 20_000 });
+    if (judges.length) {
+        await dj.page.waitForTimeout(1500);
+        for (const j of judges) await expect(j.page.locator("#submit")).toBeDisabled();
+    }
+    await dj.page.locator("#start").click();
+}
+
 async function startSession(request: APIRequestContext) {
     const res = await request.post("/sessions/1/start", { headers: ADMIN });
     expect(res.status()).toBe(200);
 }
 
 test("real pages: full session through the UI", async ({ browser, request }) => {
-    const { j2, j3, sb, all } = await setup(browser, request);
+    const { dj, j2, j3, sb, all } = await setup(browser, request);
     try {
         await startSession(request);
+        await playSong(dj, [j2, j3]); // the song never starts by itself
 
         for (const j of [j2, j3]) {
             // The start now waits for the DJ page to hold the audio (prefetch handshake).
@@ -138,9 +154,10 @@ test("real pages: full session through the UI", async ({ browser, request }) => 
 });
 
 test("real pages: a judge whose connection drops mid-scoring recovers and can still submit", async ({ browser, request }) => {
-    const { j2, j3, sb, all } = await setup(browser, request);
+    const { dj, j2, j3, sb, all } = await setup(browser, request);
     try {
         await startSession(request);
+        await playSong(dj);
         for (const j of [j2, j3]) {
             await expect(j.page.locator("#submit")).toBeEnabled({ timeout: 20_000 });
         }
@@ -175,9 +192,10 @@ test("real pages: a judge whose connection drops mid-scoring recovers and can st
 });
 
 test("real pages: a revoked judge is locked out at once and told why", async ({ browser, request }) => {
-    const { links, j2, j3, all } = await setup(browser, request);
+    const { links, dj, j2, j3, all } = await setup(browser, request);
     try {
         await startSession(request);
+        await playSong(dj);
         for (const j of [j2, j3]) {
             await expect(j.page.locator("#submit")).toBeEnabled({ timeout: 20_000 });
         }
@@ -235,9 +253,10 @@ test("real pages: a link for one role cannot be used on another role's page", as
 });
 
 test("operator: closing scoring tells the judge who didn't submit; the others' scores stand", async ({ browser, request }) => {
-    const { j2, j3, sb, all } = await setup(browser, request);
+    const { dj, j2, j3, sb, all } = await setup(browser, request);
     try {
         await startSession(request);
+        await playSong(dj);
         for (const j of [j2, j3]) {
             await expect(j.page.locator("#submit")).toBeEnabled({ timeout: 20_000 });
         }
@@ -281,6 +300,45 @@ test("operator: aborting a stuck session tells every page and lets it be started
         await expect(j3.page.locator("#sliders label")).toHaveText("Technique");
         await expect(dj.page.locator("#skip")).toBeEnabled({ timeout: 20_000 });
         await expect(sb.page.locator("#scoreboard")).toBeVisible();
+    } finally {
+        await finish(request, all);
+    }
+});
+
+test("DJ skip: the performance is recorded as skipped and shown in its own colour in the admin screen", async ({ browser, request }) => {
+    const { dj, j2, j3, all } = await setup(browser, request);
+    try {
+        await startSession(request);
+        // Skip is available as soon as the performance starts (during the announcement).
+        await expect(dj.page.locator("#skip")).toBeEnabled({ timeout: 20_000 });
+        await dj.page.locator("#skip").click();
+        // Nobody is asked to score it.
+        for (const j of [j2, j3]) await expect(j.page.locator("#submit")).toBeDisabled();
+
+        // It is recorded as skipped (the seed has one competitor, so the session ends).
+        await expect.poll(async () => {
+            const res = await request.get("/admin/overview", { headers: ADMIN });
+            const o = await res.json();
+            const session = o.festivals.flatMap((f: any) => f.tracks).flatMap((t: any) => t.sessions).find((x: any) => x.id === 1);
+            return session?.competitions[0]?.competitors.map((c: any) => c.status);
+        }, { timeout: 15_000 }).toEqual(["skipped"]);
+
+        // The admin screen shows it in its own state and colour.
+        const admin = await browser.newContext();
+        const page = await admin.newPage();
+        await page.goto("/admin");
+        await page.locator("#token").fill(ADMIN.authorization.replace("Bearer ", ""));
+        await page.getByRole("button", { name: "Sign in" }).click();
+        const row = page.locator("li.competitor.skipped").first();
+        await expect(row).toContainText("Competitor 1");
+        await expect(row.locator(".badge.skipped")).toHaveText("Skipped");
+        await expect(page.locator("details.competition .badge.skipped").first()).toContainText("1 skipped");
+        const colours = await page.evaluate(() => {
+            const colour = (sel: string) => getComputedStyle(document.querySelector(sel)!).color;
+            return { skipped: colour(".badge.skipped"), finished: colour(".badge.finished"), upcoming: colour(".badge.upcoming"), progress: colour(".badge.in_progress") };
+        });
+        expect(new Set(Object.values(colours)).size).toBe(4); // four different colours
+        await admin.close();
     } finally {
         await finish(request, all);
     }

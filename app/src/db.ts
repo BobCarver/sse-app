@@ -207,6 +207,10 @@ export async function recordProgress(
   switch (event.kind) {
     case "session_started":
       await sql`UPDATE sessions SET status = 'active' WHERE id = ${sessionId}`;
+      // A session always runs from its first competitor: forget earlier outcomes.
+      await sql`UPDATE competition_competitors SET status = 'upcoming'
+        WHERE competition_id IN
+          (SELECT id FROM competitions WHERE session_id = ${sessionId})`;
       await sql`UPDATE tracks SET current_session = ${sessionId}
         WHERE id = (SELECT track_id FROM sessions WHERE id = ${sessionId})`;
       break;
@@ -220,6 +224,15 @@ export async function recordProgress(
     case "competitor_started":
       await sql`UPDATE sessions SET current_competitor = ${event.competitorId}
         WHERE id = ${sessionId}`;
+      break;
+    case "competitor_performed":
+    case "competitor_skipped":
+      await sql`UPDATE competition_competitors
+        SET status = ${
+        event.kind === "competitor_skipped" ? "skipped" : "performed"
+      }
+        WHERE competition_id = ${event.competitionId}
+          AND competitor_id = ${event.competitorId}`;
       break;
     case "competition_completed":
       await sql`UPDATE competitions SET status = 'completed'
@@ -348,6 +361,9 @@ export async function resetSession(sessionId: number): Promise<void> {
       (SELECT id FROM competitions WHERE session_id = ${sessionId})`;
     await tx`UPDATE competitions SET status = 'upcoming'
       WHERE session_id = ${sessionId}`;
+    await tx`UPDATE competition_competitors SET status = 'upcoming'
+      WHERE competition_id IN
+        (SELECT id FROM competitions WHERE session_id = ${sessionId})`;
     await tx`UPDATE sessions SET status = 'upcoming', start_time = NOW(),
       current_competition = NULL, current_competitor = NULL
       WHERE id = ${sessionId}`;
@@ -386,7 +402,8 @@ export async function getOverviewRows(): Promise<OverviewRows> {
           current_competitor FROM sessions ORDER BY start_time, id`,
     sql`SELECT id, session_id, order_number, name, status, rubric_id
         FROM competitions ORDER BY session_id, order_number`,
-    sql`SELECT cc.competition_id, c.id, c.name, c.type, cc.duration, cc.order_number
+    sql`SELECT cc.competition_id, c.id, c.name, c.type, cc.duration, cc.order_number,
+          cc.status
         FROM competition_competitors cc JOIN competitors c ON c.id = cc.competitor_id
         ORDER BY cc.competition_id, cc.order_number`,
     sql`SELECT rj.rubric_id, j.id AS judge_id, u.name, u.email

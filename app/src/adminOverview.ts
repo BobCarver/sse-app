@@ -43,6 +43,8 @@ export interface OverviewRows {
     type: string;
     duration: number | null;
     order_number: number;
+    /** upcoming, performed or skipped (competition_competitors.status). */
+    status: string;
   }[];
   rubricJudges: {
     rubric_id: number;
@@ -150,8 +152,10 @@ export function buildOverview(
           const scored = scoredBy.get(`${comp.id}:${c.id}`) ?? 0;
           // Finished once everyone scored (or the whole competition is over);
           // in progress while it is the one being performed.
-          const status: Status = compStatus === "finished" ||
-              (judges.length > 0 && scored >= judges.length)
+          const status: Status = c.status === "skipped"
+            ? "skipped"
+            : compStatus === "finished" ||
+                (judges.length > 0 && scored >= judges.length)
             ? "finished"
             : compStatus === "in_progress" &&
                 session.current_competition === comp.id &&
