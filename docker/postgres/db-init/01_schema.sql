@@ -5,7 +5,7 @@
 CREATE TABLE IF NOT EXISTS festivals (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Tracks Table
@@ -15,14 +15,14 @@ CREATE TABLE IF NOT EXISTS tracks (
     name TEXT NOT NULL,
     location TEXT NOT NULL,
     current_session INT,
-    created_at TIMESTAMP DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Rubrics Table
 CREATE TABLE IF NOT EXISTS rubrics (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Criteria Table
@@ -39,8 +39,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     current_competitor INT,
     name TEXT NOT NULL,
     status text NOT NULL CHECK (status IN ('upcoming', 'active', 'completed')),
-    start_time TIMESTAMP NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW()
+    start_time TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Competitions Table
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS competitions (
     rubric_id INT NOT NULL REFERENCES rubrics(id) ON DELETE RESTRICT,
     name TEXT NOT NULL,
     status text NOT NULL CHECK (status IN ('upcoming', 'active', 'completed')),
-    created_at TIMESTAMP DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Users Table
@@ -61,14 +61,14 @@ CREATE TABLE IF NOT EXISTS users (
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('admin', 'judge', 'competitor')),
-    created_at TIMESTAMP DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Judges Table
 CREATE TABLE IF NOT EXISTS judges (
     id SERIAL PRIMARY KEY,
     user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at TIMESTAMP DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Competitors Table
@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS competitors (
     id SERIAL PRIMARY KEY,
     name TEXT,
     type TEXT NOT NULL CHECK (type IN ('individual', 'couple', 'team')),
-    created_at TIMESTAMP DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Competitor members
@@ -195,7 +195,7 @@ CREATE TABLE IF NOT EXISTS scores (
     judge_id INT NOT NULL REFERENCES judges(id) ON DELETE CASCADE,
     criteria_id INT NOT NULL REFERENCES criteria(id) ON DELETE CASCADE,
     score NUMERIC(3, 1) NOT NULL CHECK (score >= 1 AND score <= 10),
-    created_at TIMESTAMP DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (competition_id, judge_id, competitor_id, criteria_id)
 );
 
@@ -207,8 +207,8 @@ CREATE TABLE IF NOT EXISTS client_credentials (
     client_id TEXT NOT NULL CHECK (client_id ~ '^(dj|judge|sb)[0-9]+$'),
     secret_hash TEXT NOT NULL UNIQUE,
     label TEXT,
-    created_at TIMESTAMP DEFAULT NOW(),
-    revoked_at TIMESTAMP
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    revoked_at TIMESTAMPTZ
 );
 
 -- Audio each competitor performs with. The bytes live on disk (AUDIO_DIR) under
@@ -222,7 +222,7 @@ CREATE TABLE IF NOT EXISTS audio_files (
     content_type TEXT NOT NULL,
     bytes INT NOT NULL,
     sha256 TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
     PRIMARY KEY (competition_id, competitor_id, kind),
     FOREIGN KEY (competition_id, competitor_id)
         REFERENCES competition_competitors(competition_id, competitor_id)

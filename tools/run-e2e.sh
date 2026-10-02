@@ -24,7 +24,7 @@ set -e
 
 if [ "$TEARDOWN" = "1" ]; then
   echo "[run-e2e] stopping the database"
-  $COMPOSE down
+  $COMPOSE down -v
 else
   echo "[run-e2e] leaving the database running (TEARDOWN=0)"
 fi

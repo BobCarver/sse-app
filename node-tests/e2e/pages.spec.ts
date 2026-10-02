@@ -295,7 +295,11 @@ test("operator: aborting a stuck session tells every page and lets it be started
         await expect(j2.page.locator("#submit")).toBeDisabled();
 
         // Nothing is left running, and the same pages can run it again.
-        expect(await (await request.get("/admin/sessions", { headers: ADMIN })).json()).toEqual([]);
+        // (the server drops the session a moment after the pages hear about it)
+        await expect.poll(
+            async () => (await (await request.get("/admin/sessions", { headers: ADMIN })).json()).length,
+            { timeout: 10_000 },
+        ).toBe(0);
         await startSession(request);
         await expect(j3.page.locator("#sliders label")).toHaveText("Technique");
         await expect(dj.page.locator("#skip")).toBeEnabled({ timeout: 20_000 });
