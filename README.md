@@ -85,6 +85,18 @@ deno task test:e2e                     # builds the bundles, starts the app, run
 docker compose -f docker/docker-compose.yml down -v   # reset completely
 ```
 
+To run the Deno suite (unit, frontend, contract, integration) the same way:
+
+```sh
+./tools/run-tests.sh              # Docker Postgres -> empty schema-only database -> deno task test
+./tools/run-tests.sh test:integration   # or any single task
+TEARDOWN=0 ./tools/run-tests.sh   # leave the database running afterwards
+```
+
+It uses a separate schema-only database (`test_empty`) because the compose
+default database is seeded for the browser tests, and the contract and integration
+tests expect empty tables.
+
 Without Docker, point `DATABASE_URL` at any Postgres and load
 `docker/postgres/db-init/01_schema.sql` (and `02_seed.sql` for the browser
 tests) with `psql`. The integration tests need a database with the schema but

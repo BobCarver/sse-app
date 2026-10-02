@@ -16,6 +16,7 @@ deno task test          # unit -> frontend -> contract -> integration (stops on 
 deno task test:unit | test:frontend | test:contract | test:integration
 deno task test:e2e      # Playwright, needs DATABASE_URL with schema AND seed (see README)
 ./tools/run-e2e.sh      # same, with Docker providing Postgres
+./tools/run-tests.sh    # deno task test with Docker Postgres (schema-only DB; `... test:unit` for one task)
 deno task build         # rebuild public/*.js (tracked in git; deno bundle)
 deno task fmt           # fix formatting (covers app/ and scripts/ only)
 deno task demo          # DEMO=1 server + /demo page (see "Demo"); deno task demo:seed loads its data
@@ -57,7 +58,7 @@ app/tests/          unit/ frontend/ contract/ integration/ + auth-utils.ts test-
 node-tests/         Playwright (Node only): e2e/pages.spec.ts, playwright.config.ts
 docker/             docker-compose.yml, postgres/db-init/{01_schema,02_seed}.sql
 scripts/            build_artifacts.ts, issue-links.ts (operator CLI)
-tools/              e2e.sh, run-e2e.sh
+tools/              e2e.sh, run-e2e.sh, run-tests.sh
 .github/workflows/ci.yml   static / tests / e2e jobs
 ```
 
@@ -256,8 +257,11 @@ Phases 0-7 of the "make it correctly functioning" plan are done and committed.
 Since then (latest: `11af1b6`, then a missing announcement stops being fatal): `/response` extracted to a service, session
 progress persisted, FKs on `rubric_judge_criteria`, credential issue checks the
 judge/track exists, and competitor audio (storage, cut-off, manifest, DJ prefetch,
-start gate). Suites: ~101 unit, ~114 frontend, 27 contract, 9 integration (with a
-DB), 7 browser tests; all green with exit code 0, with and without a database.
+start gate). Suites: 120 unit, 114 frontend, 34 contract, 12 integration (with a
+DB), 12 browser tests; all green with exit code 0 against Docker Postgres
+(`tools/run-tests.sh`, `tools/run-e2e.sh`). `start_time` and the other timestamps are
+`TIMESTAMPTZ`: with zone-less columns a non-UTC server and a UTC database put the audio
+cut-off hours off and the DJ start gate never opened.
 `deno task static` only passes once generated `public/*.js` is committed.
 
 Working style (owner): analysis only when asked to analyse; commit only when asked.
@@ -275,7 +279,7 @@ Working style (owner): analysis only when asked to analyse; commit only when ask
 3. Missing-judge-score records are in memory only; persist if results/audit need them.
 4. Single-instance assumption: the revocation cache is in process memory.
 5. CI: `ci.yml` has run on GitHub and is green (run for `9b4409a`: static, tests,
-   browser tests; browser job ~7 min). Still open: `tools/run-e2e.sh` (Docker) is
-   unverified because Docker wasn't running; `.vscode/tasks.json` references a missing
+   browser tests; browser job ~7 min). `tools/run-e2e.sh` (Docker) now verified
+   (12/12). Still open: `.vscode/tasks.json` references a missing
    `start-debug-session.sh`; Actions warns that `actions/checkout@v4` targets Node 20
    and that `ubuntu-latest` moves to Ubuntu 26 on 2026-10-19 (bump/pin when convenient).
