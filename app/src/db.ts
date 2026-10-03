@@ -251,6 +251,14 @@ export async function recordProgress(
   }
 }
 
+/** Sessions the database says are running (left that way only by a crash). */
+export async function getActiveSessionIds(): Promise<number[]> {
+  if (!sql) return [];
+  const rows = await sql<{ id: number }[]>`
+    SELECT id FROM sessions WHERE status = 'active' ORDER BY id`;
+  return rows.map((r: { id: number }) => r.id);
+}
+
 /** How far the session got, for resuming it after a stop or a server restart. */
 export async function getResumeRows(
   sessionId: number,

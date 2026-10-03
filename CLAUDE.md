@@ -27,7 +27,7 @@ ADMIN_TOKEN=... deno task links issue --tracks 1,2 --judges 2,3   # see "Operati
 Always check **exit codes**, not just "N passed" (see Gotchas). Environment:
 `DATABASE_URL`, `ADMIN_TOKEN` (admin routes return 503 without it), `PORT`
 (3000), `PUBLIC_URL` (base for issued links), `JUDGE_SCORE_TIMEOUT_MS` (60000),
-`PERFORMANCE_TIMEOUT_MS` (0 = none), `AUDIO_DIR` (./audio, gitignored), `MAX_AUDIO_BYTES` (50 MB), `AUDIO_CUTOFF_MINUTES` (30), `REQUIRE_DB=1` (integration tests fail
+`PERFORMANCE_TIMEOUT_MS` (0 = none), `AUDIO_DIR` (./audio, gitignored), `MAX_AUDIO_BYTES` (50 MB), `AUDIO_CUTOFF_MINUTES` (30), `AUTO_RESUME` (0 turns off resuming crashed sessions at boot), `REQUIRE_DB=1` (integration tests fail
 instead of skipping), `E2E_PORT` (8000), `DEBUG=1`.
 
 ## Layout
@@ -122,6 +122,14 @@ resetting them. A `completed` session starts from scratch. The response has
 idempotently; rows left `performed` by older code count as "scoring cut off" if they are
 first in line, so in an old database set finished sessions' statuses to `finalized`.
 Missing-score records are still memory only.
+
+**Auto-resume at boot** (`resumeActiveSessions` in `main.ts`, runs when the server is started
+directly, not in `DEMO=1`, off with `AUTO_RESUME=0`). Every normal end writes `completed` or
+`upcoming`, so a session still `active` in the database was cut off by a crash. The server
+starts each such session again through the same `startSession` as `POST /start`, from the
+resume plan, without the audio start gate (the DJ's ready report is memory only). It then
+waits for the clients, which reconnect on their own. A SIGTERM shutdown is an abort
+(`upcoming`), so it is not resumed: an administrator presses start.
 
 **Progress is persisted** (best effort, in order, via `recordProgress` in `db.ts`):
 `sessions.status` (active; completed, or back to `upcoming` if aborted/failed),

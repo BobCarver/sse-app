@@ -15,7 +15,12 @@ import {
 } from "../../src/db.ts";
 import { planResume } from "../../src/resume.ts";
 import { Hono } from "@hono/hono";
-import { app, audio, credentials } from "../../src/main.ts";
+import {
+  app,
+  audio,
+  credentials,
+  resumeActiveSessions,
+} from "../../src/main.ts";
 import { registerDemoRoutes } from "../../src/demo.ts";
 import { announceAudio } from "../../src/audioAnnouncer.ts";
 import { SessionManager } from "../../src/sessionManager.ts";
@@ -1273,6 +1278,64 @@ Deno.test({
     } finally {
       await Promise.all(streams.map((s) => s.close()));
       await delay(50);
+      await unseed(db);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "Crash: at boot an active session resumes with the competitor that was being scored",
+  ignore: !sql,
+  fn: async () => {
+    const db = sql!;
+    await seed(db);
+    const streams: SSEStream[] = [];
+    try {
+      // The database as a crash left it: session active, 100 done, 101 performed
+      // and judge 2 had scored before the server died.
+      await db`UPDATE sessions SET status = 'active' WHERE id = 1`;
+      await db`UPDATE competition_competitors SET status = 'finalized'
+        WHERE competition_id = 10 AND competitor_id = 100`;
+      await db`UPDATE competition_competitors SET status = 'performed'
+        WHERE competition_id = 10 AND competitor_id = 101`;
+      await db`INSERT INTO scores (competition_id, competitor_id, judge_id, criteria_id, score)
+        VALUES (10, 101, 2, 1, 7)`;
+
+      await resumeActiveSessions();
+      const session = SessionManager.getSession(1);
+      assert(session?.isRunning(), "the session is running again");
+
+      const dj = await SSEStream.open("dj1");
+      const j2 = await SSEStream.open("judge2");
+      const j3 = await SSEStream.open("judge3");
+      const sb = await SSEStream.open("sb1");
+      streams.push(dj, j2, j3, sb);
+
+      // No new performance; only judge 3 is asked, for the same competitor.
+      assertEquals((await j3.next("enable_scoring")).position, 1);
+      assertEquals(j2.queued().includes("enable_scoring"), false);
+      assertEquals(dj.queued().includes("performance_start"), false);
+      assertEquals(
+        await respond(j3, {
+          tag: scoreTag(10, 101, 3),
+          payload: [{ criteria_id: 1, score: 8 }],
+        }),
+        200,
+      );
+      assertEquals((await dj.next("session_end")).reason, "completed");
+      await delay(100);
+      const rows =
+        await db`SELECT competitor_id, status FROM competition_competitors
+        WHERE competition_id = 10 ORDER BY order_number`;
+      assertEquals(rows.map((r: any) => [r.competitor_id, r.status]), [
+        [100, "finalized"],
+        [101, "finalized"],
+      ]);
+    } finally {
+      SessionManager.getSession(1)?.abort("test over");
+      await Promise.all(streams.map((s) => s.close()));
+      await delay(100);
       await unseed(db);
     }
   },

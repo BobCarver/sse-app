@@ -43,6 +43,7 @@ import {
   audioStore,
   clientExists,
   credentialStore,
+  getActiveSessionIds,
   getCompetitionSession,
   getNextSessionForTrack,
   getOverviewRows,
@@ -485,6 +486,142 @@ app.get("/js/:file", (c) => {
 // Rules: one running session per track; the track's DJ (dj<trackId>) and
 // scoreboard (sb<trackId>) are permanent clients; judges are held by the
 // session until it completes.
+type StartResult = { status: 200 | 400 | 404 | 409 | 500; body: object };
+const reply = (
+  body: object,
+  status: StartResult["status"] = 200,
+): StartResult => ({ status, body });
+
+/**
+ * Load a session from the database and run it from wherever it stopped.
+ * `afterCrash`: the server is restarting a session it lost, not an administrator
+ * starting one (the audio start gate is skipped).
+ */
+async function startSession(
+  sessionId: number,
+  afterCrash = false,
+): Promise<StartResult> {
+  // Idempotent start: already running is success.
+  const existing = SessionManager.getSession(sessionId);
+  if (existing?.isRunning()) {
+    return reply({
+      success: true,
+      message: "Session already running",
+      sessionId,
+    });
+  }
+
+  let competitions;
+  let trackId;
+  let resume: ReturnType<typeof planResume>;
+  try {
+    competitions = await getSessionCompetitionsWithRubrics(sessionId);
+    trackId = await getSessionTrackId(sessionId);
+    // Start where the session left off (after a stop or a server restart).
+    resume = planResume(
+      competitions,
+      await getResumeRows(sessionId),
+    );
+  } catch (err) {
+    // A real database failure is not "no competitions": say so.
+    console.error(`Session ${sessionId}: database error on start:`, err);
+    return reply({ error: "Database error while loading session" }, 500);
+  }
+  if (!competitions || competitions.length === 0) {
+    return reply({
+      error: `No competitions provided for session ${sessionId}`,
+    }, 400);
+  }
+  if (trackId === undefined) {
+    return reply({ error: `Session ${sessionId} has no track` }, 404);
+  }
+
+  const judgeClients = [
+    ...new Set(
+      competitions.flatMap((comp) =>
+        comp.rubric.judges.map((j) => `judge${j.id}`)
+      ),
+    ),
+  ];
+  const permanentClientIds = [`dj${trackId}`, `sb${trackId}`];
+
+  // Report (don't block on) audio that never arrived: those performances
+  // would be skipped.
+  const missingAudio = (await audio.missing(competitions, AUDIO_KINDS)).map(
+    (m) => ({
+      competition_id: m.competitionId,
+      competitor_id: m.competitorId,
+      kind: m.kind,
+    }),
+  );
+
+  // No await between this check and createSession: the claim is atomic.
+  const conflict = SessionManager.findConflict(
+    sessionId,
+    trackId,
+    judgeClients,
+  );
+  if (conflict) return reply({ error: conflict }, 409);
+
+  if (existing) {
+    console.warn(`Session ${sessionId} is stale (not running); replacing`);
+    SessionManager.deleteSession(sessionId);
+  }
+
+  let session;
+  try {
+    session = SessionManager.createSession(sessionId, {
+      unassignedClients,
+      trackId,
+      claimedClients: judgeClients,
+      saveScore: (scoreData: ScoreSubmission) => {
+        dlog("Saving score data:", scoreData);
+        return saveScore(scoreData);
+      },
+      recordProgress: (event: ProgressEvent) =>
+        recordProgress(sessionId, event),
+      // After a crash the audio was in place before: don't wait for the DJ
+      // page to report it again.
+      audioGate: afterCrash ? undefined : {
+        expectedDigest: () => sessionAudioDigest(audio, competitions),
+        reported: (djId: string) => audioReports.get(djId),
+      },
+    });
+  } catch (err) {
+    return reply({ error: String(err) }, 500);
+  }
+
+  // Run asynchronously; the session is removed when it finishes or fails.
+  session.runSession(competitions, permanentClientIds, resume)
+    .catch((error: unknown) => {
+      console.error(`Session ${sessionId} error:`, error);
+    })
+    .finally(() => {
+      // Only delete our own session (a restart may have replaced it).
+      if (SessionManager.getSession(sessionId) === session) {
+        SessionManager.deleteSession(sessionId);
+      }
+      console.log(`Session ${sessionId} completed`);
+    });
+
+  if (missingAudio.length > 0) {
+    console.warn(
+      `Session ${sessionId}: ${missingAudio.length} audio file(s) missing`,
+    );
+  }
+
+  return reply({
+    success: true,
+    message: "Session started",
+    sessionId,
+    trackId,
+    missing_audio: missingAudio,
+    already_finished: resume.finished.size,
+    reopened_scoring: resume.reopen ? true : false,
+    clients: { permanent: permanentClientIds, judges: judgeClients },
+  });
+}
+
 app.post(
   "/sessions/:sessionId/start",
   requireAdmin,
@@ -493,126 +630,28 @@ app.post(
     if (!Number.isInteger(sessionId)) {
       return c.json({ error: "Invalid session ID" }, 400);
     }
-
-    // Idempotent start: already running is success.
-    const existing = SessionManager.getSession(sessionId);
-    if (existing?.isRunning()) {
-      return c.json({
-        success: true,
-        message: "Session already running",
-        sessionId,
-      });
-    }
-
-    let competitions;
-    let trackId;
-    let resume: ReturnType<typeof planResume>;
-    try {
-      competitions = await getSessionCompetitionsWithRubrics(sessionId);
-      trackId = await getSessionTrackId(sessionId);
-      // Start where the session left off (after a stop or a server restart).
-      resume = planResume(
-        competitions,
-        await getResumeRows(sessionId),
-      );
-    } catch (err) {
-      // A real database failure is not "no competitions": say so.
-      console.error(`Session ${sessionId}: database error on start:`, err);
-      return c.json({ error: "Database error while loading session" }, 500);
-    }
-    if (!competitions || competitions.length === 0) {
-      return c.json({
-        error: `No competitions provided for session ${sessionId}`,
-      }, 400);
-    }
-    if (trackId === undefined) {
-      return c.json({ error: `Session ${sessionId} has no track` }, 404);
-    }
-
-    const judgeClients = [
-      ...new Set(
-        competitions.flatMap((comp) =>
-          comp.rubric.judges.map((j) => `judge${j.id}`)
-        ),
-      ),
-    ];
-    const permanentClientIds = [`dj${trackId}`, `sb${trackId}`];
-
-    // Report (don't block on) audio that never arrived: those performances
-    // would be skipped.
-    const missingAudio = (await audio.missing(competitions, AUDIO_KINDS)).map(
-      (m) => ({
-        competition_id: m.competitionId,
-        competitor_id: m.competitorId,
-        kind: m.kind,
-      }),
-    );
-
-    // No await between this check and createSession: the claim is atomic.
-    const conflict = SessionManager.findConflict(
-      sessionId,
-      trackId,
-      judgeClients,
-    );
-    if (conflict) return c.json({ error: conflict }, 409);
-
-    if (existing) {
-      console.warn(`Session ${sessionId} is stale (not running); replacing`);
-      SessionManager.deleteSession(sessionId);
-    }
-
-    let session;
-    try {
-      session = SessionManager.createSession(sessionId, {
-        unassignedClients,
-        trackId,
-        claimedClients: judgeClients,
-        saveScore: (scoreData: ScoreSubmission) => {
-          dlog("Saving score data:", scoreData);
-          return saveScore(scoreData);
-        },
-        recordProgress: (event: ProgressEvent) =>
-          recordProgress(sessionId, event),
-        audioGate: {
-          expectedDigest: () => sessionAudioDigest(audio, competitions),
-          reported: (djId: string) => audioReports.get(djId),
-        },
-      });
-    } catch (err) {
-      return c.json({ error: String(err) }, 500);
-    }
-
-    // Run asynchronously; the session is removed when it finishes or fails.
-    session.runSession(competitions, permanentClientIds, resume)
-      .catch((error: unknown) => {
-        console.error(`Session ${sessionId} error:`, error);
-      })
-      .finally(() => {
-        // Only delete our own session (a restart may have replaced it).
-        if (SessionManager.getSession(sessionId) === session) {
-          SessionManager.deleteSession(sessionId);
-        }
-        console.log(`Session ${sessionId} completed`);
-      });
-
-    if (missingAudio.length > 0) {
-      console.warn(
-        `Session ${sessionId}: ${missingAudio.length} audio file(s) missing`,
-      );
-    }
-
-    return c.json({
-      success: true,
-      message: "Session started",
-      sessionId,
-      trackId,
-      missing_audio: missingAudio,
-      already_finished: resume.finished.size,
-      reopened_scoring: resume.reopen ? true : false,
-      clients: { permanent: permanentClientIds, judges: judgeClients },
-    });
+    const result = await startSession(sessionId);
+    return c.json(result.body, result.status);
   },
 );
+
+/**
+ * At boot, run again the sessions a crash cut off: the database still says
+ * `active` (every normal end writes `completed` or `upcoming`). They resume
+ * where they stopped and wait for their clients, which reconnect on their own.
+ * AUTO_RESUME=0 turns this off.
+ */
+export async function resumeActiveSessions(): Promise<void> {
+  if (Deno.env.get("AUTO_RESUME") === "0") return;
+  try {
+    for (const id of await getActiveSessionIds()) {
+      const r = await startSession(id, true);
+      console.log(`Auto-resume: session ${id} -> ${r.status}`, r.body);
+    }
+  } catch (err) {
+    console.error("Auto-resume failed:", err);
+  }
+}
 
 // --- audio -------------------------------------------------------------------
 
@@ -886,6 +925,7 @@ export default app.fetch;
 // When run directly, start an HTTP listener to allow real network e2e tests.
 if (import.meta.main) {
   startAudioAnnouncer(announcerDeps);
+  if (Deno.env.get("DEMO") !== "1") resumeActiveSessions();
   (async () => {
     console.log(`Server running on http://localhost:${port}`);
     await Deno.serve({ port }, app.fetch);
