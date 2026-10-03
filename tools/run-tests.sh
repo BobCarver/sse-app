@@ -19,11 +19,23 @@ EMPTY_DB=test_empty
 psql_in() { docker exec -i sse_test_db psql -U postgres -q -v ON_ERROR_STOP=1 "$@"; }
 
 echo "[run-tests] starting the database"
+# Always start from a fresh volume: the entrypoint only initialises (and logs
+# "init process complete") when the data directory is empty, so a volume left by
+# an interrupted run made the wait below hang forever.
+$COMPOSE down -v >/dev/null 2>&1 || true
 $COMPOSE up -d --wait db
 # "healthy" is also reported by the entrypoint's temporary server while it loads the
 # default database, and that server then shuts down. Wait for the entrypoint to say
 # it is finished, then for the real server to accept queries.
-until docker logs sse_test_db 2>&1 | grep -q "init process complete"; do sleep 1; done
+tries=0
+until docker logs sse_test_db 2>&1 | grep -q "init process complete"; do
+  tries=$((tries + 1))
+  if [ "$tries" -ge 120 ]; then
+    echo "[run-tests] the database did not finish initialising in 120 s" >&2
+    exit 1
+  fi
+  sleep 1
+done
 until docker exec sse_test_db psql -U postgres test_db -tc 'select 1' >/dev/null 2>&1; do
   sleep 1
 done
