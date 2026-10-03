@@ -40,7 +40,7 @@ export type ScoreSubmission = {
 
 /** Session progress, persisted so the database shows where a session is. */
 export type ProgressEvent =
-  | { kind: "session_started" }
+  | { kind: "session_started"; resume?: boolean }
   | { kind: "competition_started"; competitionId: number }
   | {
     kind: "competitor_started";

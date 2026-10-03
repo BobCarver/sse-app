@@ -29,6 +29,7 @@ import { AUDIO_KINDS, type AudioKind } from "./contract.ts";
 import { DEFAULT_DEMO_SESSION, registerDemoRoutes } from "./demo.ts";
 import { ADMIN_COOKIE, AdminSessions } from "./adminAuth.ts";
 import { buildOverview } from "./adminOverview.ts";
+import { finishedCompetitors } from "./resume.ts";
 import { handleResponse } from "./responseService.ts";
 import { handleSSEConnection } from "./sse.ts";
 import { SessionManager } from "./sessionManager.ts";
@@ -45,6 +46,7 @@ import {
   getCompetitionSession,
   getNextSessionForTrack,
   getOverviewRows,
+  getResumeRows,
   getSessionCompetitionsWithRubrics,
   getSessionTrackId,
   recordProgress,
@@ -504,9 +506,15 @@ app.post(
 
     let competitions;
     let trackId;
+    let finished: Set<string>;
     try {
       competitions = await getSessionCompetitionsWithRubrics(sessionId);
       trackId = await getSessionTrackId(sessionId);
+      // Start where the session left off (after a stop or a server restart).
+      finished = finishedCompetitors(
+        competitions,
+        await getResumeRows(sessionId),
+      );
     } catch (err) {
       // A real database failure is not "no competitions": say so.
       console.error(`Session ${sessionId}: database error on start:`, err);
@@ -575,7 +583,7 @@ app.post(
     }
 
     // Run asynchronously; the session is removed when it finishes or fails.
-    session.runSession(competitions, permanentClientIds)
+    session.runSession(competitions, permanentClientIds, finished)
       .catch((error: unknown) => {
         console.error(`Session ${sessionId} error:`, error);
       })
@@ -599,6 +607,7 @@ app.post(
       sessionId,
       trackId,
       missing_audio: missingAudio,
+      already_finished: finished.size,
       clients: { permanent: permanentClientIds, judges: judgeClients },
     });
   },

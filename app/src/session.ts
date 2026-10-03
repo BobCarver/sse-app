@@ -1,6 +1,7 @@
 import type { ClientStatusMessage, ServerToClientMessage } from "./protocol.ts";
 import { resolveTag, waitForTag } from "./resolveTag.ts";
 import { perfTag, requiredTag, scoreTag } from "./contract.ts";
+import { finishedKey } from "./resume.ts";
 import {
   type Competition,
   type ProgressEvent,
@@ -872,16 +873,24 @@ export class Session {
    * Main session execution loop
    * @param competitions - Array of competitions to run
    * @param permanentClientIds - Client IDs that stay for entire session (DJ, scoreboards)
+   * @param finished - "competitionId:competitorId" keys already done in an earlier
+   *   run (see resume.ts); they are not run again, and a competition with nothing
+   *   left is left out altogether. Positions stay those of the full list.
    */
   async runSession(
-    competitions: Competition[],
+    allCompetitions: Competition[],
     permanentClientIds: string[], // the track's DJ and scoreboard
+    finished: ReadonlySet<string> = new Set(),
   ): Promise<void> {
+    const competitions = allCompetitions.filter((c) =>
+      c.competitors.some((p) => !finished.has(finishedKey(c.id, p.id)))
+    );
+    const allCompetitionCount = allCompetitions.length;
     if (this.running) {
       throw new Error(`Session ${this.id} already running`);
     }
 
-    if (!competitions || competitions.length === 0) {
+    if (!allCompetitions || allCompetitionCount === 0) {
       throw new Error(`No competitions provided for session ${this.id}`);
     }
 
@@ -892,10 +901,10 @@ export class Session {
     this.excusedJudges.clear();
     this.skippedClients.clear();
     this.submittedScores.clear();
-    this.progress({ kind: "session_started" });
+    this.progress({ kind: "session_started", resume: finished.size > 0 });
 
     console.log(
-      `Starting session ${this.id} (competitions=${competitions.length}, permanent clients=${permanentClientIds})`,
+      `Starting session ${this.id} (competitions=${competitions.length}, already finished=${finished.size}, permanent clients=${permanentClientIds})`,
     );
 
     try {
@@ -930,6 +939,9 @@ export class Session {
           const [position, competitor] of competition.competitors.entries()
         ) {
           this.signal.throwIfAborted();
+          if (finished.has(finishedKey(competition.id, competitor.id))) {
+            continue;
+          }
           let performed = false;
           try {
             const performanceCompleted = await this.performPhase(

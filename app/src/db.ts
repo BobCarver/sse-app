@@ -6,6 +6,7 @@ import type {
   AudioRef,
 } from "./audioLibrary.ts";
 import type { OverviewRows } from "./adminOverview.ts";
+import type { ResumeRows } from "./resume.ts";
 import {
   Competition,
   Competitor,
@@ -207,10 +208,12 @@ export async function recordProgress(
   switch (event.kind) {
     case "session_started":
       await sql`UPDATE sessions SET status = 'active' WHERE id = ${sessionId}`;
-      // A session always runs from its first competitor: forget earlier outcomes.
-      await sql`UPDATE competition_competitors SET status = 'upcoming'
-        WHERE competition_id IN
-          (SELECT id FROM competitions WHERE session_id = ${sessionId})`;
+      // A fresh run forgets earlier outcomes; a resumed one keeps them.
+      if (!event.resume) {
+        await sql`UPDATE competition_competitors SET status = 'upcoming'
+          WHERE competition_id IN
+            (SELECT id FROM competitions WHERE session_id = ${sessionId})`;
+      }
       await sql`UPDATE tracks SET current_session = ${sessionId}
         WHERE id = (SELECT track_id FROM sessions WHERE id = ${sessionId})`;
       break;
@@ -247,6 +250,26 @@ export async function recordProgress(
         WHERE current_session = ${sessionId}`;
       break;
   }
+}
+
+/** How far the session got, for resuming it after a stop or a server restart. */
+export async function getResumeRows(
+  sessionId: number,
+): Promise<ResumeRows | undefined> {
+  if (!sql) return undefined;
+  const [session] = await sql<{ status: string }[]>`
+    SELECT status FROM sessions WHERE id = ${sessionId}`;
+  if (!session) return undefined;
+  const competitors = await sql<ResumeRows["competitors"]>`
+    SELECT cc.competition_id, cc.competitor_id, cc.status
+    FROM competition_competitors cc
+    JOIN competitions c ON c.id = cc.competition_id
+    WHERE c.session_id = ${sessionId}`;
+  const scored = await sql<ResumeRows["scored"]>`
+    SELECT DISTINCT s.competition_id, s.competitor_id
+    FROM scores s JOIN competitions c ON c.id = s.competition_id
+    WHERE c.session_id = ${sessionId}`;
+  return { sessionStatus: session.status, competitors, scored };
 }
 
 /** Does the track (dj/sb) or judge behind a client id exist? */

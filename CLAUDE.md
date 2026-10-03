@@ -102,6 +102,17 @@ a skip, and cleaning up afterwards used to wipe the new one's audio listeners.
 A missing or broken **announcement** is not a skip: the DJ page logs it and goes on to the
 song (only a cancel by an administrator, or a broken song, reports `false`).
 
+**Start resumes where it left off** (`resume.ts`). `POST /start` asks the database
+(`getResumeRows`) which competitors are finished: skipped, or performed with at least
+one saved score. `runSession(competitions, permanent, finished)` skips those (positions
+stay those of the full list) and leaves out competitions with nothing left; the
+`session_started` progress event then carries `resume: true`, which keeps the
+`competition_competitors` statuses instead of resetting them. A performance with no
+saved score (server died while judges scored) is done again; judges who had not scored
+count as missing. A `completed` session starts from scratch. The response has
+`already_finished`. This covers a server restart (the session row stays `active`)
+and an abort followed by a new start. Missing-score records are still memory only.
+
 **Progress is persisted** (best effort, in order, via `recordProgress` in `db.ts`):
 `sessions.status` (active; completed, or back to `upcoming` if aborted/failed),
 `competitions.status`, `sessions.current_competition/competitor`,
@@ -272,14 +283,10 @@ Working style (owner): analysis only when asked to analyse; commit only when ask
    `audio.add`, `audio_files.owner_user_id`); the DJ report map is in memory (DJ
    re-reports on its next sync); `sessions.start_time` must be accurate for the
    cut-off to mean anything (seed data uses NOW(), i.e. already past).
-2. **Server restart loses the running session** (in-memory). Idea: on start, skip
-   competitors already fully scored. Needs a decision from the owner: after a
-   restart, should "start" resume where it left off, or begin again and skip the
-   already-scored competitors?
-3. Missing-judge-score records are in memory only; persist if results/audit need them.
-4. Single-instance assumption: the revocation cache is in process memory.
-5. CI: `ci.yml` has run on GitHub and is green (run for `9b4409a`: static, tests,
-   browser tests; browser job ~7 min). `tools/run-e2e.sh` (Docker) now verified
-   (12/12). Still open: `.vscode/tasks.json` references a missing
-   `start-debug-session.sh`; Actions warns that `actions/checkout@v4` targets Node 20
-   and that `ubuntu-latest` moves to Ubuntu 26 on 2026-10-19 (bump/pin when convenient).
+2. Missing-judge-score records are in memory only; persist if results/audit need them.
+3. Single-instance assumption: the revocation cache is in process memory.
+4. CI: `ci.yml` is green on GitHub. Pinned to `ubuntu-24.04` and `actions/checkout@v5`
+   (Node 24). Still open: `.vscode/tasks.json` references a missing
+   `start-debug-session.sh`; `setup-node` and `upload-artifact` are on `@v6` (Node 24;
+   confirm the browser job still passes on GitHub) (and check the DB-backed resume
+   path in the integration suite: only the pure logic and `runSession` are unit tested).
