@@ -68,6 +68,14 @@ async function openLink(browser: Browser, link: string) {
 
 async function setup(browser: Browser, request: APIRequestContext, djClipSeconds = 0.3) {
     pageErrors.length = 0;
+    // Every test starts session 1 from scratch. Without this, a test that aborts
+    // mid-scoring leaves the competitor `performed`, and the next start resumes
+    // (re-opens scoring, no performance). The server drops an aborted session a
+    // moment after the abort, and reset answers 409 until then.
+    await expect.poll(
+        async () => (await request.post("/demo/reset/1", { headers: ADMIN })).status(),
+        { timeout: 10_000 },
+    ).toBe(200);
     // The performer's audio, uploaded for real. The seed's session "starts" now,
     // so the upload cut-off has passed: the administrator forces it in.
     for (const kind of ["announce", "music"]) {
