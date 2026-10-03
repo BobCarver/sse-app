@@ -321,7 +321,7 @@ Working style (owner): analysis only when asked to analyse; commit only when ask
    cut-off to mean anything (seed data uses NOW(), i.e. already past).
 2. Missing-judge-score records are in memory only; persist if results/audit need them.
 3. Single-instance assumption: the revocation cache is in process memory.
-4. CI: `ci.yml` is green on GitHub. Pinned to `ubuntu-24.04` and `actions/checkout@v5`
-   (Node 24). Still open: `.vscode/tasks.json` references a missing
-   `start-debug-session.sh`; `setup-node` and `upload-artifact` are on `@v6` (Node 24;
-   confirm the browser job still passes on GitHub).
+4. CI: `ci.yml` is green on GitHub. Pinned to `ubuntu-24.04`, `actions/checkout@v5`,
+   `setup-node`/`upload-artifact@v6` (Node 24; all three jobs passed on GitHub, run of
+   `570aa84`). Still open: `.vscode/tasks.json` references a missing
+   `start-debug-session.sh`.
