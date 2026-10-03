@@ -15,6 +15,10 @@ export interface TagPayloads {
   // Performance completion tags - payload is boolean (played vs skipped)
   [key: `perf:${string}:${string}`]: boolean; // perf:competitionId:position
 
+  // The DJ starts a competition / ends the session - payload is just a signal
+  [key: `begin:${string}`]: boolean; // begin:competitionId
+  [key: `close:${string}`]: boolean; // close:sessionId
+
   // Score submission tags - payload is the full score submission
   [key: `score:${string}:${string}:${string}`]: Scores; // score:competitionId:position:judgeId
 }
@@ -30,6 +34,7 @@ export type TagKey = keyof TagPayloads;
 export type PayloadForTag<T extends string> = T extends `required:${string}`
   ? undefined
   : T extends `perf:${string}:${string}` ? boolean
+  : T extends `begin:${string}` | `close:${string}` ? boolean
   : T extends `score:${string}:${string}:${string}` ? Scores
   : never;
 

@@ -25,6 +25,19 @@ function formatTime(date: Date): string {
   return `${hours}:${minutes}`;
 }
 
+/** "14:30", or "Sat 3 Oct 14:30" when it is not today (24-hour, local time). */
+export function formatWhen(iso: string, now: Date = new Date()): string {
+  const d = new Date(iso);
+  const time = formatTime(d);
+  if (d.toDateString() === now.toDateString()) return time;
+  const day = d.toLocaleDateString([], {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  });
+  return `${day} ${time}`;
+}
+
 /** A competitor's performance length in milliseconds (durations are stored in seconds). */
 function durationMs(c: { duration?: number | null }): number {
   return (c.duration ?? 0) * 1000;

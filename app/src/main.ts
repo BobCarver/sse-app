@@ -45,6 +45,7 @@ import {
   credentialStore,
   getActiveSessionIds,
   getCompetitionSession,
+  getFollowingSession,
   getNextSessionForTrack,
   getOverviewRows,
   getResumeRows,
@@ -574,6 +575,8 @@ async function startSession(
       unassignedClients,
       trackId,
       claimedClients: judgeClients,
+      djGates: Deno.env.get("DJ_GATES") !== "0",
+      followingSession: () => getFollowingSession(trackId, sessionId),
       saveScore: (scoreData: ScoreSubmission) => {
         dlog("Saving score data:", scoreData);
         return saveScore(scoreData);

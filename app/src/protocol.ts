@@ -39,6 +39,24 @@ export interface CompetitionStartMessage extends BaseMessage {
   competition: Competition;
 }
 
+// SERVER -> ALL CLIENTS: a competition is about to begin and the DJ's go-ahead is
+// awaited. Scoreboards show the name; the DJ page offers a Start button.
+export interface CompetitionReadyMessage extends BaseMessage {
+  event: "competition_ready";
+  competition_id: number;
+  name: string;
+}
+
+// SERVER -> ALL CLIENTS: every competition is done; the DJ ends the session
+// (which releases the judges). `next_session_*` is the track's following
+// session (ISO time), or null when there is none.
+export interface SessionFinishedMessage extends BaseMessage {
+  event: "session_finished";
+  session_id: number;
+  next_session_name: string | null;
+  next_session_start: string | null;
+}
+
 // ============================================================================
 // PERFORMANCE FLOW MESSAGES
 // ============================================================================
@@ -139,6 +157,8 @@ interface ErrorMessage extends BaseMessage {
 export type ServerToClientMessage =
   | ClientStatusMessage
   | CompetitionStartMessage
+  | CompetitionReadyMessage
+  | SessionFinishedMessage
   | PerformanceStartMessage
   | PerformanceRecoveryMessage
   | EnableScoringMessage

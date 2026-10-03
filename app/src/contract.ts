@@ -14,6 +14,13 @@ import type { Scores } from "./types.ts";
 export const perfTag = (competitionId: number, position: number) =>
   `perf:${competitionId}:${position}` as const;
 
+/** The DJ starts the competition (after the "about to begin" break). */
+export const beginTag = (competitionId: number) =>
+  `begin:${competitionId}` as const;
+
+/** The DJ ends the finished session, releasing its judges. */
+export const closeTag = (sessionId: number) => `close:${sessionId}` as const;
+
 /** Judge `judgeId` scored `competitorId` in `competitionId`. */
 export const scoreTag = (
   competitionId: number,
@@ -79,10 +86,14 @@ export function manifestDigest(
 
 export type ResponseBody =
   | { tag: ReturnType<typeof perfTag>; payload: boolean }
+  | { tag: ReturnType<typeof beginTag>; payload: boolean }
+  | { tag: ReturnType<typeof closeTag>; payload: boolean }
   | { tag: ReturnType<typeof scoreTag>; payload: Scores };
 
 export type ParsedTag =
   | { kind: "perf"; competitionId: number; position: number }
+  | { kind: "begin"; competitionId: number }
+  | { kind: "close"; sessionId: number }
   | {
     kind: "score";
     competitionId: number;
@@ -101,6 +112,12 @@ export function parseTag(tag: unknown): ParsedTag | undefined {
     if (!isNaN(competitionId) && !isNaN(position)) {
       return { kind: "perf", competitionId, position };
     }
+  } else if (p[0] === "begin" && p.length === 2) {
+    const competitionId = int(p[1]);
+    if (!isNaN(competitionId)) return { kind: "begin", competitionId };
+  } else if (p[0] === "close" && p.length === 2) {
+    const sessionId = int(p[1]);
+    if (!isNaN(sessionId)) return { kind: "close", sessionId };
   } else if (p[0] === "score" && p.length === 4) {
     const [competitionId, competitorId, judgeId] = [
       int(p[1]),
@@ -119,7 +136,7 @@ export function validatePayload(
   parsed: ParsedTag,
   payload: unknown,
 ): string | undefined {
-  if (parsed.kind === "perf") {
+  if (parsed.kind !== "score") {
     return typeof payload === "boolean" ? undefined : "payload must be boolean";
   }
   if (!Array.isArray(payload) || payload.length === 0) {

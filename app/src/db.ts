@@ -251,6 +251,22 @@ export async function recordProgress(
   }
 }
 
+/** The session that follows this one on its track (by start time), if any. */
+export async function getFollowingSession(
+  trackId: number,
+  sessionId: number,
+): Promise<{ name: string; startTime: Date } | undefined> {
+  if (!sql) return undefined;
+  const rows = await sql<{ name: string | null; start_time: Date }[]>`
+    SELECT s.name, s.start_time FROM sessions s,
+      (SELECT start_time, id FROM sessions WHERE id = ${sessionId}) cur
+    WHERE s.track_id = ${trackId} AND s.status = 'upcoming'
+      AND (s.start_time, s.id) > (cur.start_time, cur.id)
+    ORDER BY s.start_time, s.id LIMIT 1`;
+  const r = rows[0];
+  return r && { name: r.name ?? "", startTime: r.start_time };
+}
+
 /** Sessions the database says are running (left that way only by a crash). */
 export async function getActiveSessionIds(): Promise<number[]> {
   if (!sql) return [];

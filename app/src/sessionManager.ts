@@ -75,6 +75,14 @@ export class SessionManager {
     return undefined;
   }
 
+  /** The running session waiting for the DJ to start this competition. */
+  static findSessionAwaitingBegin(competitionId: number): Session | undefined {
+    for (const s of sessions.values()) {
+      if (s.awaitingBegin === competitionId) return s;
+    }
+    return undefined;
+  }
+
   /**
    * Check whether a new session can start without stealing another session's
    * track or clients. Returns a human-readable reason, or undefined if clear.

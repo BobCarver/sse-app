@@ -41,6 +41,9 @@ export default defineConfig({
             JUDGE_SCORE_TIMEOUT_MS: "60000",
             AUDIO_DIR: join(tmpdir(), "sse-e2e-audio"),
             DEMO: "1", // enables /demo (see e2e/demo.spec.ts)
+            // The DJ's start/end buttons are off here: the specs run sessions
+            // straight through (the gates are covered by the integration tests).
+            DJ_GATES: "0",
         },
     },
     projects: [

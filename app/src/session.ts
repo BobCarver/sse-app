@@ -1,6 +1,12 @@
 import type { ClientStatusMessage, ServerToClientMessage } from "./protocol.ts";
 import { resolveTag, waitForTag } from "./resolveTag.ts";
-import { perfTag, requiredTag, scoreTag } from "./contract.ts";
+import {
+  beginTag,
+  closeTag,
+  perfTag,
+  requiredTag,
+  scoreTag,
+} from "./contract.ts";
 import { finishedKey, NO_RESUME, type ResumePlan } from "./resume.ts";
 import {
   type Competition,
@@ -84,7 +90,22 @@ export interface SessionDependencies {
   trackId?: number;
   /** Client ids held by this session until it ends (judges for every competition). */
   claimedClients?: string[];
+  /**
+   * The DJ starts every competition and ends the session with a button; the
+   * scoreboards announce each one and, at the end, the next session. Off = the
+   * session runs straight through (unit tests, DJ_GATES=0).
+   */
+  djGates?: boolean;
+  /** The track's following session, shown when this one is finished. */
+  followingSession?: () => Promise<
+    { name: string; startTime: Date } | undefined
+  >;
 }
+
+/** What the session is waiting for the DJ to do. */
+type DjGate =
+  | { kind: "begin"; competition: { id: number; name: string } }
+  | { kind: "close"; next: { name: string; startTime: Date } | null };
 
 export class Session {
   clients: Map<string, SSEClient | undefined> = new Map();
@@ -104,6 +125,10 @@ export class Session {
   endReason: "completed" | "aborted" | "error" | null = null;
   /** Clients the session is currently waiting to connect. */
   waitingFor: string[] = [];
+
+  /** Set while the session waits for the DJ's go-ahead (see `djGates`). */
+  gate: DjGate | null = null;
+  private gateController: AbortController | null = null;
 
   private runController: AbortController | null = null;
   private waitController: AbortController | null = null;
@@ -129,6 +154,87 @@ export class Session {
       .catch((err) =>
         console.error(`progress write failed (${event.kind}):`, err)
       );
+  }
+
+  /** The competition the DJ is being asked to start, if any. */
+  get awaitingBegin(): number | undefined {
+    return this.gate?.kind === "begin" ? this.gate.competition.id : undefined;
+  }
+
+  private gateMessage(gate: DjGate): ServerToClientMessage {
+    return gate.kind === "begin"
+      ? {
+        event: "competition_ready",
+        competition_id: gate.competition.id,
+        name: gate.competition.name,
+      }
+      : {
+        event: "session_finished",
+        session_id: this.id,
+        next_session_name: gate.next?.name ?? null,
+        next_session_start: gate.next?.startTime.toISOString() ?? null,
+      };
+  }
+
+  /**
+   * Tell everyone what the DJ is being asked to do and wait for the answer. An
+   * administrator `skip()` goes on without it; stopping the session throws.
+   */
+  private async awaitDj(
+    gate: DjGate,
+    tag: ReturnType<typeof beginTag> | ReturnType<typeof closeTag>,
+  ): Promise<void> {
+    this.gate = gate;
+    this.broadcast(this.gateMessage(gate));
+    const skip = new AbortController();
+    this.gateController = skip;
+    try {
+      await waitForTag(tag, 0, AbortSignal.any([this.signal, skip.signal]));
+    } catch (err) {
+      if (this.signal.aborted || !skip.signal.aborted) throw err;
+      console.warn(`Session ${this.id}: going on without the DJ (${tag})`);
+    } finally {
+      this.gateController = null;
+      this.gate = null;
+    }
+  }
+
+  /**
+   * The break before a competition: undefined when there is none (gates off, or
+   * the competition was already under way before a restart).
+   */
+  private beginGate(
+    competition: Competition,
+    resume: ResumePlan,
+  ): Promise<void> | undefined {
+    if (!this.deps.djGates) return undefined;
+    const begun = resume.reopen?.competitionId === competition.id ||
+      competition.competitors.some((p) =>
+        resume.finished.has(finishedKey(competition.id, p.id))
+      );
+    if (begun) return undefined;
+    return this.awaitDj(
+      {
+        kind: "begin",
+        competition: { id: competition.id, name: competition.name },
+      },
+      beginTag(competition.id),
+    );
+  }
+
+  /** After the last competition: wait for the DJ to end the session. */
+  private async closeGate(): Promise<void> {
+    if (!this.deps.djGates) return;
+    let next: { name: string; startTime: Date } | null = null;
+    try {
+      next = await this.deps.followingSession?.() ?? null;
+    } catch (err) {
+      console.error(
+        `Session ${this.id}: could not look up the next session:`,
+        err,
+      );
+    }
+    await this.awaitDj({ kind: "close", next }, closeTag(this.id));
   }
 
   isRunning(): boolean {
@@ -245,6 +351,7 @@ export class Session {
    */
   // deno-lint-ignore require-await
   async handleClientReconnect(client: SSEClient): Promise<void> {
+    if (this.gate) this.sendToClient(client, this.gateMessage(this.gate));
     const competition = this.currentCompetition;
     if (!competition) return;
 
@@ -565,14 +672,19 @@ export class Session {
   /**
    * Stop waiting for whatever the session is stuck on:
    *  - "waiting":     clients that have not connected (their judges are excused)
+   *  - "gate":        the DJ's button (start a competition / end the session)
    *  - "performance": the DJ's performance (treated as skipped; DJ playback stops)
    *  - "scoring":     judges who have not submitted (scoring closes now)
    * Returns what was skipped, or undefined if nothing is pending.
    */
-  skip(): "waiting" | "performance" | "scoring" | undefined {
+  skip(): "waiting" | "gate" | "performance" | "scoring" | undefined {
     if (this.waitController && !this.waitController.signal.aborted) {
       this.waitController.abort(new SkipWaitError());
       return "waiting";
+    }
+    if (this.gateController && !this.gateController.signal.aborted) {
+      this.gateController.abort(new SkipWaitError());
+      return "gate";
     }
     const competition = this.currentCompetition;
     if (this.currentPhase === "performing" && competition) {
@@ -599,6 +711,8 @@ export class Session {
     const competition = this.currentCompetition;
     const waitingFor = this.waitingFor.length > 0
       ? [...this.waitingFor]
+      : this.gate
+      ? [this.gate.kind === "begin" ? "dj-start" : "dj-close"]
       : this.currentPhase === "scoring" && competition
       ? competition.rubric.judges
         .filter((j) =>
@@ -998,8 +1112,14 @@ export class Session {
         // Register required clients for THIS competition
         this.registerRequiredClients(competition);
 
+        // Tell everyone it is about to begin; the DJ's go-ahead is awaited
+        // while the judges connect (an early press is not lost).
+        const began = this.beginGate(competition, resume);
+        began?.catch(() => {}); // a stop is reported where it is awaited below
+
         // Wait for all required clients to connect
         await this.requireAllClients();
+        await began;
 
         // Announce competition start
         this.competitionStart(competition);
@@ -1086,6 +1206,10 @@ export class Session {
         }
       }
 
+      // All done: the scoreboards say so, and the DJ ends the session, which
+      // releases the judges.
+      await this.closeGate();
+
       this.endReason = "completed";
       console.log(`Session ${this.id} completed successfully`);
     } catch (err) {
@@ -1136,6 +1260,8 @@ export class Session {
     this.runController = null;
     this.waitController = null;
     this.scoreController = null;
+    this.gate = null;
+    this.gateController = null;
     this.waitingFor = [];
     this.excusedJudges.clear();
     this.skippedClients.clear();

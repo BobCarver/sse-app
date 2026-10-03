@@ -2,14 +2,16 @@
 import { assert } from "@std/assert";
 import {
   AudioAvailableMessage,
+  CompetitionReadyMessage,
   PerformanceRecoveryMessage,
   PerformanceSkippedMessage,
   PerformanceStartMessage,
+  SessionFinishedMessage,
 } from "../src/protocol.ts";
-import { audioUrl, perfTag } from "../src/contract.ts";
+import { audioUrl, beginTag, closeTag, perfTag } from "../src/contract.ts";
 import { AudioPrefetcher } from "./audioCache.ts";
 import { postResponse, type SseLike } from "./connect.ts";
-import { sseClient } from "./sseClient.ts";
+import { formatWhen, sseClient } from "./sseClient.ts";
 
 // 25ms of silence: playing it inside a click unlocks audio for the page.
 const SILENT_WAV =
@@ -57,6 +59,8 @@ Performance flow (handlePerformanceStart):
 export class DjClient extends sseClient {
   private startPauseButton: HTMLButtonElement;
   private skipButton: HTMLButtonElement;
+  /** Starts the competition / ends the session (absent on pages without it). */
+  private gateButton: HTMLButtonElement | null;
   private audio: HTMLAudioElement;
   /** Position of the performance this page is currently handling, if any. */
   private activePosition: number | undefined = undefined;
@@ -82,10 +86,36 @@ export class DjClient extends sseClient {
 
     this.startPauseButton = doc.querySelector("#start") as HTMLButtonElement;
     this.skipButton = doc.querySelector("#skip") as HTMLButtonElement;
+    this.gateButton = doc.querySelector("#begin") as HTMLButtonElement | null;
+    this.hideGate();
 
     this.setupAudioControls();
     this.initialState();
     this.setupAudioUnlock(doc);
+    // The break between competitions: the DJ starts the next one, and after the
+    // last one ends the session. Replayed on reconnect, so this is idempotent.
+    this.sse.addEventListener("competition_ready", ({ data }) => {
+      const { competition_id, name } = JSON.parse(
+        data,
+      ) as CompetitionReadyMessage;
+      this.setStatus(`Next competition: ${name}`);
+      this.showGate(`Start competition: ${name}`, beginTag(competition_id));
+    });
+    this.sse.addEventListener("session_finished", ({ data }) => {
+      const msg = JSON.parse(data) as SessionFinishedMessage;
+      this.setStatus(
+        msg.next_session_start
+          ? `Session finished. The next session begins at ${
+            formatWhen(msg.next_session_start)
+          }`
+          : "Session finished. No further sessions on this track.",
+      );
+      this.showGate("End session", closeTag(msg.session_id));
+    });
+    this.sse.addEventListener("competition_start", () => {
+      this.hideGate();
+      this.setStatus("");
+    });
     this.sse.addEventListener(
       "performance_start",
       ({ data }) => {
@@ -114,6 +144,35 @@ export class DjClient extends sseClient {
       if (this.activePosition === position) return;
       this.handlePerformanceStart(position, { resume: true });
     });
+  }
+
+  /** Show the button that answers the server's wait for the DJ. */
+  private showGate(
+    label: string,
+    tag: ReturnType<typeof beginTag> | ReturnType<typeof closeTag>,
+  ): void {
+    const button = this.gateButton;
+    if (!button) return;
+    button.textContent = label;
+    button.disabled = false;
+    button.removeAttribute("hidden");
+    button.onclick = async () => {
+      button.disabled = true; // one press; the server moves on
+      const { ok, status } = await postResponse({ tag, payload: true });
+      if (ok || status === 404) return; // 404: already handled or moved on
+      button.disabled = false;
+      this.setStatus(
+        status === 401 || status === 403
+          ? "Access denied - ask an administrator for a new link"
+          : "Could not reach server - press the button again",
+      );
+    };
+  }
+
+  private hideGate(): void {
+    if (!this.gateButton) return;
+    this.gateButton.setAttribute("hidden", "");
+    this.gateButton.onclick = null;
   }
 
   /**
@@ -241,6 +300,7 @@ export class DjClient extends sseClient {
   }
 
   protected override onSessionEnd(): void {
+    this.hideGate();
     // keep the "session ended" message the base class just showed
     const message = this.doc.getElementById("status")?.textContent ?? "";
     if (this.activePosition !== undefined) this.cancelActive();

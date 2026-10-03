@@ -373,6 +373,8 @@ async function sha256Hex(data) {
 
 // app/src/contract.ts
 var perfTag = (competitionId, position) => `perf:${competitionId}:${position}`;
+var beginTag = (competitionId) => `begin:${competitionId}`;
+var closeTag = (sessionId) => `close:${sessionId}`;
 var audioUrl = (competitionId, competitorId, kind) => `/audio/${competitionId}/${competitorId}/${kind}`;
 function manifestDigest(files) {
   if (files.length === 0) return Promise.resolve("");
@@ -396,6 +398,17 @@ function formatTime(date) {
   const hours = date.getHours().toString().padStart(2, "0");
   const minutes = date.getMinutes().toString().padStart(2, "0");
   return `${hours}:${minutes}`;
+}
+function formatWhen(iso, now = /* @__PURE__ */ new Date()) {
+  const d = new Date(iso);
+  const time = formatTime(d);
+  if (d.toDateString() === now.toDateString()) return time;
+  const day = d.toLocaleDateString([], {
+    weekday: "short",
+    day: "numeric",
+    month: "short"
+  });
+  return `${day} ${time}`;
 }
 function durationMs(c) {
   return (c.duration ?? 0) * 1e3;
@@ -488,6 +501,8 @@ var PLAY_PROMPT = "Press play to start the song";
 var DjClient = class extends sseClient {
   startPauseButton;
   skipButton;
+  /** Starts the competition / ends the session (absent on pages without it). */
+  gateButton;
   audio;
   /** Position of the performance this page is currently handling, if any. */
   activePosition = void 0;
@@ -510,9 +525,25 @@ var DjClient = class extends sseClient {
     this.audioRetryMs = deps.audioRetryMs ?? 1e4;
     this.startPauseButton = doc.querySelector("#start");
     this.skipButton = doc.querySelector("#skip");
+    this.gateButton = doc.querySelector("#begin");
+    this.hideGate();
     this.setupAudioControls();
     this.initialState();
     this.setupAudioUnlock(doc);
+    this.sse.addEventListener("competition_ready", ({ data }) => {
+      const { competition_id, name } = JSON.parse(data);
+      this.setStatus(`Next competition: ${name}`);
+      this.showGate(`Start competition: ${name}`, beginTag(competition_id));
+    });
+    this.sse.addEventListener("session_finished", ({ data }) => {
+      const msg = JSON.parse(data);
+      this.setStatus(msg.next_session_start ? `Session finished. The next session begins at ${formatWhen(msg.next_session_start)}` : "Session finished. No further sessions on this track.");
+      this.showGate("End session", closeTag(msg.session_id));
+    });
+    this.sse.addEventListener("competition_start", () => {
+      this.hideGate();
+      this.setStatus("");
+    });
     this.sse.addEventListener("performance_start", ({ data }) => {
       const msg = JSON.parse(data);
       const { position } = msg;
@@ -536,6 +567,29 @@ var DjClient = class extends sseClient {
         resume: true
       });
     });
+  }
+  /** Show the button that answers the server's wait for the DJ. */
+  showGate(label, tag) {
+    const button = this.gateButton;
+    if (!button) return;
+    button.textContent = label;
+    button.disabled = false;
+    button.removeAttribute("hidden");
+    button.onclick = async () => {
+      button.disabled = true;
+      const { ok, status } = await postResponse({
+        tag,
+        payload: true
+      });
+      if (ok || status === 404) return;
+      button.disabled = false;
+      this.setStatus(status === 401 || status === 403 ? "Access denied - ask an administrator for a new link" : "Could not reach server - press the button again");
+    };
+  }
+  hideGate() {
+    if (!this.gateButton) return;
+    this.gateButton.setAttribute("hidden", "");
+    this.gateButton.onclick = null;
   }
   /**
    * Download the next session's audio (if it is final), show progress, and tell
@@ -642,6 +696,7 @@ var DjClient = class extends sseClient {
     this.setStatus("Performance skipped by an administrator");
   }
   onSessionEnd() {
+    this.hideGate();
     const message = this.doc.getElementById("status")?.textContent ?? "";
     if (this.activePosition !== void 0) this.cancelActive();
     this.setStatus(message);

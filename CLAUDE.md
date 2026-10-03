@@ -27,7 +27,7 @@ ADMIN_TOKEN=... deno task links issue --tracks 1,2 --judges 2,3   # see "Operati
 Always check **exit codes**, not just "N passed" (see Gotchas). Environment:
 `DATABASE_URL`, `ADMIN_TOKEN` (admin routes return 503 without it), `PORT`
 (3000), `PUBLIC_URL` (base for issued links), `JUDGE_SCORE_TIMEOUT_MS` (60000),
-`PERFORMANCE_TIMEOUT_MS` (0 = none), `AUDIO_DIR` (./audio, gitignored), `MAX_AUDIO_BYTES` (50 MB), `AUDIO_CUTOFF_MINUTES` (30), `AUTO_RESUME` (0 turns off resuming crashed sessions at boot), `REQUIRE_DB=1` (integration tests fail
+`PERFORMANCE_TIMEOUT_MS` (0 = none), `AUDIO_DIR` (./audio, gitignored), `MAX_AUDIO_BYTES` (50 MB), `AUDIO_CUTOFF_MINUTES` (30), `DJ_GATES` (0 = no DJ start/end buttons; tests and e2e set it), `AUTO_RESUME` (0 turns off resuming crashed sessions at boot), `REQUIRE_DB=1` (integration tests fail
 instead of skipping), `E2E_PORT` (8000), `DEBUG=1`.
 
 ## Layout
@@ -76,6 +76,21 @@ runs `Session.runSession` in the background. **One running session per track**
 (DJ and scoreboard are the track's permanent clients). A judge is **held by a
 session until it ends** (`claimedClients`); a second start that needs a held judge
 or a busy track gets 409. Multiple tracks run concurrently.
+
+**The DJ paces the session** (`djGates`, on unless `DJ_GATES=0`). Before every competition the
+server sends `competition_ready {competition_id, name}` to all clients and waits for the DJ's
+`begin:<competition>`: the scoreboard shows an orange banner "Competition “<name>” is about to
+begin" over the dimmed last scores (gone at `competition_start`), and the DJ page shows a big
+**Start competition: <name>** button (`#begin`). The wait runs while the judges connect, so an
+early press is not lost. After the last competition the session does not end: it sends
+`session_finished {session_id, next_session_name, next_session_start}` (the track's next
+`upcoming` session by start time, `getFollowingSession`; null = none), the scoreboard says
+"Session ended. The next session begins at <time>" (it stays after `session_end`) and the DJ
+button becomes **End session** (`close:<sessionId>`). Only then are the judges released
+(`session_end`). Both gates replay on reconnect, show as `dj-start` / `dj-close` in
+`waiting_for`, and an operator `skip` releases them (returns `"gate"`). A competition that was
+already under way before a restart is not held again (resume plan). Only the session's DJ may
+answer `begin:`/`close:` (403 otherwise). The DJ page is dark-themed like the other two.
 
 **Flow per competitor:** `performance_start` (all) -> the DJ page plays the announcement,
 then the song waits for the DJ to press **play** (it never autoplays; skip works at any
@@ -200,7 +215,8 @@ Ownership is enforced (only the session's DJ answers `perf:*`; only `judge<N>`
 answers `score:*:N`); JSON content-type required. Codes: 404 window closed / no
 waiter, 403 not yours, 400 invalid, 401 revoked.
 
-**Events** (server -> client): `client_status, competition_start, performance_start,
+**Events** (server -> client): `client_status, competition_ready, competition_start,
+session_finished, performance_start,
 performance_recovery, enable_scoring, score_update, scoring_closed,
 performance_skipped, session_end, superseded, ping`.
 
@@ -249,6 +265,8 @@ client only.
   `app/` + `scripts/`, excluding `app/frontend-src/*.html`).
 - Browser tests share session id 1 and one DB: run serially, and every test must
   `abort` its session in `finally` (helper `finish()`), or the next test breaks.
+  An abort alone leaves statuses behind and the next start would resume, so
+  `setup()` in `pages.spec.ts` also resets session 1 (`POST /demo/reset/1`, needs `DEMO=1`).
 - After the last judge scores in the one-competitor seed the session ends at once,
   so a judge's status can read "Session complete", not "Scores submitted".
 - DJ audio needs a click: the DJ presses **Enable audio** once; earlier
@@ -286,8 +304,8 @@ Phases 0-7 of the "make it correctly functioning" plan are done and committed.
 Since then (latest: `11af1b6`, then a missing announcement stops being fatal): `/response` extracted to a service, session
 progress persisted, FKs on `rubric_judge_criteria`, credential issue checks the
 judge/track exists, and competitor audio (storage, cut-off, manifest, DJ prefetch,
-start gate). Suites: 120 unit, 114 frontend, 34 contract, 12 integration (with a
-DB), 12 browser tests; all green with exit code 0 against Docker Postgres
+start gate), DJ gates (start competition / end session). Suites: 119 unit, 135
+frontend, 34 contract, 14 integration (with a DB), 12 browser tests; all green with exit code 0 against Docker Postgres
 (`tools/run-tests.sh`, `tools/run-e2e.sh`). `start_time` and the other timestamps are
 `TIMESTAMPTZ`: with zone-less columns a non-UTC server and a UTC database put the audio
 cut-off hours off and the DJ start gate never opened.

@@ -33,15 +33,17 @@ export function handleResponse(
   const resolver = resolvers.get(tag);
   if (!resolver) return fail(404, "no resolver for tag");
 
-  const session = SessionManager.findSessionForCompetition(
-    parsed.competitionId,
-  );
+  const session = parsed.kind === "close"
+    ? SessionManager.getSession(parsed.sessionId)
+    : parsed.kind === "begin"
+    ? SessionManager.findSessionAwaitingBegin(parsed.competitionId)
+    : SessionManager.findSessionForCompetition(parsed.competitionId);
   if (!session) return fail(404, "no active session");
 
   // Ownership: a device may only answer for itself.
-  //  - perf:*  -> a DJ that belongs to this session
+  //  - perf:*, begin:*, close:* -> a DJ that belongs to this session
   //  - score:* -> exactly judge<N> for score:...:N
-  const owner = parsed.kind === "perf"
+  const owner = parsed.kind !== "score"
     ? parseClientId(sender)?.kind === "dj" && session.clients.has(sender)
     : sender === `judge${parsed.judgeId}`;
   if (!owner) {

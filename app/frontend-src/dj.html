@@ -5,6 +5,45 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DJ</title>
     <style>
+        /* Dark theme, like the scoreboard and judge pages */
+        * {
+            box-sizing: border-box;
+            font-family: Arial, sans-serif;
+        }
+        body {
+            background-color: #111;
+            color: white;
+            margin: 1em;
+        }
+        h2, h3 { margin: 0.4em 0; }
+        h3 { color: rgb(192, 192, 106); }
+        button {
+            padding: 0.6em 1em;
+            color: white;
+            font-size: medium;
+            border: 1px solid #777;
+            border-radius: 10px;
+            margin: 10px 10px 10px 0;
+            background-color: #5c5957;
+            cursor: pointer;
+        }
+        button:hover:not(:disabled) { background-color: #77736f; }
+        button:disabled { opacity: 0.4; cursor: default; }
+        /* The competition / session button is the one the DJ must not miss */
+        #begin {
+            display: block;
+            background-color: orange;
+            color: #111;
+            font-weight: bold;
+            font-size: 1.4em;
+            padding: 0.8em 1.4em;
+        }
+        #begin[hidden] { display: none; }
+        #status { color: orange; font-size: 1.2em; }
+        #connection, #audioStatus { color: #aaa; }
+        table { border-collapse: collapse; }
+        th, td { padding: 8px 12px; border-bottom: 1px solid #444; text-align: left; }
+        th { background-color: #3c3b3b; border-bottom: 1px solid white; }
         /* Modal styles */
         .modal {
             display: none;
@@ -15,12 +54,12 @@
             width: 100%;
             height: 100%;
             overflow: auto;
-            background-color: rgb(0,0,0);
-            background-color: rgba(0,0,0,0.4);
+            background-color: rgba(0,0,0,0.7);
             padding-top: 60px;
         }
         .modal-content {
-            background-color: #fefefe;
+            background-color: #333;
+            color: white;
             margin: 5% auto;
             padding: 20px;
             border: 1px solid #888;
@@ -34,7 +73,7 @@
         }
         .close:hover,
         .close:focus {
-            color: black;
+            color: white;
             text-decoration: none;
             cursor: pointer;
         }
@@ -44,6 +83,7 @@
     <h2 id="festivalName" class="control"></h2>
     <h2 id="currentCompetition" class="control"></h2>
     <h2 id="currentCompetitor" class="control"></h2>
+    <button id="begin" class="control" hidden></button>
     <div>
     <button id="unlock" class="control">Enable audio</button>
     <button id="start" class="control">Start</button>

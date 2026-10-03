@@ -224,6 +224,17 @@ function formatTime(date) {
   const minutes = date.getMinutes().toString().padStart(2, "0");
   return `${hours}:${minutes}`;
 }
+function formatWhen(iso, now = /* @__PURE__ */ new Date()) {
+  const d = new Date(iso);
+  const time = formatTime(d);
+  if (d.toDateString() === now.toDateString()) return time;
+  const day = d.toLocaleDateString([], {
+    weekday: "short",
+    day: "numeric",
+    month: "short"
+  });
+  return `${day} ${time}`;
+}
 function durationMs(c) {
   return (c.duration ?? 0) * 1e3;
 }
@@ -329,9 +340,18 @@ var ScoreboardClient = class extends sseClient {
     this.scoreboard = this.doc.querySelector("#scoreboard");
     this.sse.addEventListener("competition_start", ({ data }) => {
       const msg = JSON.parse(data);
+      this.hideBanner();
       if (this.shown) this.pendingRubric = msg.competition.rubric;
       else this.makeScoreboard(msg.competition.rubric);
       this.showLabel();
+    });
+    this.sse.addEventListener("competition_ready", ({ data }) => {
+      const { name } = JSON.parse(data);
+      this.showBanner(`Competition \u201C${name}\u201D is about to begin`);
+    });
+    this.sse.addEventListener("session_finished", ({ data }) => {
+      const msg = JSON.parse(data);
+      this.showBanner(msg.next_session_start ? `Session ended. The next session${msg.next_session_name ? ` (${msg.next_session_name})` : ""} begins at ${formatWhen(msg.next_session_start)}` : "Session ended. No further sessions are scheduled on this track.");
     });
     this.sse.addEventListener("performance_start", () => this.showLabel());
     this.sse.addEventListener("score_update", ({ data }) => {
@@ -351,6 +371,16 @@ var ScoreboardClient = class extends sseClient {
       this.updateScores(msg);
       this.showLabel();
     });
+  }
+  showBanner(text) {
+    this.setText("banner", text);
+    this.doc.getElementById("banner")?.removeAttribute("hidden");
+    this.doc.body?.classList.add("waiting");
+  }
+  hideBanner() {
+    this.setText("banner", "");
+    this.doc.getElementById("banner")?.setAttribute("hidden", "");
+    this.doc.body?.classList.remove("waiting");
   }
   currentCompetitor() {
     return this.position === void 0 ? void 0 : this.competition?.competitors[this.position];

@@ -2,10 +2,12 @@
 import { CompetitorId, Rubric } from "../src/types.ts";
 import type { SseLike } from "./connect.ts";
 import { escapeHtml } from "./html.ts";
-import { sseClient } from "./sseClient.ts";
+import { formatWhen, sseClient } from "./sseClient.ts";
 import type {
+  CompetitionReadyMessage,
   CompetitionStartMessage,
   ScoreUpdateMessage,
+  SessionFinishedMessage,
 } from "../src/protocol.ts";
 
 export interface ScoreboardDependencies {
@@ -36,6 +38,7 @@ export class ScoreboardClient extends sseClient {
       "competition_start",
       ({ data }) => {
         const msg = JSON.parse(data) as CompetitionStartMessage;
+        this.hideBanner();
         // With scores on display, keep that board until the new competition's
         // first score arrives; otherwise build the (empty) layout right away.
         if (this.shown) this.pendingRubric = msg.competition.rubric;
@@ -43,6 +46,24 @@ export class ScoreboardClient extends sseClient {
         this.showLabel();
       },
     );
+
+    // The break between competitions: say what is about to begin (or, after
+    // the last one, that the session is over and when the next one starts). The
+    // last scores stay on the board, dimmed.
+    this.sse.addEventListener("competition_ready", ({ data }) => {
+      const { name } = JSON.parse(data) as CompetitionReadyMessage;
+      this.showBanner(`Competition “${name}” is about to begin`);
+    });
+    this.sse.addEventListener("session_finished", ({ data }) => {
+      const msg = JSON.parse(data) as SessionFinishedMessage;
+      this.showBanner(
+        msg.next_session_start
+          ? `Session ended. The next session${
+            msg.next_session_name ? ` (${msg.next_session_name})` : ""
+          } begins at ${formatWhen(msg.next_session_start)}`
+          : "Session ended. No further sessions are scheduled on this track.",
+      );
+    });
 
     // A new performance does NOT clear the board: the last scores stay up until
     // the new competitor has at least one score (see score_update below). This
@@ -70,6 +91,18 @@ export class ScoreboardClient extends sseClient {
       this.updateScores(msg);
       this.showLabel();
     });
+  }
+
+  private showBanner(text: string): void {
+    this.setText("banner", text);
+    this.doc.getElementById("banner")?.removeAttribute("hidden");
+    this.doc.body?.classList.add("waiting");
+  }
+
+  private hideBanner(): void {
+    this.setText("banner", "");
+    this.doc.getElementById("banner")?.setAttribute("hidden", "");
+    this.doc.body?.classList.remove("waiting");
   }
 
   private currentCompetitor() {

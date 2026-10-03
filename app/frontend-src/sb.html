@@ -73,6 +73,30 @@
         /* Optional: adds a border for visibility */
       }
 
+      /* The break between competitions: a banner over the (dimmed) last scores */
+      #banner {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        padding: 24px;
+        text-align: center;
+        font-size: 36px;
+        font-weight: bold;
+        background: orange;
+        color: #111;
+        z-index: 1;
+      }
+
+      #banner[hidden] {
+        display: none;
+      }
+
+      body.waiting #scoreboard,
+      body.waiting #scoresFor {
+        opacity: 0.3;
+      }
+
       /* Score Display */
       .score {
         font-size: 18px;
@@ -85,6 +109,7 @@
   </head>
 
   <body>
+    <div id="banner" hidden></div>
     <div>
       <p id="currentCompetition" class="control"></p>
       <div id="currentCompetitor" class="control"></div>

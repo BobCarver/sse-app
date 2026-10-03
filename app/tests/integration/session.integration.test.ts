@@ -25,9 +25,13 @@ import { registerDemoRoutes } from "../../src/demo.ts";
 import { announceAudio } from "../../src/audioAnnouncer.ts";
 import { SessionManager } from "../../src/sessionManager.ts";
 import { clearAllResolvers } from "../../src/resolveTag.ts";
-import { perfTag, scoreTag } from "../../src/contract.ts";
+import { beginTag, closeTag, perfTag, scoreTag } from "../../src/contract.ts";
 import { createMockClient, delay } from "../test-utils.ts";
 import { adminHeaders, cookieFor } from "../auth-utils.ts";
+
+// Most tests here run sessions straight through; the DJ's start/end buttons
+// (DJ_GATES) have their own test at the end.
+Deno.env.set("DJ_GATES", "0");
 
 // These tests need a database and are skipped without one. CI sets REQUIRE_DB=1
 // so a missing/misconfigured database fails loudly instead of skipping silently.
@@ -1333,6 +1337,96 @@ Deno.test({
         [101, "finalized"],
       ]);
     } finally {
+      SessionManager.getSession(1)?.abort("test over");
+      await Promise.all(streams.map((s) => s.close()));
+      await delay(100);
+      await unseed(db);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "DJ gates: the DJ starts the competition and ends the session; judges are held until then",
+  ignore: !sql,
+  fn: async () => {
+    const db = sql!;
+    await seed(db);
+    Deno.env.set("DJ_GATES", "1");
+    const streams: SSEStream[] = [];
+    try {
+      const dj = await SSEStream.open("dj1");
+      const j2 = await SSEStream.open("judge2");
+      const j3 = await SSEStream.open("judge3");
+      const sb = await SSEStream.open("sb1");
+      streams.push(dj, j2, j3, sb);
+      const start = await app.fetch(
+        new Request("http://localhost/sessions/1/start", {
+          method: "POST",
+          headers: adminHeaders,
+        }),
+      );
+      assertEquals(start.status, 200);
+      await start.body?.cancel();
+
+      // Everyone is told what is about to begin; nothing has started.
+      const ready = await sb.next("competition_ready");
+      assertEquals(ready.competition_id, 10);
+      assertEquals((await dj.next("competition_ready")).name, ready.name);
+      assertEquals(sb.queued().includes("competition_start"), false);
+
+      // Only the session's DJ may start it.
+      assertEquals(
+        await respond(j2, { tag: beginTag(10), payload: true }),
+        403,
+      );
+      assertEquals(
+        await respond(dj, { tag: beginTag(10), payload: true }),
+        200,
+      );
+      assertEquals((await dj.next("performance_start")).position, 0);
+
+      // Skip both competitors: nothing left to score.
+      assertEquals(
+        await respond(dj, { tag: perfTag(10, 0), payload: false }),
+        200,
+      );
+      assertEquals((await dj.next("performance_start")).position, 1);
+      assertEquals(
+        await respond(dj, { tag: perfTag(10, 1), payload: false }),
+        200,
+      );
+
+      // Finished, but the session stays open for the DJ; judges are still held.
+      const finished = await sb.next("session_finished");
+      assertEquals(finished.session_id, 1);
+      assertEquals(finished.next_session_start, null);
+      assertEquals(j2.queued().includes("session_end"), false);
+      assert(SessionManager.getSession(1)?.isRunning());
+      assertEquals(
+        SessionManager.findConflict(2, 1, ["judge2"]) !== undefined,
+        true,
+        "judge 2 is still held by the session",
+      );
+      assertEquals(
+        await respond(j2, { tag: closeTag(1), payload: true }),
+        403,
+      );
+
+      assertEquals(
+        await respond(dj, { tag: closeTag(1), payload: true }),
+        200,
+      );
+      assertEquals((await dj.next("session_end")).reason, "completed");
+      assertEquals((await j2.next("session_end")).reason, "completed");
+      await delay(100);
+      assertEquals(
+        SessionManager.findConflict(2, 1, ["judge2", "judge3"]),
+        undefined,
+        "judges are released",
+      );
+    } finally {
+      Deno.env.set("DJ_GATES", "0");
       SessionManager.getSession(1)?.abort("test over");
       await Promise.all(streams.map((s) => s.close()));
       await delay(100);
