@@ -230,10 +230,9 @@ export async function recordProgress(
       break;
     case "competitor_performed":
     case "competitor_skipped":
+    case "competitor_finalized":
       await sql`UPDATE competition_competitors
-        SET status = ${
-        event.kind === "competitor_skipped" ? "skipped" : "performed"
-      }
+        SET status = ${event.kind.replace("competitor_", "")}
         WHERE competition_id = ${event.competitionId}
           AND competitor_id = ${event.competitorId}`;
       break;
@@ -265,11 +264,16 @@ export async function getResumeRows(
     FROM competition_competitors cc
     JOIN competitions c ON c.id = cc.competition_id
     WHERE c.session_id = ${sessionId}`;
-  const scored = await sql<ResumeRows["scored"]>`
-    SELECT DISTINCT s.competition_id, s.competitor_id
-    FROM scores s JOIN competitions c ON c.id = s.competition_id
-    WHERE c.session_id = ${sessionId}`;
-  return { sessionStatus: session.status, competitors, scored };
+  const performedScores = await sql<ResumeRows["performedScores"]>`
+    SELECT s.competition_id, s.competitor_id, s.judge_id, s.criteria_id,
+           s.score::float AS score
+    FROM scores s
+    JOIN competition_competitors cc ON cc.competition_id = s.competition_id
+      AND cc.competitor_id = s.competitor_id
+    JOIN competitions c ON c.id = s.competition_id
+    WHERE c.session_id = ${sessionId} AND cc.status = 'performed'
+    ORDER BY s.judge_id, s.criteria_id`;
+  return { sessionStatus: session.status, competitors, performedScores };
 }
 
 /** Does the track (dj/sb) or judge behind a client id exist? */

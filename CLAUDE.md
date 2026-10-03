@@ -102,16 +102,26 @@ a skip, and cleaning up afterwards used to wipe the new one's audio listeners.
 A missing or broken **announcement** is not a skip: the DJ page logs it and goes on to the
 song (only a cancel by an administrator, or a broken song, reports `false`).
 
-**Start resumes where it left off** (`resume.ts`). `POST /start` asks the database
-(`getResumeRows`) which competitors are finished: skipped, or performed with at least
-one saved score. `runSession(competitions, permanent, finished)` skips those (positions
-stay those of the full list) and leaves out competitions with nothing left; the
-`session_started` progress event then carries `resume: true`, which keeps the
-`competition_competitors` statuses instead of resetting them. A performance with no
-saved score (server died while judges scored) is done again; judges who had not scored
-count as missing. A `completed` session starts from scratch. The response has
-`already_finished`. This covers a server restart (the session row stays `active`)
-and an abort followed by a new start. Missing-score records are still memory only.
+**Competitor status** (`competition_competitors.status`): `upcoming` -> `performed` (DJ
+finished, scoring under way) -> `finalized` (scoring closed normally: all judges scored, timed
+out, or an administrator closed it; written and awaited right before the next competitor
+starts, and not written if a score could not be saved). `skipped` is the other end state. The
+admin page shows `finalized` as finished.
+
+**Start resumes where it left off** (`resume.ts`, `planResume`). `POST /start` reads the
+database (`getResumeRows`) and walks the competitors in running order: leading `finalized`
+and `skipped` ones are finished and never revisited. The first one that is not:
+`performed` -> its scoring is **re-opened** with no new performance (judges whose scores are
+saved keep them and are not asked again; scoreboards get the saved scores replayed; the
+rest are waited for as usual); anything else runs from its performance. Only the competitor
+in play when it stopped is touched. `runSession(competitions, permanent, resumePlan)` takes the
+plan; `session_started` then carries `resume: true`, which keeps the statuses instead of
+resetting them. A `completed` session starts from scratch. The response has
+`already_finished` and `reopened_scoring`. Covers a server restart (the session row stays
+`active`) and an abort followed by a new start. The schema widens the CHECK constraint
+idempotently; rows left `performed` by older code count as "scoring cut off" if they are
+first in line, so in an old database set finished sessions' statuses to `finalized`.
+Missing-score records are still memory only.
 
 **Progress is persisted** (best effort, in order, via `recordProgress` in `db.ts`):
 `sessions.status` (active; completed, or back to `upcoming` if aborted/failed),
@@ -288,5 +298,4 @@ Working style (owner): analysis only when asked to analyse; commit only when ask
 4. CI: `ci.yml` is green on GitHub. Pinned to `ubuntu-24.04` and `actions/checkout@v5`
    (Node 24). Still open: `.vscode/tasks.json` references a missing
    `start-debug-session.sh`; `setup-node` and `upload-artifact` are on `@v6` (Node 24;
-   confirm the browser job still passes on GitHub) (and check the DB-backed resume
-   path in the integration suite: only the pure logic and `runSession` are unit tested).
+   confirm the browser job still passes on GitHub).

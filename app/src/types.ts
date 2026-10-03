@@ -53,6 +53,12 @@ export type ProgressEvent =
     competitorId: number;
   }
   | { kind: "competitor_skipped"; competitionId: number; competitorId: number }
+  | {
+    /** Scoring closed normally: the competitor is done for good (resume skips it). */
+    kind: "competitor_finalized";
+    competitionId: number;
+    competitorId: number;
+  }
   | { kind: "competition_completed"; competitionId: number }
   | { kind: "session_ended"; reason: "completed" | "aborted" | "error" };
 

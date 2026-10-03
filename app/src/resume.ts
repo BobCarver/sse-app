@@ -1,4 +1,13 @@
-import type { Competition } from "./types.ts";
+import type { Competition, ScoreSubmission } from "./types.ts";
+
+/** One saved score row (a judge's score for one criterion). */
+export type SavedScore = {
+  competition_id: number;
+  competitor_id: number;
+  judge_id: number;
+  criteria_id: number;
+  score: number;
+};
 
 /** What the database knows about how far a session got before it stopped. */
 export type ResumeRows = {
@@ -8,44 +17,80 @@ export type ResumeRows = {
     competitor_id: number;
     status: string;
   }[];
-  /** Competitors that have at least one saved score. */
-  scored: { competition_id: number; competitor_id: number }[];
+  /** Saved scores of competitors that are `performed` (not yet finalized). */
+  performedScores: SavedScore[];
 };
+
+/** Where a restarted session picks up. */
+export type ResumePlan = {
+  /** "competitionId:competitorId" keys that are not run again. */
+  finished: ReadonlySet<string>;
+  /** The competitor that was performed but not finalized: scoring is re-opened. */
+  reopen?: {
+    competitionId: number;
+    competitorId: number;
+    /** Scores judges had already saved (those judges are not asked again). */
+    scores: ScoreSubmission[];
+  };
+};
+
+export const NO_RESUME: ResumePlan = { finished: new Set() };
 
 export const finishedKey = (competitionId: number, competitorId: number) =>
   `${competitionId}:${competitorId}`;
 
 /**
- * Competitors a restarted session does not run again.
- *
- * "start" resumes where the session left off: a competitor is finished if it was
- * skipped, or performed and at least one judge's score was saved. A performance
- * with no score at all (the server died while judges were scoring) is done again;
- * a judge who had not scored by then counts as missing, as after a timeout.
- * A completed session starts from scratch, so nothing is finished.
+ * "start" resumes where the session left off. Competitors are taken in running
+ * order; every `finalized` or `skipped` one at the front is finished and never
+ * revisited. The first one that is not:
+ *  - `performed`: the performance happened but scoring was cut off, so only
+ *    scoring is re-opened (judges with saved scores keep them);
+ *  - anything else: it is run from its performance.
+ * A completed session starts from scratch.
  */
-export function finishedCompetitors(
+export function planResume(
   competitions: Competition[],
   rows: ResumeRows | undefined,
-): Set<string> {
+): ResumePlan {
+  if (!rows || rows.sessionStatus === "completed") return NO_RESUME;
+  const status = new Map(
+    rows.competitors.map((
+      r,
+    ) => [finishedKey(r.competition_id, r.competitor_id), r.status]),
+  );
   const finished = new Set<string>();
-  if (!rows || rows.sessionStatus === "completed") return finished;
-  const inSession = new Set(
-    competitions.flatMap((c) =>
-      c.competitors.map((p) => finishedKey(c.id, p.id))
-    ),
-  );
-  const scored = new Set(
-    rows.scored.map((s) => finishedKey(s.competition_id, s.competitor_id)),
-  );
-  for (const r of rows.competitors) {
-    const key = finishedKey(r.competition_id, r.competitor_id);
-    if (!inSession.has(key)) continue;
-    if (
-      r.status === "skipped" || (r.status === "performed" && scored.has(key))
-    ) {
-      finished.add(key);
+  for (const comp of competitions) {
+    for (const competitor of comp.competitors) {
+      const key = finishedKey(comp.id, competitor.id);
+      const s = status.get(key);
+      if (s === "finalized" || s === "skipped") {
+        finished.add(key);
+        continue;
+      }
+      if (s !== "performed") return { finished };
+      const byJudge = new Map<number, ScoreSubmission>();
+      for (const r of rows.performedScores) {
+        if (r.competition_id !== comp.id || r.competitor_id !== competitor.id) {
+          continue;
+        }
+        const sub = byJudge.get(r.judge_id) ?? {
+          competition_id: comp.id,
+          competitor_id: competitor.id,
+          judge_id: r.judge_id,
+          scores: [],
+        };
+        sub.scores.push({ criteria_id: r.criteria_id, score: r.score });
+        byJudge.set(r.judge_id, sub);
+      }
+      return {
+        finished,
+        reopen: {
+          competitionId: comp.id,
+          competitorId: competitor.id,
+          scores: [...byJudge.values()],
+        },
+      };
     }
   }
-  return finished;
+  return { finished };
 }

@@ -43,7 +43,7 @@ export interface OverviewRows {
     type: string;
     duration: number | null;
     order_number: number;
-    /** upcoming, performed or skipped (competition_competitors.status). */
+    /** upcoming, performed, skipped or finalized (competition_competitors.status). */
     status: string;
   }[];
   rubricJudges: {
@@ -154,7 +154,7 @@ export function buildOverview(
           // in progress while it is the one being performed.
           const status: Status = c.status === "skipped"
             ? "skipped"
-            : compStatus === "finished" ||
+            : c.status === "finalized" || compStatus === "finished" ||
                 (judges.length > 0 && scored >= judges.length)
             ? "finished"
             : compStatus === "in_progress" &&

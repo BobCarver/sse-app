@@ -5,6 +5,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   getNextSessionForTrack,
+  getResumeRows,
   getSessionCompetitionsWithRubrics,
   getSessionTrackId,
   recordProgress,
@@ -12,6 +13,7 @@ import {
   saveScore,
   sql,
 } from "../../src/db.ts";
+import { planResume } from "../../src/resume.ts";
 import { Hono } from "@hono/hono";
 import { app, audio, credentials } from "../../src/main.ts";
 import { registerDemoRoutes } from "../../src/demo.ts";
@@ -1221,7 +1223,7 @@ Deno.test({
         WHERE competition_id = 10 ORDER BY order_number`;
       assertEquals(rows.map((r: any) => [r.competitor_id, r.status]), [
         [100, "skipped"],
-        [101, "performed"],
+        [101, "finalized"], // scoring closed: done for good
       ]);
 
       // The admin overview shows it, in its own state.
@@ -1247,6 +1249,27 @@ Deno.test({
         await db`SELECT COUNT(*)::int AS n FROM competition_competitors
         WHERE competition_id = 10 AND status = 'upcoming'`;
       assertEquals(n, 2);
+
+      // Resuming: 100 was skipped, 101 was performed and scoring was cut off
+      // (the scores judges had saved are still in the database).
+      await db`UPDATE sessions SET status = 'active' WHERE id = 1`;
+      await db`UPDATE competition_competitors SET status = 'skipped'
+        WHERE competition_id = 10 AND competitor_id = 100`;
+      await db`UPDATE competition_competitors SET status = 'performed'
+        WHERE competition_id = 10 AND competitor_id = 101`;
+      const plan = planResume(
+        await getSessionCompetitionsWithRubrics(1),
+        await getResumeRows(1),
+      );
+      assertEquals([...plan.finished], ["10:100"]);
+      assertEquals(plan.reopen?.competitorId, 101);
+      assertEquals(
+        plan.reopen?.scores.map((x) => [x.judge_id, x.scores]),
+        [[2, [{ criteria_id: 1, score: 7 }]], [3, [{
+          criteria_id: 1,
+          score: 7,
+        }]]],
+      );
     } finally {
       await Promise.all(streams.map((s) => s.close()));
       await delay(50);

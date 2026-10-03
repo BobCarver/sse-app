@@ -1,7 +1,7 @@
 import type { ClientStatusMessage, ServerToClientMessage } from "./protocol.ts";
 import { resolveTag, waitForTag } from "./resolveTag.ts";
 import { perfTag, requiredTag, scoreTag } from "./contract.ts";
-import { finishedKey } from "./resume.ts";
+import { finishedKey, NO_RESUME, type ResumePlan } from "./resume.ts";
 import {
   type Competition,
   type ProgressEvent,
@@ -757,12 +757,14 @@ export class Session {
     const position = this.currentPosition;
     const competitor = competition.competitors[position];
 
-    // Only judges score.
+    // Only judges score (not those whose scores were saved before a restart).
+    const scored = (id: number) =>
+      this.submittedScores.has(`${competition.id}:${position}:${id}`);
     this.broadcast({
       event: "enable_scoring",
       competition_id: competition.id,
       position,
-    }, isJudge);
+    }, (clientId) => isJudge(clientId) && !scored(Number(clientId.slice(5))));
 
     const closer = new AbortController();
     this.scoreController = closer;
@@ -781,6 +783,7 @@ export class Session {
     };
 
     const scorePromises = competition.rubric.judges.map(async ({ id }) => {
+      if (scored(id)) return { success: true }; // saved before a restart
       // A judge the operator went on without stays excused unless they showed up.
       if (this.excusedJudges.has(id) && !this.clients.get(`judge${id}`)) {
         record(id, "absent");
@@ -853,6 +856,68 @@ export class Session {
   }
 
   /**
+   * Resume after a restart: the competitor was performed but scoring was cut off.
+   * Put clients back where they were (no new performance) and keep the scores
+   * judges had already saved, so only the missing judges are waited for.
+   */
+  private reopenScoring(
+    competition: Competition,
+    position: number,
+    saved: ScoreSubmission[],
+  ): void {
+    const competitorId = competition.competitors[position].id;
+    console.log(
+      `Session ${this.id}: re-opening scoring for competitor ${competitorId}`,
+    );
+    this.currentCompetition = competition;
+    this.currentPosition = position;
+    this.currentScores = [...saved];
+    for (const s of saved) {
+      this.submittedScores.add(`${competition.id}:${position}:${s.judge_id}`);
+    }
+    this.progress({
+      kind: "competitor_started",
+      competitionId: competition.id,
+      competitorId,
+    });
+    this.broadcast({
+      event: "performance_start",
+      competition_id: competition.id,
+      position,
+    }, (id) => !isDj(id));
+    for (const s of saved) {
+      this.broadcast({ event: "score_update", ...s }, isScoreboard);
+    }
+  }
+
+  /**
+   * Scoring has closed: the competitor is done for good. Written (and awaited)
+   * before the next competitor starts, so a restart never revisits it. Not done
+   * if a score could not be saved: that competitor is picked up again instead.
+   */
+  private async finalize(
+    competition: Competition,
+    competitorId: number,
+  ): Promise<void> {
+    if (
+      this.unsavedScores.some((s) =>
+        s.competition_id === competition.id && s.competitor_id === competitorId
+      )
+    ) {
+      console.error(
+        `Competitor ${competitorId} NOT finalized: a score was not saved`,
+      );
+      return;
+    }
+    this.progress({
+      kind: "competitor_finalized",
+      competitionId: competition.id,
+      competitorId,
+    });
+    await this.progressChain;
+  }
+
+  /**
    * Announce competition start to all clients
    */
   competitionStart(competition: Competition): void {
@@ -873,15 +938,17 @@ export class Session {
    * Main session execution loop
    * @param competitions - Array of competitions to run
    * @param permanentClientIds - Client IDs that stay for entire session (DJ, scoreboards)
-   * @param finished - "competitionId:competitorId" keys already done in an earlier
-   *   run (see resume.ts); they are not run again, and a competition with nothing
-   *   left is left out altogether. Positions stay those of the full list.
+   * @param resume - where an earlier run stopped (see resume.ts): finished
+   *   competitors are not run again (a competition with nothing left is left out;
+   *   positions stay those of the full list), and the one that was being scored
+   *   gets its scoring re-opened without a new performance.
    */
   async runSession(
     allCompetitions: Competition[],
     permanentClientIds: string[], // the track's DJ and scoreboard
-    finished: ReadonlySet<string> = new Set(),
+    resume: ResumePlan = NO_RESUME,
   ): Promise<void> {
+    const { finished, reopen } = resume;
     const competitions = allCompetitions.filter((c) =>
       c.competitors.some((p) => !finished.has(finishedKey(c.id, p.id)))
     );
@@ -901,7 +968,10 @@ export class Session {
     this.excusedJudges.clear();
     this.skippedClients.clear();
     this.submittedScores.clear();
-    this.progress({ kind: "session_started", resume: finished.size > 0 });
+    this.progress({
+      kind: "session_started",
+      resume: finished.size > 0 || !!reopen,
+    });
 
     console.log(
       `Starting session ${this.id} (competitions=${competitions.length}, already finished=${finished.size}, permanent clients=${permanentClientIds})`,
@@ -942,21 +1012,27 @@ export class Session {
           if (finished.has(finishedKey(competition.id, competitor.id))) {
             continue;
           }
+          const reopening = reopen?.competitionId === competition.id &&
+            reopen.competitorId === competitor.id;
           let performed = false;
           try {
-            const performanceCompleted = await this.performPhase(
-              competition,
-              position,
-            );
+            if (reopening) {
+              this.reopenScoring(competition, position, reopen.scores);
+            }
+            const performanceCompleted = reopening ||
+              await this.performPhase(competition, position);
 
             if (performanceCompleted) {
               performed = true;
-              this.progress({
-                kind: "competitor_performed",
-                competitionId: competition.id,
-                competitorId: competitor.id,
-              });
+              if (!reopening) {
+                this.progress({
+                  kind: "competitor_performed",
+                  competitionId: competition.id,
+                  competitorId: competitor.id,
+                });
+              }
               await this.scorePhase(competition);
+              await this.finalize(competition, competitor.id);
             } else {
               // The DJ skipped it (or an administrator did): no scoring, and
               // the session goes on with the next competitor.

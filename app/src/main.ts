@@ -29,7 +29,7 @@ import { AUDIO_KINDS, type AudioKind } from "./contract.ts";
 import { DEFAULT_DEMO_SESSION, registerDemoRoutes } from "./demo.ts";
 import { ADMIN_COOKIE, AdminSessions } from "./adminAuth.ts";
 import { buildOverview } from "./adminOverview.ts";
-import { finishedCompetitors } from "./resume.ts";
+import { planResume } from "./resume.ts";
 import { handleResponse } from "./responseService.ts";
 import { handleSSEConnection } from "./sse.ts";
 import { SessionManager } from "./sessionManager.ts";
@@ -506,12 +506,12 @@ app.post(
 
     let competitions;
     let trackId;
-    let finished: Set<string>;
+    let resume: ReturnType<typeof planResume>;
     try {
       competitions = await getSessionCompetitionsWithRubrics(sessionId);
       trackId = await getSessionTrackId(sessionId);
       // Start where the session left off (after a stop or a server restart).
-      finished = finishedCompetitors(
+      resume = planResume(
         competitions,
         await getResumeRows(sessionId),
       );
@@ -583,7 +583,7 @@ app.post(
     }
 
     // Run asynchronously; the session is removed when it finishes or fails.
-    session.runSession(competitions, permanentClientIds, finished)
+    session.runSession(competitions, permanentClientIds, resume)
       .catch((error: unknown) => {
         console.error(`Session ${sessionId} error:`, error);
       })
@@ -607,7 +607,8 @@ app.post(
       sessionId,
       trackId,
       missing_audio: missingAudio,
-      already_finished: finished.size,
+      already_finished: resume.finished.size,
+      reopened_scoring: resume.reopen ? true : false,
       clients: { permanent: permanentClientIds, judges: judgeClients },
     });
   },

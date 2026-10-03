@@ -176,16 +176,24 @@ CREATE TABLE IF NOT EXISTS competition_competitors (
     duration INT,  -- length of the performance, in SECONDS
     score FLOAT,
     order_number INT NOT NULL,
-    -- upcoming until the DJ finishes the performance (performed) or skips it (skipped)
+    -- upcoming until the DJ finishes the performance (performed) or skips it
+    -- (skipped); finalized once scoring has closed, right before the next competitor
     status TEXT NOT NULL DEFAULT 'upcoming'
-        CHECK (status IN ('upcoming', 'performed', 'skipped')),
+        CHECK (status IN ('upcoming', 'performed', 'skipped', 'finalized')),
     PRIMARY KEY (competition_id, competitor_id)
 );
 
 -- Databases created before performance status existed get the column here.
 ALTER TABLE competition_competitors
-    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'upcoming'
-    CHECK (status IN ('upcoming', 'performed', 'skipped'));
+    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'upcoming';
+
+-- Databases created before 'finalized' existed get the wider check here
+-- (idempotent; the constraint keeps the name PostgreSQL gave the inline one).
+ALTER TABLE competition_competitors
+    DROP CONSTRAINT IF EXISTS competition_competitors_status_check;
+ALTER TABLE competition_competitors
+    ADD CONSTRAINT competition_competitors_status_check
+    CHECK (status IN ('upcoming', 'performed', 'skipped', 'finalized'));
 
 -- Scores Table
 CREATE TABLE IF NOT EXISTS scores (
