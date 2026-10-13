@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # Full local browser-test run with Docker providing Postgres:
-#   up -> load schema + seed -> tools/e2e.sh -> tear down
+#   up -> load schema -> tools/e2e.sh -> tear down
 #
 #   ./tools/run-e2e.sh              # tear the database down afterwards
 #   TEARDOWN=0 ./tools/run-e2e.sh   # leave it running for debugging
@@ -12,7 +12,7 @@ COMPOSE="docker compose -f docker/docker-compose.yml"
 
 echo "[run-e2e] starting the database"
 $COMPOSE up -d --wait db
-echo "[run-e2e] loading schema and seed"
+echo "[run-e2e] loading the schema"
 $COMPOSE run --rm db-init
 
 export DATABASE_URL="${DATABASE_URL:-postgres://postgres:test@localhost:5432/test_db}"

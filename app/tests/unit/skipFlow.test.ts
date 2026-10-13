@@ -1,5 +1,6 @@
 // A skipped performance moves the session on to the next competitor and is
-// recorded as skipped (the rest of the skip/abort mechanics are in operations.test.ts).
+// recorded as skipped; scoring cannot close with no scores; missing scores are
+// recorded (the rest of the skip/abort mechanics are in operations.test.ts).
 import { assertEquals } from "@std/assert";
 import { Session, type SessionDependencies } from "../../src/session.ts";
 import { clearAllResolvers, resolveTag } from "../../src/resolveTag.ts";
@@ -31,7 +32,7 @@ const positions = (c: { __messages: string[] }) =>
   c.__messages.filter((m) => m.startsWith("event: performance_start\n"))
     .map((m) => JSON.parse(m.split("data: ")[1]).position);
 
-function setup() {
+function setup(connected = ["dj1", "sb1", "judge2", "judge3"]) {
   clearAllResolvers();
   const deps: SessionDependencies = createDependencies();
   const events: ProgressEvent[] = [];
@@ -41,7 +42,7 @@ function setup() {
   };
   const session = new Session(1, deps);
   const clients: Record<string, ReturnType<typeof createMockClient>> = {};
-  for (const id of ["dj1", "sb1", "judge2", "judge3"]) {
+  for (const id of connected) {
     clients[id] = createMockClient(id);
     deps.unassignedClients.set(id, clients[id]);
   }
@@ -123,4 +124,174 @@ Deno.test("skip: stopping the session mid-performance does not mark the competit
   session.abort();
   await done;
   assertEquals(outcomes(), []);
+});
+
+const ofKind = <K extends ProgressEvent["kind"]>(
+  events: ProgressEvent[],
+  kind: K,
+) =>
+  events.filter((e): e is Extract<ProgressEvent, { kind: K }> =>
+    e.kind === kind
+  );
+const enabled = (c: { __messages: string[] }) =>
+  c.__messages.filter((m) => m.startsWith("event: enable_scoring\n")).length;
+
+/** Run with a short judge time limit (ms). */
+async function withScoreTimeout(ms: number, fn: () => Promise<void>) {
+  Deno.env.set("JUDGE_SCORE_TIMEOUT_MS", String(ms));
+  try {
+    await fn();
+  } finally {
+    Deno.env.delete("JUDGE_SCORE_TIMEOUT_MS");
+  }
+}
+
+Deno.test("skip records say who skipped, and the cursor moves on to the next competitor", async () => {
+  const { session, events } = setup();
+  const done = session.runSession([comp(10, 100, 101), comp(11, 110)], [
+    "dj1",
+    "sb1",
+  ]);
+  await delay(30);
+  resolveTag(perfTag(10, 0), false); // the DJ
+  await delay(30);
+  session.skip(); // the operator
+  await delay(30);
+  assertEquals(ofKind(events, "competitor_skipped"), [
+    {
+      kind: "competitor_skipped",
+      competitionId: 10,
+      competitorId: 100,
+      stage: "performance",
+      actor: "dj",
+      reason: "",
+      next: { competitionId: 10, competitorId: 101 },
+    },
+    {
+      kind: "competitor_skipped",
+      competitionId: 10,
+      competitorId: 101,
+      stage: "performance",
+      actor: "operator",
+      reason: "",
+      next: { competitionId: 11, competitorId: 110 },
+    },
+  ]);
+  session.abort();
+  await done;
+});
+
+Deno.test("zero scores: scoring cannot close with no scores; the operator skips the competitor", () =>
+  withScoreTimeout(40, async () => {
+    const { session, events, clients } = setup();
+    const done = session.runSession([comp(10, 100, 101)], ["dj1", "sb1"]);
+    await delay(30);
+    resolveTag(perfTag(10, 0), true);
+    await delay(120); // both judges time out
+
+    // The session stops at this competitor and says why.
+    assertEquals(session.status().phase, "unscored");
+    assertEquals(session.status().waiting_for, [
+      "operator: no scores (skip or reopen)",
+    ]);
+    assertEquals(positions(clients.dj1), [0]); // 101 has not started
+    assertEquals(ofKind(events, "competitor_finalized"), []);
+    assertEquals(
+      ofKind(events, "score_missing").map((e) => [e.judgeId, e.reason]),
+      [[2, "timeout"], [3, "timeout"]],
+    );
+
+    assertEquals(session.skip(), "unscored");
+    await delay(30);
+    assertEquals(ofKind(events, "competitor_skipped"), [{
+      kind: "competitor_skipped",
+      competitionId: 10,
+      competitorId: 100,
+      stage: "scoring",
+      actor: "operator",
+      reason: "no scores",
+      next: { competitionId: 10, competitorId: 101 },
+    }]);
+    assertEquals(positions(clients.dj1), [0, 1]); // on to the next one
+    session.abort();
+    await done;
+  }));
+
+Deno.test("zero scores: the operator re-opens scoring; one score then closes it", () =>
+  withScoreTimeout(40, async () => {
+    const { session, events, clients } = setup();
+    assertEquals(session.reopen(), false); // nothing to re-open yet
+    const done = session.runSession([comp(10, 100)], ["dj1", "sb1"]);
+    await delay(30);
+    resolveTag(perfTag(10, 0), true);
+    await delay(120);
+    assertEquals(session.status().phase, "unscored");
+    assertEquals(enabled(clients.judge2), 1);
+
+    assertEquals(session.reopen(), true);
+    await delay(10);
+    assertEquals(enabled(clients.judge2), 2); // asked again
+    resolveTag(scoreTag(10, 100, 2), five); // judge 3 lets it time out again
+    await done;
+
+    assertEquals(session.endReason, "completed");
+    assertEquals(ofKind(events, "competitor_skipped"), []);
+    assertEquals(
+      ofKind(events, "competitor_finalized").map((
+        e,
+      ) => [e.competitorId, e.next]),
+      [[100, null]],
+    );
+    // Every miss is in the audit trail, the first round's too.
+    assertEquals(
+      ofKind(events, "score_missing").map((e) => [e.judgeId, e.reason]),
+      [[2, "timeout"], [3, "timeout"], [3, "timeout"]],
+    );
+  }));
+
+Deno.test("missing scores: closed by the operator, and an absent judge, are recorded with their reason", async () => {
+  const { session, events } = setup(["dj1", "sb1", "judge2"]); // judge3 never comes
+  const done = session.runSession([comp(10, 100, 101)], ["dj1", "sb1"]);
+  await delay(30);
+  assertEquals(session.skip(), "waiting"); // go on without judge 3
+  await delay(30);
+  resolveTag(perfTag(10, 0), true);
+  await delay(20);
+  resolveTag(scoreTag(10, 100, 2), five);
+  await delay(20);
+  assertEquals(
+    ofKind(events, "score_missing").map((e) => [e.judgeId, e.reason]),
+    [[3, "absent"]],
+  );
+  resolveTag(perfTag(10, 1), true);
+  await delay(20);
+  session.skip(); // close scoring: judge 2 has not scored 101
+  await delay(20);
+  assertEquals(
+    ofKind(events, "score_missing").map((e) => [
+      e.competitorId,
+      e.judgeId,
+      e.reason,
+    ]),
+    [[100, 3, "absent"], [101, 3, "absent"], [101, 2, "closed"]],
+  );
+  // Nobody scored 101: it waits for the operator rather than closing empty.
+  assertEquals(session.status().phase, "unscored");
+  session.abort();
+  await done;
+});
+
+Deno.test("session end: stopped before anything ran, the session says so (its track is given back)", async () => {
+  const untouched = async (connected: string[]) => {
+    const { session, events } = setup(connected);
+    const done = session.runSession([comp(10, 100)], ["dj1", "sb1"]);
+    await delay(30);
+    session.abort();
+    await done;
+    return ofKind(events, "session_ended")[0].untouched;
+  };
+  // Still waiting for the DJ: nothing ran.
+  assertEquals(await untouched(["sb1", "judge2", "judge3"]), true);
+  // Everyone was there: the first performance began, so it keeps its track.
+  assertEquals(await untouched(["dj1", "sb1", "judge2", "judge3"]), false);
 });

@@ -1,19 +1,9 @@
 // db.ts
 import postgres from "postgres";
-import type {
-  AudioMetadataStore,
-  AudioRecord,
-  AudioRef,
-} from "./audioLibrary.ts";
-import type { OverviewRows } from "./adminOverview.ts";
+import type { ProgressRows } from "./adminOverview.ts";
+import type { Cursor, Phase } from "./progress.ts";
 import type { ResumeRows } from "./resume.ts";
-import {
-  Competition,
-  Competitor,
-  ProgressEvent,
-  Rubric,
-  ScoreSubmission,
-} from "./types.ts";
+import type { NextEntry, ProgressEvent, ScoreSubmission } from "./types.ts";
 
 const DATABASE_URL = Deno.env.get("DATABASE_URL") || "";
 
@@ -55,94 +45,6 @@ export const db = {
 
 export const saveScore = (rec: ScoreSubmission): Promise<void> =>
   db.saveScore(rec);
-
-export async function getSessionCompetitionsWithRubrics(
-  sessionId: number,
-): Promise<Competition[]> {
-  if (!sql) return [];
-
-  // Get all competitions with competitors
-  type CompetitionRow = {
-    id: number;
-    name: string;
-    rubric_id: number;
-    competitors: Competitor[];
-  };
-
-  console.log(
-    `getSessionCompetitionsWithRubrics: sessionId=${sessionId} sqlDefined=${!!sql}`,
-  );
-  const competitions = await sql<CompetitionRow[]>`
-    SELECT comp.id, comp.name, comp.rubric_id,
-      json_agg(
-        json_build_object('id', c.id, 'name', c.name, 'duration', cc.duration)
-        ORDER BY cc.order_number
-      ) AS competitors
-    FROM competitions comp
-    LEFT JOIN competition_competitors cc ON cc.competition_id = comp.id
-    LEFT JOIN competitors c ON c.id = cc.competitor_id
-    WHERE comp.session_id = ${sessionId}
-    GROUP BY comp.id
-    HAVING COUNT(cc.competitor_id) > 0
-    ORDER BY comp.order_number;
-`;
-
-  console.log(
-    `getSessionCompetitionsWithRubrics: sessionId=${sessionId} => competitions=${competitions.length}`,
-  );
-  if (competitions.length === 0) return [];
-
-  // Extract unique rubric IDs
-  const rubricIds = [
-    ...new Set(competitions.map((c: CompetitionRow) => c.rubric_id)),
-  ];
-
-  // Get rubric definition
-
-  const rubrics = await sql<Rubric[]>`
-    SELECT r.id,
-      ( SELECT COALESCE(json_agg( json_build_object( 'id', cr.id, 'name', cr.name, 'weight', rc.weight)), '[]'::json)
-        FROM rubric_criteria rc
-        JOIN criteria cr ON rc.criteria_id = cr.id
-        WHERE rc.rubric_id = r.id
-      ) AS criteria,
-      ( SELECT COALESCE(json_agg(
-          json_build_object( 'id', j.id, 'name', u.name, 'criteria', (
-              SELECT COALESCE(array_agg(rjc.criteria_id ORDER BY rjc.criteria_id), ARRAY[]::int[])
-              FROM rubric_judge_criteria rjc
-              WHERE rjc.rubric_id = r.id AND rjc.judge_id = j.id
-            )
-          )
-        ), '[]'::json)
-        FROM rubric_judges rj
-        JOIN judges j ON rj.judge_id = j.id
-        JOIN users u ON j.user_id = u.id
-        WHERE rj.rubric_id = r.id
-      ) AS judges
-    FROM rubrics r
-    WHERE r.id IN ${sql(rubricIds)}
-  `;
-
-  // Create rubric lookup map
-  const rubricMap = new Map<number, Rubric>(
-    rubrics.map((r: Rubric) => [r.id, r]),
-  );
-  // Post-process: add rubrics to competitions and format to match TypeScript types
-  return competitions.map((row: CompetitionRow) => ({
-    ...row,
-    rubric: rubricMap.get(row.rubric_id)!,
-  }));
-}
-
-/** Track a session runs on, or undefined if the session doesn't exist. */
-export async function getSessionTrackId(
-  sessionId: number,
-): Promise<number | undefined> {
-  if (!sql) return undefined;
-  const rows = await sql<{ track_id: number }[]>`
-    SELECT track_id FROM sessions WHERE id = ${sessionId}`;
-  return rows[0]?.track_id;
-}
 
 // --- client credentials (admin-issued links) --------------------------------
 
@@ -196,283 +98,303 @@ export const credentialStore = sql
   }
   : undefined;
 
+// --- the festival bundle (pairing guard) -----------------------------------
+
 /**
- * Keep sessions.status, competitions.status and the current_* pointers true.
- * An aborted or failed session goes back to 'upcoming' so it can be started again.
+ * Pair this database with a festival bundle. The first bundle is recorded
+ * (digest and the exact data.json text); a different one is refused once
+ * anything has run (scores, a session opened, skips, missing scores), so
+ * results from two bundles never mix. Before that it simply replaces the
+ * record. Returns why it was refused, or undefined.
+ */
+export async function pairBundle(
+  b: { festivalId: number; digest: string; dataText: string },
+): Promise<string | undefined> {
+  if (!sql) return undefined;
+  return await sql.begin(async (tx: typeof sql) => {
+    await tx`LOCK TABLE festival_bundle IN EXCLUSIVE MODE`;
+    const [row] = await tx<
+      { festival_id: number; digest: string; loaded_at: Date }[]
+    >`SELECT festival_id, digest, loaded_at FROM festival_bundle`;
+    if (row?.digest === b.digest) return undefined;
+    if (row) {
+      const [{ used }] = await tx<{ used: boolean }[]>`
+        SELECT EXISTS (SELECT 1 FROM scores)
+          OR EXISTS (SELECT 1 FROM session_runs)
+          OR EXISTS (SELECT 1 FROM skips)
+          OR EXISTS (SELECT 1 FROM missing_scores)
+          OR EXISTS (SELECT 1 FROM track_progress WHERE open_session IS NOT NULL)
+          AS used`;
+      if (used) {
+        return `this database belongs to festival ${row.festival_id}, bundle ${
+          row.digest.slice(0, 12)
+        } (loaded ${row.loaded_at.toISOString()}), and the festival has started; ` +
+          `refusing bundle ${
+            b.digest.slice(0, 12)
+          } (festival ${b.festivalId}). ` +
+          `Run a different bundle against a fresh database.`;
+      }
+      console.warn(
+        `Replacing bundle ${row.digest.slice(0, 12)} with ${
+          b.digest.slice(0, 12)
+        } (nothing has run yet)`,
+      );
+    }
+    await tx`
+      INSERT INTO festival_bundle (singleton, festival_id, digest, data_json)
+      VALUES (TRUE, ${b.festivalId}, ${b.digest}, ${b.dataText})
+      ON CONFLICT (singleton) DO UPDATE SET festival_id = EXCLUDED.festival_id,
+        digest = EXCLUDED.digest, data_json = EXCLUDED.data_json,
+        loaded_at = NOW()`;
+    return undefined;
+  });
+}
+
+// --- progress: the cursor per track -----------------------------------------
+
+type CursorRow = {
+  track_id: number;
+  open_session: number | null;
+  competition_id: number | null;
+  competitor_id: number | null;
+  phase: Phase | null;
+};
+
+const cursorOf = (r: CursorRow | undefined): Cursor | null =>
+  r && r.competition_id !== null && r.competitor_id !== null
+    ? {
+      competitionId: r.competition_id,
+      competitorId: r.competitor_id,
+      phase: r.phase,
+    }
+    : null;
+
+/**
+ * Take the track for a session: the progress row is the lock (one open
+ * session per track). Free track: it becomes this session's, with the cursor on
+ * `first`, not begun. Already this session's: kept as it is (resume). Held by
+ * another session: refused with that session's id.
+ */
+export async function openSession(
+  sessionId: number,
+  trackId: number,
+  first: NextEntry,
+): Promise<{ ok: true; fresh: boolean } | { ok: false; heldBy: number }> {
+  if (!sql) return { ok: true, fresh: true };
+  return await sql.begin(async (tx: typeof sql) => {
+    const taken = await tx<{ track_id: number }[]>`
+      INSERT INTO track_progress
+        (track_id, open_session, competition_id, competitor_id, phase)
+      VALUES (${trackId}, ${sessionId}, ${first?.competitionId ?? null},
+        ${first?.competitorId ?? null}, NULL)
+      ON CONFLICT (track_id) DO UPDATE SET
+        open_session = EXCLUDED.open_session,
+        competition_id = EXCLUDED.competition_id,
+        competitor_id = EXCLUDED.competitor_id,
+        phase = NULL, updated_at = NOW()
+      WHERE track_progress.open_session IS NULL
+      RETURNING track_id`;
+    if (taken.length === 0) {
+      const [row] = await tx<{ open_session: number }[]>`
+        SELECT open_session FROM track_progress WHERE track_id = ${trackId}`;
+      if (row?.open_session !== sessionId) {
+        return { ok: false as const, heldBy: row?.open_session ?? -1 };
+      }
+    }
+    await tx`INSERT INTO session_runs (session_id, track_id)
+      VALUES (${sessionId}, ${trackId}) ON CONFLICT (session_id) DO NOTHING`;
+    return { ok: true as const, fresh: taken.length > 0 };
+  });
+}
+
+/** Give the track back (the session is no longer open; its cursor is cleared). */
+export async function releaseSession(sessionId: number): Promise<void> {
+  if (!sql) return;
+  await sql`UPDATE track_progress SET open_session = NULL,
+      competition_id = NULL, competitor_id = NULL, phase = NULL,
+      updated_at = NOW()
+    WHERE open_session = ${sessionId}`;
+}
+
+/**
+ * Persist a step. The cursor writes are one row each (the track's progress
+ * row, found by the session holding it); skips and missing scores are
+ * appended; start and end times go to session_runs.
  */
 export async function recordProgress(
   sessionId: number,
   event: ProgressEvent,
 ): Promise<void> {
   if (!sql) return;
+  const moveTo = (tx: typeof sql, next: NextEntry) =>
+    tx`UPDATE track_progress
+      SET competition_id = ${next?.competitionId ?? null},
+          competitor_id = ${next?.competitorId ?? null},
+          phase = NULL, updated_at = NOW()
+      WHERE open_session = ${sessionId}`;
   switch (event.kind) {
     case "session_started":
-      await sql`UPDATE sessions SET status = 'active' WHERE id = ${sessionId}`;
-      // A fresh run forgets earlier outcomes; a resumed one keeps them.
-      if (!event.resume) {
-        await sql`UPDATE competition_competitors SET status = 'upcoming'
-          WHERE competition_id IN
-            (SELECT id FROM competitions WHERE session_id = ${sessionId})`;
-      }
-      await sql`UPDATE tracks SET current_session = ${sessionId}
-        WHERE id = (SELECT track_id FROM sessions WHERE id = ${sessionId})`;
-      break;
+      break; // the track was taken by openSession
     case "competition_started":
-      await sql`UPDATE competitions SET status = 'active'
-        WHERE id = ${event.competitionId}`;
-      await sql`UPDATE sessions
-        SET current_competition = ${event.competitionId}, current_competitor = NULL
-        WHERE id = ${sessionId}`;
+      await sql`UPDATE session_runs SET started_at = COALESCE(started_at, NOW())
+        WHERE session_id = ${sessionId}`;
       break;
     case "competitor_started":
-      await sql`UPDATE sessions SET current_competitor = ${event.competitorId}
-        WHERE id = ${sessionId}`;
+      await sql`UPDATE track_progress
+        SET competition_id = ${event.competitionId},
+            competitor_id = ${event.competitorId},
+            phase = 'performing', updated_at = NOW()
+        WHERE open_session = ${sessionId}`;
       break;
     case "competitor_performed":
-    case "competitor_skipped":
-    case "competitor_finalized":
-      await sql`UPDATE competition_competitors
-        SET status = ${event.kind.replace("competitor_", "")}
-        WHERE competition_id = ${event.competitionId}
+      await sql`UPDATE track_progress SET phase = 'scoring', updated_at = NOW()
+        WHERE open_session = ${sessionId}
+          AND competition_id = ${event.competitionId}
           AND competitor_id = ${event.competitorId}`;
       break;
-    case "competition_completed":
-      await sql`UPDATE competitions SET status = 'completed'
-        WHERE id = ${event.competitionId}`;
+    case "competitor_skipped":
+      await sql.begin(async (tx: typeof sql) => {
+        await tx`INSERT INTO skips
+            (session_id, competition_id, competitor_id, stage, actor, reason)
+          VALUES (${sessionId}, ${event.competitionId}, ${event.competitorId},
+            ${event.stage}, ${event.actor}, ${event.reason ?? ""})
+          ON CONFLICT DO NOTHING`;
+        await moveTo(tx, event.next);
+      });
+      break;
+    case "competitor_finalized":
+      await moveTo(sql, event.next);
+      break;
+    case "score_missing":
+      await sql`INSERT INTO missing_scores
+          (session_id, competition_id, competitor_id, judge_id, reason)
+        VALUES (${sessionId}, ${event.competitionId}, ${event.competitorId},
+          ${event.judgeId}, ${event.reason})`;
       break;
     case "session_ended":
-      await sql`UPDATE sessions
-        SET status = ${event.reason === "completed" ? "completed" : "upcoming"},
-            current_competition = NULL, current_competitor = NULL
-        WHERE id = ${sessionId}`;
-      await sql`UPDATE tracks SET current_session = NULL
-        WHERE current_session = ${sessionId}`;
+      if (event.reason === "completed") {
+        await sql.begin(async (tx: typeof sql) => {
+          await tx`UPDATE session_runs SET finished_at = NOW()
+            WHERE session_id = ${sessionId}`;
+          await tx`UPDATE track_progress SET open_session = NULL,
+              competition_id = NULL, competitor_id = NULL, phase = NULL,
+              updated_at = NOW()
+            WHERE open_session = ${sessionId}`;
+        });
+      } else if (event.untouched) {
+        // Stopped before anything ran: the track is free again. Otherwise it
+        // stays this session's, to be resumed and completed first.
+        await releaseSession(sessionId);
+      }
       break;
   }
 }
 
-/** The session that follows this one on its track (by start time), if any. */
-export async function getFollowingSession(
-  trackId: number,
-  sessionId: number,
-): Promise<{ name: string; startTime: Date } | undefined> {
-  if (!sql) return undefined;
-  const rows = await sql<{ name: string | null; start_time: Date }[]>`
-    SELECT s.name, s.start_time FROM sessions s,
-      (SELECT start_time, id FROM sessions WHERE id = ${sessionId}) cur
-    WHERE s.track_id = ${trackId} AND s.status = 'upcoming'
-      AND (s.start_time, s.id) > (cur.start_time, cur.id)
-    ORDER BY s.start_time, s.id LIMIT 1`;
-  const r = rows[0];
-  return r && { name: r.name ?? "", startTime: r.start_time };
-}
-
-/** Sessions the database says are running (left that way only by a crash). */
-export async function getActiveSessionIds(): Promise<number[]> {
-  if (!sql) return [];
-  const rows = await sql<{ id: number }[]>`
-    SELECT id FROM sessions WHERE status = 'active' ORDER BY id`;
-  return rows.map((r: { id: number }) => r.id);
-}
-
-/** How far the session got, for resuming it after a stop or a server restart. */
+/** How far a session got, for resuming it (undefined without a database). */
 export async function getResumeRows(
   sessionId: number,
 ): Promise<ResumeRows | undefined> {
   if (!sql) return undefined;
-  const [session] = await sql<{ status: string }[]>`
-    SELECT status FROM sessions WHERE id = ${sessionId}`;
-  if (!session) return undefined;
-  const competitors = await sql<ResumeRows["competitors"]>`
-    SELECT cc.competition_id, cc.competitor_id, cc.status
-    FROM competition_competitors cc
-    JOIN competitions c ON c.id = cc.competition_id
-    WHERE c.session_id = ${sessionId}`;
-  const performedScores = await sql<ResumeRows["performedScores"]>`
-    SELECT s.competition_id, s.competitor_id, s.judge_id, s.criteria_id,
-           s.score::float AS score
-    FROM scores s
-    JOIN competition_competitors cc ON cc.competition_id = s.competition_id
-      AND cc.competitor_id = s.competitor_id
-    JOIN competitions c ON c.id = s.competition_id
-    WHERE c.session_id = ${sessionId} AND cc.status = 'performed'
-    ORDER BY s.judge_id, s.criteria_id`;
-  return { sessionStatus: session.status, competitors, performedScores };
-}
-
-/** Does the track (dj/sb) or judge behind a client id exist? */
-export async function clientExists(
-  kind: "dj" | "judge" | "sb",
-  num: number,
-): Promise<boolean> {
-  if (!sql) return true; // memory mode: nothing to check against
-  const rows = kind === "judge"
-    ? await sql`SELECT 1 FROM judges WHERE id = ${num}`
-    : await sql`SELECT 1 FROM tracks WHERE id = ${num}`;
-  return rows.length > 0;
-}
-
-// --- audio metadata ----------------------------------------------------------
-
-/** The session and track a competition belongs to, and whether it has started. */
-export async function getCompetitionSession(
-  competitionId: number,
-): Promise<
-  | { sessionId: number; trackId: number; status: string; startTime: Date }
-  | undefined
-> {
-  if (!sql) return undefined;
-  const rows = await sql<
-    { session_id: number; track_id: number; status: string; start_time: Date }[]
-  >`
-    SELECT s.id AS session_id, s.track_id, s.status, s.start_time
-    FROM competitions c JOIN sessions s ON s.id = c.session_id
-    WHERE c.id = ${competitionId}`;
-  const r = rows[0];
-  return r && {
-    sessionId: r.session_id,
-    trackId: r.track_id,
-    status: r.status,
-    startTime: r.start_time,
+  const [run] = await sql<{ finished_at: Date | null }[]>`
+    SELECT finished_at FROM session_runs WHERE session_id = ${sessionId}`;
+  const [row] = await sql<CursorRow[]>`
+    SELECT * FROM track_progress WHERE open_session = ${sessionId}`;
+  const cursor = cursorOf(row);
+  const cursorScores = cursor?.phase === "scoring"
+    ? await sql<ResumeRows["cursorScores"]>`
+      SELECT competition_id, competitor_id, judge_id, criteria_id,
+             score::float AS score
+      FROM scores
+      WHERE competition_id = ${cursor.competitionId}
+        AND competitor_id = ${cursor.competitorId}
+      ORDER BY judge_id, criteria_id`
+    : [];
+  return {
+    finished: !!run?.finished_at,
+    open: !!row,
+    cursor,
+    cursorScores: [...cursorScores],
   };
 }
 
-type AudioRow = {
-  competition_id: number;
-  competitor_id: number;
-  kind: AudioRecord["kind"];
-  storage_key: string;
-  content_type: string;
-  bytes: number;
-  sha256: string;
-};
-const toAudioRecord = (r: AudioRow): AudioRecord => ({
-  competitionId: r.competition_id,
-  competitorId: r.competitor_id,
-  kind: r.kind,
-  storageKey: r.storage_key,
-  contentType: r.content_type,
-  bytes: r.bytes,
-  sha256: r.sha256,
-});
-
-export const audioStore: AudioMetadataStore | undefined = sql
-  ? {
-    async upsert(rec: AudioRecord) {
-      const old = await sql<AudioRow[]>`
-        SELECT * FROM audio_files
-        WHERE competition_id = ${rec.competitionId}
-          AND competitor_id = ${rec.competitorId} AND kind = ${rec.kind}`;
-      await sql`
-        INSERT INTO audio_files
-          (competition_id, competitor_id, kind, storage_key, content_type, bytes, sha256)
-        VALUES (${rec.competitionId}, ${rec.competitorId}, ${rec.kind},
-          ${rec.storageKey}, ${rec.contentType}, ${rec.bytes}, ${rec.sha256})
-        ON CONFLICT (competition_id, competitor_id, kind) DO UPDATE SET
-          storage_key = EXCLUDED.storage_key, content_type = EXCLUDED.content_type,
-          bytes = EXCLUDED.bytes, sha256 = EXCLUDED.sha256, created_at = NOW()`;
-      return old[0] && toAudioRecord(old[0]);
-    },
-    async get(ref: AudioRef) {
-      const rows = await sql<AudioRow[]>`
-        SELECT * FROM audio_files
-        WHERE competition_id = ${ref.competitionId}
-          AND competitor_id = ${ref.competitorId} AND kind = ${ref.kind}`;
-      return rows[0] && toAudioRecord(rows[0]);
-    },
-    async listForCompetitions(ids: number[]) {
-      if (ids.length === 0) return [];
-      const rows = await sql<AudioRow[]>`
-        SELECT * FROM audio_files WHERE competition_id IN ${sql(ids)}`;
-      return rows.map(toAudioRecord);
-    },
-  }
-  : undefined;
-
-/** The next session (by start time) on a track that has not finished. */
-export async function getNextSessionForTrack(
+/** The session holding a track, if any. */
+export async function getTrackHolder(
   trackId: number,
-): Promise<{ id: number; startTime: Date } | undefined> {
+): Promise<number | undefined> {
   if (!sql) return undefined;
-  const rows = await sql<{ id: number; start_time: Date }[]>`
-    SELECT id, start_time FROM sessions
-    WHERE track_id = ${trackId} AND status IN ('upcoming', 'active')
-    ORDER BY (status = 'active') DESC, start_time, id LIMIT 1`;
-  return rows[0] && { id: rows[0].id, startTime: rows[0].start_time };
+  const [row] = await sql<{ open_session: number | null }[]>`
+    SELECT open_session FROM track_progress WHERE track_id = ${trackId}`;
+  return row?.open_session ?? undefined;
 }
 
 /**
- * Put a session back to its starting state so a demo can be run again: scores
- * removed, statuses and pointers reset, start time moved to now.
+ * Open sessions (each holds its track). At boot these are the sessions a crash
+ * or a shutdown cut off: they are resumed and must be completed first.
  */
-export async function resetSession(sessionId: number): Promise<void> {
-  if (!sql) return;
-  await sql.begin(async (tx: typeof sql) => {
-    await tx`DELETE FROM scores WHERE competition_id IN
-      (SELECT id FROM competitions WHERE session_id = ${sessionId})`;
-    await tx`UPDATE competitions SET status = 'upcoming'
-      WHERE session_id = ${sessionId}`;
-    await tx`UPDATE competition_competitors SET status = 'upcoming'
-      WHERE competition_id IN
-        (SELECT id FROM competitions WHERE session_id = ${sessionId})`;
-    await tx`UPDATE sessions SET status = 'upcoming', start_time = NOW(),
-      current_competition = NULL, current_competitor = NULL
-      WHERE id = ${sessionId}`;
-    await tx`UPDATE tracks SET current_session = NULL
-      WHERE current_session = ${sessionId}`;
-  });
+export async function getActiveSessionIds(): Promise<number[]> {
+  if (!sql) return [];
+  const rows = await sql<{ open_session: number }[]>`
+    SELECT open_session FROM track_progress
+    WHERE open_session IS NOT NULL ORDER BY open_session`;
+  return rows.map((r: { open_session: number }) => r.open_session);
 }
 
-/** Everything the admin overview needs, in a handful of queries. */
-export async function getOverviewRows(): Promise<OverviewRows> {
-  if (!sql) {
-    return {
-      festivals: [],
-      tracks: [],
-      sessions: [],
-      competitions: [],
-      competitors: [],
-      rubricJudges: [],
-      judges: [],
-      scores: [],
-    };
-  }
-  const [
-    festivals,
-    tracks,
-    sessions,
-    competitions,
-    competitors,
-    rubricJudges,
-    judges,
-    scores,
-  ] = await Promise.all([
-    sql`SELECT id, name FROM festivals ORDER BY id`,
-    sql`SELECT id, festival_id, name, location FROM tracks ORDER BY id`,
-    sql`SELECT id, track_id, name, status, start_time, current_competition,
-          current_competitor FROM sessions ORDER BY start_time, id`,
-    sql`SELECT id, session_id, order_number, name, status, rubric_id
-        FROM competitions ORDER BY session_id, order_number`,
-    sql`SELECT cc.competition_id, c.id, c.name, c.type, cc.duration, cc.order_number,
-          cc.status
-        FROM competition_competitors cc JOIN competitors c ON c.id = cc.competitor_id
-        ORDER BY cc.competition_id, cc.order_number`,
-    sql`SELECT rj.rubric_id, j.id AS judge_id, u.name, u.email
-        FROM rubric_judges rj JOIN judges j ON j.id = rj.judge_id
-        JOIN users u ON u.id = j.user_id ORDER BY j.id`,
-    sql`SELECT j.id, u.name, u.email FROM judges j JOIN users u ON u.id = j.user_id
-        ORDER BY j.id`,
+/** Sessions that ran to the end or were cancelled, and who holds each track. */
+export async function getSessionMarks(): Promise<
+  { done: Set<number>; openByTrack: Map<number, number> }
+> {
+  if (!sql) return { done: new Set(), openByTrack: new Map() };
+  const [runs, holders] = await Promise.all([
+    sql<{ session_id: number }[]>`SELECT session_id FROM session_runs
+      WHERE finished_at IS NOT NULL OR cancelled_at IS NOT NULL`,
+    sql<{ track_id: number; open_session: number }[]>`
+      SELECT track_id, open_session FROM track_progress
+      WHERE open_session IS NOT NULL`,
+  ]);
+  return {
+    done: new Set(runs.map((r: { session_id: number }) => r.session_id)),
+    openByTrack: new Map(
+      holders.map((
+        h: { track_id: number; open_session: number },
+      ) => [h.track_id, h.open_session]),
+    ),
+  };
+}
+
+/** Everything the admin overview needs from the database. */
+export async function getProgressRows(): Promise<ProgressRows> {
+  if (!sql) return { runs: [], cursors: [], skips: [], scores: [] };
+  const [runs, cursors, skips, scores] = await Promise.all([
+    sql`SELECT session_id, started_at, finished_at, cancelled_at
+        FROM session_runs`,
+    sql`SELECT * FROM track_progress`,
+    sql`SELECT session_id, competition_id, competitor_id FROM skips`,
     sql`SELECT competition_id, competitor_id, COUNT(DISTINCT judge_id)::int AS judges
         FROM scores GROUP BY competition_id, competitor_id`,
   ]);
-  return {
-    festivals,
-    tracks,
-    sessions,
-    competitions,
-    competitors,
-    rubricJudges,
-    judges,
-    scores,
-  } as unknown as OverviewRows;
+  return { runs, cursors, skips, scores } as unknown as ProgressRows;
+}
+
+/**
+ * Put a session back to its starting state so a demo can be run again: its
+ * scores, skips, missing-score records and markers are removed and its track
+ * is given back. `competitionIds`: the session's competitions (scores are
+ * stored by competition).
+ */
+export async function resetSession(
+  sessionId: number,
+  competitionIds: number[],
+): Promise<void> {
+  if (!sql) return;
+  await sql.begin(async (tx: typeof sql) => {
+    if (competitionIds.length > 0) {
+      await tx`DELETE FROM scores WHERE competition_id IN ${
+        tx(competitionIds)
+      }`;
+    }
+    await tx`DELETE FROM skips WHERE session_id = ${sessionId}`;
+    await tx`DELETE FROM missing_scores WHERE session_id = ${sessionId}`;
+    await tx`DELETE FROM session_runs WHERE session_id = ${sessionId}`;
+    await tx`DELETE FROM track_progress WHERE open_session = ${sessionId}`;
+  });
 }

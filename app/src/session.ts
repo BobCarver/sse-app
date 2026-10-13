@@ -7,7 +7,12 @@ import {
   requiredTag,
   scoreTag,
 } from "./contract.ts";
-import { finishedKey, NO_RESUME, type ResumePlan } from "./resume.ts";
+import {
+  finishedKey,
+  nextInOrder,
+  NO_RESUME,
+  type ResumePlan,
+} from "./resume.ts";
 import {
   type Competition,
   type ProgressEvent,
@@ -114,7 +119,8 @@ export class Session {
   // Track current state for recovery
   currentCompetition: Competition | null = null;
   currentPosition: number = -1;
-  currentPhase: "idle" | "performing" | "scoring" = "idle";
+  /** `unscored`: scoring closed with no scores; the operator must skip or reopen. */
+  currentPhase: "idle" | "performing" | "scoring" | "unscored" = "idle";
   submittedScores: Set<string> = new Set(); // "competitionId:position:judgeId"
   /** Submissions that could not be saved after retries (kept for recovery/audit). */
   unsavedScores: ScoreSubmission[] = [];
@@ -137,6 +143,12 @@ export class Session {
   private excusedJudges = new Set<number>();
   /** Clients the operator chose to stop waiting for (not waited for again). */
   private skippedClients = new Set<string>();
+  /** The operator's answer to a competitor nobody scored (see `skip`, `reopen`). */
+  private operatorChoice: ((choice: "skip" | "reopen") => void) | null = null;
+  /** The performance under way was skipped by the operator (not the DJ). */
+  private operatorSkipped = false;
+  /** Something ran (a performance began or an entry is done): see session_ended. */
+  private touched = false;
 
   constructor(
     public id: number,
@@ -209,6 +221,7 @@ export class Session {
   ): Promise<void> | undefined {
     if (!this.deps.djGates) return undefined;
     const begun = resume.reopen?.competitionId === competition.id ||
+      resume.underway === competition.id ||
       competition.competitors.some((p) =>
         resume.finished.has(finishedKey(competition.id, p.id))
       );
@@ -675,9 +688,17 @@ export class Session {
    *  - "gate":        the DJ's button (start a competition / end the session)
    *  - "performance": the DJ's performance (treated as skipped; DJ playback stops)
    *  - "scoring":     judges who have not submitted (scoring closes now)
+   *  - "unscored":    a competitor whose scoring closed with no scores at all
+   *                   (recorded as skipped; see `reopen` for the other way out)
    * Returns what was skipped, or undefined if nothing is pending.
    */
-  skip(): "waiting" | "gate" | "performance" | "scoring" | undefined {
+  skip():
+    | "waiting"
+    | "gate"
+    | "performance"
+    | "scoring"
+    | "unscored"
+    | undefined {
     if (this.waitController && !this.waitController.signal.aborted) {
       this.waitController.abort(new SkipWaitError());
       return "waiting";
@@ -692,6 +713,7 @@ export class Session {
         competition_id: competition.id,
         position: this.currentPosition,
       };
+      this.operatorSkipped = true;
       this.broadcast({ event: "performance_skipped", ...at }, isDj);
       resolveTag(perfTag(at.competition_id, at.position), false);
       return "performance";
@@ -703,7 +725,21 @@ export class Session {
       this.scoreController.abort(new ScoringClosedError());
       return "scoring";
     }
+    if (this.operatorChoice) {
+      this.operatorChoice("skip");
+      return "unscored";
+    }
     return undefined;
+  }
+
+  /**
+   * Re-open scoring for the competitor whose scoring closed with no scores (the
+   * session is waiting for the operator). False if that is not the case.
+   */
+  reopen(): boolean {
+    if (!this.operatorChoice) return false;
+    this.operatorChoice("reopen");
+    return true;
   }
 
   /** What the operator needs to see: where the session is and what it waits for. */
@@ -713,6 +749,8 @@ export class Session {
       ? [...this.waitingFor]
       : this.gate
       ? [this.gate.kind === "begin" ? "dj-start" : "dj-close"]
+      : this.currentPhase === "unscored"
+      ? ["operator: no scores (skip or reopen)"]
       : this.currentPhase === "scoring" && competition
       ? competition.rubric.judges
         .filter((j) =>
@@ -809,6 +847,8 @@ export class Session {
     this.currentCompetition = competition;
     this.currentPosition = position;
     this.currentScores = [];
+    this.operatorSkipped = false;
+    this.touched = true;
     this.progress({
       kind: "competitor_started",
       competitionId: competition.id,
@@ -892,6 +932,13 @@ export class Session {
         competition_id: competition.id,
         competitor_id: competitor.id,
         judge_id,
+        reason,
+      });
+      this.progress({
+        kind: "score_missing",
+        competitionId: competition.id,
+        competitorId: competitor.id,
+        judgeId: judge_id,
         reason,
       });
     };
@@ -989,11 +1036,7 @@ export class Session {
     for (const s of saved) {
       this.submittedScores.add(`${competition.id}:${position}:${s.judge_id}`);
     }
-    this.progress({
-      kind: "competitor_started",
-      competitionId: competition.id,
-      competitorId,
-    });
+    // The cursor is already on this competitor, in its scoring phase.
     this.broadcast({
       event: "performance_start",
       competition_id: competition.id,
@@ -1005,13 +1048,15 @@ export class Session {
   }
 
   /**
-   * Scoring has closed: the competitor is done for good. Written (and awaited)
-   * before the next competitor starts, so a restart never revisits it. Not done
-   * if a score could not be saved: that competitor is picked up again instead.
+   * Scoring has closed: the competitor is done for good and the cursor moves on
+   * to `next`. Written (and awaited) before the next competitor starts, so a
+   * restart never revisits it. A score that could not be saved is not waited
+   * for: it was logged loudly and is kept in `unsavedScores`.
    */
   private async finalize(
     competition: Competition,
     competitorId: number,
+    next: ReturnType<typeof nextInOrder>,
   ): Promise<void> {
     if (
       this.unsavedScores.some((s) =>
@@ -1019,16 +1064,64 @@ export class Session {
       )
     ) {
       console.error(
-        `Competitor ${competitorId} NOT finalized: a score was not saved`,
+        `Competitor ${competitorId} finalized with a score that was NOT saved`,
       );
-      return;
     }
     this.progress({
       kind: "competitor_finalized",
       competitionId: competition.id,
       competitorId,
+      next,
     });
     await this.progressChain;
+  }
+
+  /**
+   * Score the competitor at `position`. Scoring cannot close with no scores at
+   * all: if nobody scored (every judge timed out, was closed out or absent),
+   * the session stops for the operator, who either re-opens scoring (scored
+   * again) or skips the competitor ("skipped"). A rubric without judges has
+   * nothing to wait for.
+   */
+  private async scoreUntilClosed(
+    competition: Competition,
+    position: number,
+  ): Promise<"closed" | "skipped"> {
+    for (;;) {
+      await this.scorePhase(competition);
+      const judges = competition.rubric.judges;
+      const scored = judges.some((j) =>
+        this.submittedScores.has(`${competition.id}:${position}:${j.id}`)
+      );
+      if (judges.length === 0 || scored) return "closed";
+      console.warn(
+        `Session ${this.id}: nobody scored competitor ${
+          competition.competitors[position].id
+        }; waiting for the operator (skip or reopen)`,
+      );
+      if (await this.awaitOperator() === "skip") return "skipped";
+      console.log(`Session ${this.id}: scoring re-opened by the operator`);
+    }
+  }
+
+  /** Wait for the operator's `skip()` or `reopen()`; stopping the session throws. */
+  private awaitOperator(): Promise<"skip" | "reopen"> {
+    this.currentPhase = "unscored";
+    const signal = this.signal;
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        this.operatorChoice = null;
+        reject(signal.reason);
+      };
+      if (signal.aborted) return onAbort();
+      signal.addEventListener("abort", onAbort, { once: true });
+      this.operatorChoice = (choice) => {
+        signal.removeEventListener("abort", onAbort);
+        this.operatorChoice = null;
+        this.currentPhase = "idle";
+        resolve(choice);
+      };
+    });
   }
 
   /**
@@ -1082,9 +1175,11 @@ export class Session {
     this.excusedJudges.clear();
     this.skippedClients.clear();
     this.submittedScores.clear();
+    this.touched = finished.size > 0 || !!reopen ||
+      resume.underway !== undefined;
     this.progress({
       kind: "session_started",
-      resume: finished.size > 0 || !!reopen,
+      resume: this.touched,
     });
 
     console.log(
@@ -1134,6 +1229,23 @@ export class Session {
           }
           const reopening = reopen?.competitionId === competition.id &&
             reopen.competitorId === competitor.id;
+          const next = nextInOrder(allCompetitions, competition.id, position);
+          const skipped = (
+            stage: "performance" | "scoring",
+            actor: "dj" | "operator",
+            reason = "",
+          ) => {
+            this.touched = true;
+            this.progress({
+              kind: "competitor_skipped",
+              competitionId: competition.id,
+              competitorId: competitor.id,
+              stage,
+              actor,
+              reason,
+              next,
+            });
+          };
           let performed = false;
           try {
             if (reopening) {
@@ -1151,30 +1263,36 @@ export class Session {
                   competitorId: competitor.id,
                 });
               }
-              await this.scorePhase(competition);
-              await this.finalize(competition, competitor.id);
+              const outcome = await this.scoreUntilClosed(
+                competition,
+                position,
+              );
+              if (outcome === "skipped") {
+                skipped("scoring", "operator", "no scores");
+              } else {
+                await this.finalize(competition, competitor.id, next);
+              }
             } else {
               // The DJ skipped it (or an administrator did): no scoring, and
               // the session goes on with the next competitor.
               console.log(
                 `Competitor at position ${position} skipped, no scoring`,
               );
-              this.progress({
-                kind: "competitor_skipped",
-                competitionId: competition.id,
-                competitorId: competitor.id,
-              });
+              skipped("performance", this.operatorSkipped ? "operator" : "dj");
             }
           } catch (err) {
             if (this.signal.aborted) throw err; // stopping: not a per-competitor error
             // Never performed (the DJ's answer never came, or playback broke):
             // record it as skipped rather than leaving it looking upcoming.
+            // Already performed: the scoring that ran stands; move on.
             if (!performed) {
-              this.progress({
-                kind: "competitor_skipped",
-                competitionId: competition.id,
-                competitorId: competitor.id,
-              });
+              skipped(
+                "performance",
+                "dj",
+                String((err as Error)?.message ?? err),
+              );
+            } else {
+              await this.finalize(competition, competitor.id, next);
             }
             console.error("Error during competitor", {
               competitionId: competition.id,
@@ -1188,10 +1306,6 @@ export class Session {
           }
         }
 
-        this.progress({
-          kind: "competition_completed",
-          competitionId: competition.id,
-        });
         // Competition over: nothing to replay to clients connecting between
         // competitions
         this.currentCompetition = null;
@@ -1228,6 +1342,7 @@ export class Session {
       this.progress({
         kind: "session_ended",
         reason: this.endReason ?? "error",
+        untouched: !this.touched,
       });
       await this.progressChain;
       console.log(`Session ${this.id} reset complete`);
@@ -1265,6 +1380,7 @@ export class Session {
     this.waitingFor = [];
     this.excusedJudges.clear();
     this.skippedClients.clear();
+    this.operatorChoice = null;
     this.currentPhase = "idle";
     this.currentCompetition = null;
     this.currentPosition = -1;

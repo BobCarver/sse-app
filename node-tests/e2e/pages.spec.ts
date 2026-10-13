@@ -6,25 +6,9 @@ import { type APIRequestContext, type Browser, expect, type Page, test } from "@
 
 const ADMIN = { authorization: `Bearer ${process.env.ADMIN_TOKEN ?? "test-admin"}` };
 
-// 0.3s of silence as a valid WAV so <audio> can play/end in headless Chromium.
-function silentWav(seconds = 0.3): Buffer {
-    const rate = 8000, n = Math.floor(rate * seconds);
-    const b = Buffer.alloc(44 + n);
-    b.write("RIFF", 0);
-    b.writeUInt32LE(36 + n, 4);
-    b.write("WAVEfmt ", 8);
-    b.writeUInt32LE(16, 16);
-    b.writeUInt16LE(1, 20); // PCM
-    b.writeUInt16LE(1, 22); // mono
-    b.writeUInt32LE(rate, 24);
-    b.writeUInt32LE(rate, 28);
-    b.writeUInt16LE(1, 32);
-    b.writeUInt16LE(8, 34);
-    b.write("data", 36);
-    b.writeUInt32LE(n, 40);
-    b.fill(128, 44); // 8-bit silence
-    return b;
-}
+// The festival is the e2e bundle (fixtures/bundles/e2e): session 1 on track 1,
+// Competition 1 (id 10) with Competitor 1 (id 100), judges 2 and 3. Its
+// announcement and song are 0.3 s of silence, so <audio> plays and ends quickly.
 
 test.use({
     launchOptions: { args: ["--autoplay-policy=no-user-gesture-required"] },
@@ -40,7 +24,7 @@ async function issue(request: APIRequestContext, client_id: string) {
     return await res.json() as { id: number; link: string };
 }
 
-// After the last judge scores the session (one competitor in the seed) ends at
+// After the last judge scores the session (one competitor in the bundle) ends at
 // once, so the page may already say "Session complete".
 const SUBMITTED = /^(Scores submitted|Session complete)$/;
 
@@ -66,25 +50,17 @@ async function openLink(browser: Browser, link: string) {
     return { context, page };
 }
 
-async function setup(browser: Browser, request: APIRequestContext, djClipSeconds = 0.3) {
+async function setup(browser: Browser, request: APIRequestContext) {
     pageErrors.length = 0;
     // Every test starts session 1 from scratch. Without this, a test that aborts
-    // mid-scoring leaves the competitor `performed`, and the next start resumes
-    // (re-opens scoring, no performance). The server drops an aborted session a
-    // moment after the abort, and reset answers 409 until then.
+    // mid-performance leaves the session holding its track with the cursor on
+    // that competitor, and the next start resumes there (a finished session
+    // cannot be started at all). The server drops an aborted session a moment
+    // after the abort, and reset answers 409 until then.
     await expect.poll(
         async () => (await request.post("/demo/reset/1", { headers: ADMIN })).status(),
         { timeout: 10_000 },
     ).toBe(200);
-    // The performer's audio, uploaded for real. The seed's session "starts" now,
-    // so the upload cut-off has passed: the administrator forces it in.
-    for (const kind of ["announce", "music"]) {
-        const up = await request.put(`/admin/audio/10/100/${kind}?force=1`, {
-            headers: { ...ADMIN, "content-type": "audio/wav" },
-            data: silentWav(kind === "music" ? djClipSeconds : 0.3),
-        });
-        expect(up.status()).toBe(201);
-    }
     const links = {
         dj: await issue(request, "dj1"),
         j2: await issue(request, "judge2"),
@@ -289,7 +265,7 @@ test("operator: closing scoring tells the judge who didn't submit; the others' s
 });
 
 test("operator: aborting a stuck session tells every page and lets it be started again", async ({ browser, request }) => {
-    const { dj, j2, j3, sb, all } = await setup(browser, request, 6); // long clips: the DJ is mid-performance for a while
+    const { dj, j2, j3, sb, all } = await setup(browser, request); // the song waits for play: the DJ stays mid-performance
     try {
         await startSession(request);
         await expect(dj.page.locator("#skip")).toBeEnabled({ timeout: 20_000 }); // DJ is mid-performance
@@ -327,7 +303,7 @@ test("DJ skip: the performance is recorded as skipped and shown in its own colou
         // Nobody is asked to score it.
         for (const j of [j2, j3]) await expect(j.page.locator("#submit")).toBeDisabled();
 
-        // It is recorded as skipped (the seed has one competitor, so the session ends).
+        // It is recorded as skipped (one competitor in the bundle, so the session ends).
         await expect.poll(async () => {
             const res = await request.get("/admin/overview", { headers: ADMIN });
             const o = await res.json();

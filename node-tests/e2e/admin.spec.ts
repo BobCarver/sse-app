@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 // The admin page: sign in with the admin token, see the whole festival as a
 // tree, issue and revoke a link (with QR and share links), sign out.
-// Runs against the e2e seed (festival test1 > track1 > session1 > Competition 1).
+// Runs against the e2e bundle (festival test1 > track1 > session1 > Competition 1).
 
 const TOKEN = process.env.ADMIN_TOKEN ?? "test-admin";
 
@@ -63,10 +63,10 @@ test("admin page: sign in, browse the festival tree, issue and revoke a link, si
     await festival.locator("summary").first().click();
     await expect(festival).toHaveAttribute("open", "");
 
-    // Judges tab.
+    // Judges tab (the bundle carries no emails).
     await page.locator("#tab-judges").click();
     await expect(page.locator("#judges")).toContainText("Judge A");
-    await expect(page.locator("#judges")).toContainText("judgeA@example.com");
+    await expect(page.locator("#judges")).toContainText("no email on file");
     await page.locator("#tab-festival").click();
 
     // Issue a link for the track's DJ: shown once, with copy, QR, email and text.

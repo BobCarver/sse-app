@@ -1,24 +1,26 @@
 // deno-lint-ignore-file no-explicit-any
-// Backend integration: real Hono app + Postgres. Runs a full session in-process
-// (no server): 1 DJ, 2 judges, 1 scoreboard, 1 competition with 2 competitors.
-// Requires DATABASE_URL pointing at a database with the schema loaded (empty tables).
+// Backend integration: real Hono app + Postgres. Runs sessions in-process (no
+// server) from a festival held in memory, as the bundle loader leaves it:
+// track 1 (dj1, sb1), session 1 = competition 10 with competitors 100 and 101,
+// judges 2 and 3 scoring criterion 1; session 2 follows on the same track.
+// Requires DATABASE_URL pointing at a database with the schema loaded.
 import { assert, assertEquals } from "@std/assert";
+import type { FestivalData } from "../../../shared/festival-bundle/mod.ts";
 import {
-  getNextSessionForTrack,
   getResumeRows,
-  getSessionCompetitionsWithRubrics,
-  getSessionTrackId,
-  recordProgress,
+  pairBundle,
   resetSession,
   saveScore,
   sql,
 } from "../../src/db.ts";
-import { planResume } from "../../src/resume.ts";
+import { Festival, festival, setFestival } from "../../src/festival.ts";
+import { BundleError } from "../../src/bundle.ts";
 import { Hono } from "@hono/hono";
 import {
   app,
   audio,
   credentials,
+  loadFestival,
   resumeActiveSessions,
 } from "../../src/main.ts";
 import { registerDemoRoutes } from "../../src/demo.ts";
@@ -28,6 +30,12 @@ import { clearAllResolvers } from "../../src/resolveTag.ts";
 import { beginTag, closeTag, perfTag, scoreTag } from "../../src/contract.ts";
 import { createMockClient, delay } from "../test-utils.ts";
 import { adminHeaders, cookieFor } from "../auth-utils.ts";
+import {
+  AudioSet,
+  buildBundle,
+  demoBundle,
+  writeBundle,
+} from "../../../scripts/fixtures.ts";
 
 // Most tests here run sessions straight through; the DJ's start/end buttons
 // (DJ_GATES) have their own test at the end.
@@ -41,7 +49,113 @@ Deno.test("integration: database is configured when required", () => {
   }
 });
 
-const SEED_SQL = new URL("./seeds/session_seed.sql", import.meta.url).pathname;
+/** The festival most tests run: see the top of this file. */
+function seedFestival(
+  startTime = "2026-01-01T09:00:00Z",
+  audio: Record<string, unknown> = {},
+): FestivalData {
+  const entry = (id: number, name: string, order: number) => ({
+    id,
+    name,
+    type: "individual" as const,
+    order_number: order,
+    duration: 60,
+    audio: (audio[id] ?? {}) as Record<string, never>,
+  });
+  return {
+    festival: {
+      id: 1,
+      name: "Test Fest",
+      rubrics: [{
+        id: 1,
+        name: "Test Rubric",
+        criteria: [{ id: 1, name: "Technique", weight: 1 }],
+        judges: [
+          { id: 2, name: "Judge A", criteria: [1] },
+          { id: 3, name: "Judge B", criteria: [1] },
+        ],
+      }],
+      tracks: [{
+        id: 1,
+        name: "Main",
+        location: "Stage",
+        sessions: [
+          {
+            id: 1,
+            name: "Test Session",
+            start_time: startTime,
+            order_number: 1,
+            competitions: [{
+              id: 10,
+              name: "E2E Competition",
+              order_number: 1,
+              rubric_id: 1,
+              competitors: [entry(100, "Alice", 1), entry(101, "Bob", 2)],
+            }],
+          },
+          {
+            id: 2,
+            name: "Second Session",
+            start_time: "2030-01-01T14:00:00Z",
+            order_number: 2,
+            competitions: [{
+              id: 20,
+              name: "Later Competition",
+              order_number: 1,
+              rubric_id: 1,
+              competitors: [entry(200, "Cleo", 1)],
+            }],
+          },
+        ],
+      }],
+    },
+  };
+}
+
+/** Empty the day's tables and make `data` the festival. */
+async function seed(
+  db: NonNullable<typeof sql>,
+  data: FestivalData = seedFestival(),
+) {
+  await unseed(db);
+  setFestival(new Festival(data, "test"));
+}
+
+async function unseed(db: NonNullable<typeof sql>) {
+  // A failed test must not leave a session running into the next one.
+  const left = SessionManager.getAllSessions();
+  for (const s of left) s.abort("test over");
+  if (left.length > 0) await delay(100);
+  for (const s of left) SessionManager.deleteSession(s.id);
+  clearAllResolvers();
+  await db`TRUNCATE scores, track_progress, session_runs, skips,
+    missing_scores, festival_bundle, client_credentials`;
+  setFestival(Festival.empty());
+}
+
+/** Poll until `read()` equals `want` (progress is written asynchronously). */
+async function eventually<T>(read: () => Promise<T>, want: T, ms = 2000) {
+  const end = Date.now() + ms;
+  let got = await read();
+  while (Date.now() < end) {
+    try {
+      assertEquals(got, want);
+      return;
+    } catch {
+      await delay(20);
+      got = await read();
+    }
+  }
+  assertEquals(got, want);
+}
+
+/** Wait for the session to discard itself. */
+async function gone(id = 1) {
+  for (let i = 0; i < 100 && SessionManager.getSession(id); i++) {
+    await delay(20);
+  }
+  assertEquals(SessionManager.getSession(id), undefined);
+}
 
 type SSEEvent = { event: string; data: any };
 
@@ -135,29 +249,42 @@ async function respond(stream: SSEStream, body: unknown) {
   return res.status;
 }
 
+const admin = async (method: string, path: string): Promise<Response> =>
+  await app.fetch(
+    new Request(`http://localhost${path}`, { method, headers: adminHeaders }),
+  );
+
+/** The track's progress row and the session's markers, as stored. */
+async function progressOf(db: NonNullable<typeof sql>, sessionId = 1) {
+  const [track] = await db`SELECT open_session, competition_id, competitor_id,
+      phase FROM track_progress WHERE track_id = 1`;
+  const [run] = await db`SELECT started_at, finished_at FROM session_runs
+    WHERE session_id = ${sessionId}`;
+  return { track, run };
+}
+
+async function openAll(): Promise<SSEStream[]> {
+  return [
+    await SSEStream.open("dj1"),
+    await SSEStream.open("judge2"),
+    await SSEStream.open("judge3"),
+    await SSEStream.open("sb1"),
+  ];
+}
+
 Deno.test({
   name: "Full session flow: 1 DJ, 2 judges, 1 scoreboard, 2 competitors",
   ignore: !sql, // needs DATABASE_URL
   fn: async () => {
     const db = sql!;
-    assertEquals(Array.isArray(await db`SELECT 1 as ok`), true);
-    await db.unsafe(await Deno.readTextFile(SEED_SQL));
-
+    await seed(db);
     const streams: SSEStream[] = [];
     try {
       // Track 1 => DJ "dj1" and scoreboard "sb1"; judges by judge id.
-      const dj = await SSEStream.open("dj1");
-      const j2 = await SSEStream.open("judge2");
-      const j3 = await SSEStream.open("judge3");
-      const sb = await SSEStream.open("sb1");
+      const [dj, j2, j3, sb] = await openAll();
       streams.push(dj, j2, j3, sb);
 
-      const start = await app.fetch(
-        new Request("http://localhost/sessions/1/start", {
-          method: "POST",
-          headers: adminHeaders,
-        }),
-      );
+      const start = await admin("POST", "/sessions/1/start");
       assertEquals(start.status, 200);
       const started = await start.json();
       assertEquals(started.trackId, 1);
@@ -170,6 +297,13 @@ Deno.test({
 
       for (const [pos, competitorId] of [[0, 100], [1, 101]] as const) {
         assertEquals((await dj.next("performance_start")).position, pos);
+        // The cursor follows: this competitor, performing.
+        await eventually(async () => (await progressOf(db)).track, {
+          open_session: 1,
+          competition_id: 10,
+          competitor_id: competitorId,
+          phase: "performing",
+        });
         assertEquals(
           await respond(dj, { tag: perfTag(10, pos), payload: true }),
           200,
@@ -179,6 +313,10 @@ Deno.test({
           const en = await j.next("enable_scoring");
           assertEquals([en.competition_id, en.position], [10, pos]);
         }
+        await eventually(
+          async () => (await progressOf(db)).track.phase,
+          "scoring",
+        );
 
         const scores = [{ criteria_id: 1, score: 8.5 }];
 
@@ -226,10 +364,7 @@ Deno.test({
       }
 
       // Session discards itself when finished.
-      for (let i = 0; i < 100 && SessionManager.getSession(1); i++) {
-        await delay(20);
-      }
-      assertEquals(SessionManager.getSession(1), undefined);
+      await gone();
 
       // Every judge's score for every competitor was persisted (4 rows).
       const rows = await db`
@@ -263,70 +398,34 @@ Deno.test({
         WHERE competition_id = 10 AND competitor_id = 100 AND judge_id = 2`;
       assertEquals(score, 6.5);
 
-      // Track and judges are free again: the session can be started once more.
+      // Track and judges are free again in memory...
       assert(
         SessionManager.findConflict(2, 1, ["judge2", "judge3"]) === undefined,
       );
+      // ...and in the database: the track is given back, the session is
+      // marked finished with its actual start and end, nothing was skipped.
+      const { track, run } = await progressOf(db);
+      assertEquals(track, {
+        open_session: null,
+        competition_id: null,
+        competitor_id: null,
+        phase: null,
+      });
+      assert(run.started_at && run.finished_at, "actual times recorded");
+      const [{ skips }] = await db`SELECT COUNT(*)::int AS skips FROM skips`;
+      assertEquals(skips, 0);
 
-      // Progress was persisted: everything completed, no dangling pointers.
-      const [ses] = await db`
-        SELECT status, current_competition, current_competitor
-        FROM sessions WHERE id = 1`;
-      assertEquals(ses.status, "completed");
-      assertEquals(ses.current_competition, null);
-      assertEquals(ses.current_competitor, null);
-      const [comp] = await db`SELECT status FROM competitions WHERE id = 10`;
-      assertEquals(comp.status, "completed");
-      const [track] = await db`SELECT current_session FROM tracks WHERE id = 1`;
-      assertEquals(track.current_session, null);
+      // A finished session is not run again.
+      const again = await admin("POST", "/sessions/1/start");
+      assertEquals(again.status, 409);
+      assert((await again.json()).error.includes("already finished"));
     } finally {
       await Promise.all(streams.map((s) => s.close()));
       await delay(50); // let SSE cleanup clear its ping timers
-      // Cleanup seeded rows (deterministic IDs used in seed)
-      await db.unsafe(`
-      DELETE FROM client_credentials;
-    DELETE FROM scores WHERE competition_id = 10;
-      DELETE FROM competition_competitors WHERE competition_id = 10;
-      DELETE FROM competitions WHERE id = 10;
-      DELETE FROM rubric_judge_criteria WHERE rubric_id = 1 AND judge_id IN (2,3);
-      DELETE FROM rubric_judges WHERE rubric_id = 1 AND judge_id IN (2,3);
-      DELETE FROM rubric_criteria WHERE rubric_id = 1 AND criteria_id = 1;
-      DELETE FROM criteria WHERE id = 1;
-      DELETE FROM rubrics WHERE id = 1;
-      DELETE FROM competitors WHERE id IN (100,101);
-      DELETE FROM judges WHERE id IN (2,3);
-      DELETE FROM users WHERE id IN (10,11);
-      DELETE FROM sessions WHERE id = 1;
-      DELETE FROM tracks WHERE id = 1;
-      DELETE FROM festivals WHERE id = 1;
-    `);
+      await unseed(db);
     }
   },
 });
-
-async function seed(db: NonNullable<typeof sql>) {
-  await db.unsafe(await Deno.readTextFile(SEED_SQL));
-}
-
-async function unseed(db: NonNullable<typeof sql>) {
-  await db.unsafe(`
-    DELETE FROM client_credentials;
-    DELETE FROM scores WHERE competition_id = 10;
-    DELETE FROM competition_competitors WHERE competition_id = 10;
-    DELETE FROM competitions WHERE id = 10;
-    DELETE FROM rubric_judge_criteria WHERE rubric_id = 1 AND judge_id IN (2,3);
-    DELETE FROM rubric_judges WHERE rubric_id = 1 AND judge_id IN (2,3);
-    DELETE FROM rubric_criteria WHERE rubric_id = 1 AND criteria_id = 1;
-    DELETE FROM criteria WHERE id = 1;
-    DELETE FROM rubrics WHERE id = 1;
-    DELETE FROM competitors WHERE id IN (100,101);
-    DELETE FROM judges WHERE id IN (2,3);
-    DELETE FROM users WHERE id IN (10,11);
-    DELETE FROM sessions WHERE id = 1;
-    DELETE FROM tracks WHERE id = 1;
-    DELETE FROM festivals WHERE id = 1;
-  `);
-}
 
 Deno.test({
   name:
@@ -346,13 +445,9 @@ Deno.test({
       const j2 = await track(SSEStream.open("judge2"));
       const j3 = await track(SSEStream.open("judge3"));
       const sb = await track(SSEStream.open("sb1"));
-      const start = await app.fetch(
-        new Request("http://localhost/sessions/1/start", {
-          method: "POST",
-          headers: adminHeaders,
-        }),
-      );
+      const start = await admin("POST", "/sessions/1/start");
       assertEquals(start.status, 200);
+      await start.body?.cancel();
       for (const s of [dj, j2, j3, sb]) await s.next("competition_start");
       await dj.next("performance_start"); // competitor 100, position 0
 
@@ -420,10 +515,7 @@ Deno.test({
         await respond(dj2, { tag: perfTag(10, 1), payload: false }),
         200,
       ); // skipped
-      for (let i = 0; i < 100 && SessionManager.getSession(1); i++) {
-        await delay(20);
-      }
-      assertEquals(SessionManager.getSession(1), undefined);
+      await gone();
     } finally {
       await Promise.all(open.map((s) => s.close()));
       await delay(50);
@@ -454,32 +546,22 @@ Deno.test({
         SSEStream.open("sb1"),
       ];
       for (const p of others) open.push(await p);
-      const start = await app.fetch(
-        new Request("http://localhost/sessions/1/start", {
-          method: "POST",
-          headers: adminHeaders,
-        }),
-      );
+      const start = await admin("POST", "/sessions/1/start");
       assertEquals(start.status, 200);
+      await start.body?.cancel();
       await second.next("competition_start");
       assertEquals(first.queued().includes("competition_start"), false);
-
-      // Stopping the session's clients so it does not hang: abort everything.
     } finally {
+      SessionManager.getSession(1)?.abort("test over");
       await Promise.all(open.map((s) => s.close()));
       await delay(100);
       SessionManager.deleteSession(1);
-      clearAllResolvers(); // the abandoned session is still waiting on its DJ
+      clearAllResolvers();
       await delay(50);
       await unseed(db);
     }
   },
 });
-
-const admin = async (method: string, path: string): Promise<Response> =>
-  await app.fetch(
-    new Request(`http://localhost${path}`, { method, headers: adminHeaders }),
-  );
 
 Deno.test({
   name:
@@ -529,10 +611,7 @@ Deno.test({
         );
         assertEquals((await sb.next("score_update")).judge_id, 2);
       }
-      for (let i = 0; i < 100 && SessionManager.getSession(1); i++) {
-        await delay(20);
-      }
-      assertEquals(SessionManager.getSession(1), undefined);
+      await gone();
 
       // Every stream is told how it ended, including that scores are missing.
       assertEquals(await dj.next("session_end"), {
@@ -542,6 +621,14 @@ Deno.test({
       const rows =
         await db`SELECT DISTINCT judge_id FROM scores WHERE competition_id = 10`;
       assertEquals(rows.map((r: any) => r.judge_id), [2]);
+      // The misses are kept for the audit trail.
+      const missing = await db`SELECT session_id, competition_id,
+          competitor_id, judge_id, reason
+        FROM missing_scores ORDER BY competitor_id`;
+      assertEquals(missing.map((r: any) => Object.values(r)), [
+        [1, 10, 100, 3, "absent"],
+        [1, 10, 101, 3, "absent"],
+      ]);
     } finally {
       await Promise.all(open.map((s) => s.close()));
       await delay(50);
@@ -552,22 +639,15 @@ Deno.test({
 
 Deno.test({
   name:
-    "Operator: abort mid-performance tells every page, frees the session, and it can be started again",
+    "Operator: abort mid-performance tells every page; the session keeps its track and resumes at the cursor",
   ignore: !sql,
   fn: async () => {
     const db = sql!;
     await seed(db);
     const open: SSEStream[] = [];
-    const track = async (p: Promise<SSEStream>) => {
-      const s = await p;
-      open.push(s);
-      return s;
-    };
     try {
-      const dj = await track(SSEStream.open("dj1"));
-      const j2 = await track(SSEStream.open("judge2"));
-      const j3 = await track(SSEStream.open("judge3"));
-      const sb = await track(SSEStream.open("sb1"));
+      const [dj, j2, j3, sb] = await openAll();
+      open.push(dj, j2, j3, sb);
       assertEquals((await admin("POST", "/sessions/1/start")).status, 200);
       await dj.next("performance_start"); // stuck: the DJ never answers
 
@@ -580,17 +660,31 @@ Deno.test({
           incomplete: 0,
         });
       }
-      for (let i = 0; i < 100 && SessionManager.getSession(1); i++) {
-        await delay(20);
-      }
-      assertEquals(SessionManager.getSession(1), undefined);
+      await gone();
       // the DJ's late answer goes nowhere
       assertEquals(
         await respond(dj, { tag: perfTag(10, 0), payload: true }),
         404,
       );
+      // The performance had begun: the session still holds the track, with
+      // its cursor where it stopped.
+      await delay(50);
+      assertEquals((await progressOf(db)).track, {
+        open_session: 1,
+        competition_id: 10,
+        competitor_id: 100,
+        phase: "performing",
+      });
 
-      // Same session, same clients: starts cleanly and runs from the top.
+      // Another session on the track must wait, even after a restart (the
+      // lock is in the database, not in this process's memory).
+      const other = await admin("POST", "/sessions/2/start");
+      assertEquals(other.status, 409);
+      assert(
+        (await other.json()).error.includes("Track 1 has session 1 open"),
+      );
+
+      // Same session, same clients: runs again from the competitor in play.
       const again = await admin("POST", "/sessions/1/start");
       assertEquals(again.status, 200);
       await again.body?.cancel();
@@ -601,9 +695,7 @@ Deno.test({
       await admin("POST", "/admin/sessions/1/abort").then((r) =>
         r.body?.cancel()
       );
-      for (let i = 0; i < 100 && SessionManager.getSession(1); i++) {
-        await delay(20);
-      }
+      await gone();
     } finally {
       await Promise.all(open.map((s) => s.close()));
       await delay(50);
@@ -615,7 +707,121 @@ Deno.test({
 });
 
 Deno.test({
-  name: "Issuing a credential checks that the judge or track exists",
+  name:
+    "Track lock: a session stopped before anything ran gives its track back",
+  ignore: !sql,
+  fn: async () => {
+    const db = sql!;
+    await seed(db);
+    const open: SSEStream[] = [];
+    try {
+      // Nobody is connected: session 1 waits for its DJ and scoreboard.
+      assertEquals((await admin("POST", "/sessions/1/start")).status, 200);
+      await delay(50);
+      assertEquals((await progressOf(db)).track.open_session, 1);
+      // Session 2 cannot open while 1 holds the track...
+      const blocked = await admin("POST", "/sessions/2/start");
+      assertEquals(blocked.status, 409);
+      await blocked.body?.cancel();
+
+      // ...until 1 is stopped having done nothing.
+      await admin("POST", "/admin/sessions/1/abort").then((r) =>
+        r.body?.cancel()
+      );
+      await gone();
+      await delay(50);
+      assertEquals((await progressOf(db)).track.open_session, null);
+      const next = await admin("POST", "/sessions/2/start");
+      assertEquals(next.status, 200);
+      await next.body?.cancel();
+      await delay(50);
+      assertEquals((await progressOf(db, 2)).track.open_session, 2);
+      await admin("POST", "/admin/sessions/2/abort").then((r) =>
+        r.body?.cancel()
+      );
+      await gone(2);
+    } finally {
+      await Promise.all(open.map((s) => s.close()));
+      clearAllResolvers();
+      await unseed(db);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "Zero scores: nobody scored, so the session waits for the operator; re-open, then skip",
+  ignore: !sql,
+  fn: async () => {
+    const db = sql!;
+    await seed(db);
+    Deno.env.set("JUDGE_SCORE_TIMEOUT_MS", "100");
+    const open: SSEStream[] = [];
+    try {
+      const [dj, j2, j3, sb] = await openAll();
+      open.push(dj, j2, j3, sb);
+      assertEquals((await admin("POST", "/sessions/1/start")).status, 200);
+      await dj.next("performance_start");
+      assertEquals(
+        await respond(dj, { tag: perfTag(10, 0), payload: true }),
+        200,
+      );
+      for (const j of [j2, j3]) {
+        await j.next("enable_scoring");
+        await j.next("scoring_closed"); // nobody scores in time
+      }
+
+      // Nothing to re-open until the session is waiting for that.
+      await delay(50);
+      const list = await (await admin("GET", "/admin/sessions")).json();
+      assertEquals(list[0].phase, "unscored");
+      assertEquals(list[0].waiting_for, [
+        "operator: no scores (skip or reopen)",
+      ]);
+      assertEquals(dj.queued().includes("performance_start"), false);
+
+      // Re-open: the judges are asked again (and again nobody scores).
+      const reopen = await admin("POST", "/admin/sessions/1/reopen");
+      assertEquals(reopen.status, 200);
+      await reopen.body?.cancel();
+      assertEquals((await j3.next("enable_scoring")).position, 0);
+      await j3.next("scoring_closed");
+      await delay(50);
+
+      // Skip it: recorded as an operator skip at the scoring stage.
+      assertEquals(
+        (await (await admin("POST", "/admin/sessions/1/skip")).json()).skipped,
+        "unscored",
+      );
+      assertEquals((await dj.next("performance_start")).position, 1);
+      await eventually(
+        async () =>
+          (await db`SELECT competitor_id, stage, actor, reason
+            FROM skips WHERE session_id = 1`).map((r: any) => Object.values(r)),
+        [[100, "scoring", "operator", "no scores"]],
+      );
+      const [{ misses }] = await db`SELECT COUNT(*)::int AS misses
+        FROM missing_scores WHERE competitor_id = 100 AND reason = 'timeout'`;
+      assertEquals(misses, 4); // both judges, both rounds
+      const nothing = await admin("POST", "/admin/sessions/1/reopen");
+      assertEquals(nothing.status, 409);
+      await nothing.body?.cancel();
+      await admin("POST", "/admin/sessions/1/abort").then((r) =>
+        r.body?.cancel()
+      );
+      await gone();
+    } finally {
+      Deno.env.delete("JUDGE_SCORE_TIMEOUT_MS");
+      await Promise.all(open.map((s) => s.close()));
+      await delay(50);
+      clearAllResolvers();
+      await unseed(db);
+    }
+  },
+});
+
+Deno.test({
+  name: "Issuing a credential checks that the judge or track is in the bundle",
   ignore: !sql,
   fn: async () => {
     const db = sql!;
@@ -644,22 +850,49 @@ Deno.test({
 });
 
 Deno.test({
-  name: "Schema: rubric_judge_criteria rows must reference real rubric links",
+  name:
+    "Pairing guard: the database keeps its bundle once anything has run, and refuses another",
   ignore: !sql,
   fn: async () => {
     const db = sql!;
-    await seed(db);
+    await unseed(db);
+    const dir = await Deno.makeTempDir();
     try {
-      let rejected = false;
-      try {
-        // Judge 99 is not attached to rubric 1.
-        await db`INSERT INTO rubric_judge_criteria (rubric_id, judge_id, criteria_id)
-          VALUES (1, 99, 1)`;
-      } catch {
-        rejected = true;
-      }
-      assert(rejected, "insert with an unlinked judge should be refused");
+      const a = { festivalId: 1, digest: "a".repeat(64), dataText: "{}\n" };
+      const b = { festivalId: 1, digest: "b".repeat(64), dataText: "{ }\n" };
+      assertEquals(await pairBundle(a), undefined); // first use: recorded
+      assertEquals(await pairBundle(a), undefined); // same bundle again
+      assertEquals(await pairBundle(b), undefined); // nothing ran: replaced
+      const [row] = await db`SELECT digest, data_json FROM festival_bundle`;
+      assertEquals([row.digest, row.data_json], [b.digest, b.dataText]);
+
+      await saveScore({
+        competition_id: 10,
+        competitor_id: 100,
+        judge_id: 2,
+        scores: [{ criteria_id: 1, score: 7 }],
+      });
+      const refused = await pairBundle(a);
+      assert(refused?.includes("the festival has started"), refused);
+      assertEquals(await pairBundle(b), undefined); // its own bundle still loads
+
+      // Through the loader: a real bundle on disk, then a different one.
+      await db`TRUNCATE festival_bundle, scores`;
+      const files = await demoBundle();
+      await writeBundle(dir, files);
+      const f = await loadFestival(dir, `${dir}/audio`);
+      assertEquals([f.id, festival().id], [1000, 1000]);
+      const [stored] = await db`SELECT digest, data_json FROM festival_bundle`;
+      assertEquals(stored.data_json, files.dataText); // the exact text
+      await db`INSERT INTO session_runs (session_id, track_id) VALUES (1000, 1000)`;
+      const other = await buildBundle(seedFestival(), new AudioSet());
+      await writeBundle(dir, other);
+      const err = await loadFestival(dir, `${dir}/audio`).catch((e) => e);
+      assert(err instanceof BundleError, String(err));
+      assert(err.message.includes("refusing bundle"), err.message);
+      assertEquals(festival().id, 1000); // the festival did not change
     } finally {
+      await Deno.remove(dir, { recursive: true });
       await unseed(db);
     }
   },
@@ -667,34 +900,25 @@ Deno.test({
 
 Deno.test({
   name:
-    "Audio: upload, DJ-only playback with ranges, and cut-off at session start",
+    "Audio: from the bundle, DJ-only playback with ranges, manifest after the cut-off, start gate",
   ignore: !sql,
   fn: async () => {
     const db = sql!;
     const dir = await Deno.makeTempDir();
     Deno.env.set("AUDIO_DIR", dir);
-    await seed(db);
-    // Session starts in 2h: uploads are open (cut-off is 30 min before).
-    await db`UPDATE sessions SET start_time = NOW() + interval '2 hours' WHERE id = 1`;
+    const bytes = new Uint8Array(1000).map((_, i) => i % 251);
+    bytes.set([0x49, 0x44, 0x33]); // "ID3"
+    const files = new AudioSet();
+    const music = { music: await files.add(bytes, "audio/mpeg") };
+    for (const [name, data] of files.files) {
+      await Deno.writeFile(`${dir}/${name}`, data);
+    }
+    const inMinutes = (m: number) =>
+      new Date(Date.now() + m * 60_000).toISOString().replace(/\.\d+Z$/, "Z");
+    // Session 1 starts in 2 h: the set is not offered yet (cut-off 30 min before).
+    await seed(db, seedFestival(inMinutes(120), { 100: music }));
     const streams: SSEStream[] = [];
     try {
-      const bytes = new Uint8Array(1000).map((_, i) => i % 251);
-      bytes.set([0x49, 0x44, 0x33]); // "ID3"
-      const put = async (
-        path: string,
-        body: Uint8Array<ArrayBuffer>,
-        query = "",
-      ) => {
-        const res = await app.fetch(
-          new Request(`http://localhost/admin/audio/${path}${query}`, {
-            method: "PUT",
-            headers: adminHeaders,
-            body,
-          }),
-        );
-        const json = await res.json();
-        return { status: res.status, json };
-      };
       const get = async (who: string, headers: HeadersInit = {}) => {
         const res = await app.fetch(
           new Request("http://localhost/audio/10/100/music", {
@@ -712,14 +936,16 @@ Deno.test({
         return { status: res.status, json: await res.json() };
       };
 
-      assertEquals((await put("10/100/music", bytes)).status, 201);
-      assertEquals((await put("10/100/bogus", bytes)).status, 400);
-      assertEquals(
-        (await put("10/100/music", new TextEncoder().encode("nope"))).status,
-        400,
+      // There is no upload route on the competition server: the bundle is final.
+      const put = await app.fetch(
+        new Request("http://localhost/admin/audio/10/100/music", {
+          method: "PUT",
+          headers: adminHeaders,
+          body: bytes,
+        }),
       );
-      // Competitor 999 is not in competition 10.
-      assertEquals((await put("10/999/music", bytes)).status, 404);
+      assertEquals(put.status, 404);
+      await put.body?.cancel();
 
       // The track's DJ gets the file, whole and by range.
       const full = await get("dj1");
@@ -741,7 +967,7 @@ Deno.test({
       assertEquals((await get("dj2")).res.status, 403);
       assertEquals((await get("judge2")).res.status, 403);
       assertEquals((await get("sb1")).res.status, 403);
-      // Not uploaded: announce.
+      // Not in the bundle: announce.
       const none = await app.fetch(
         new Request("http://localhost/audio/10/100/announce", {
           headers: { cookie: await cookieFor("dj1") },
@@ -759,29 +985,26 @@ Deno.test({
       assertEquals((await manifest("judge2")).status, 403);
 
       // The cut-off passes (start in 10 min, cut-off is 30 min before start).
-      await db`UPDATE sessions SET start_time = NOW() + interval '10 minutes' WHERE id = 1`;
+      setFestival(
+        new Festival(seedFestival(inMinutes(10), { 100: music }), "test"),
+      );
       const m1 = await manifest("dj1");
       assertEquals(m1.status, 200);
       assertEquals(m1.json.available, true);
+      assertEquals(m1.json.session_id, 1);
       assertEquals(m1.json.files.length, 1);
       assertEquals(m1.json.files[0].url, "/audio/10/100/music");
       assertEquals(m1.json.files[0].bytes, 1000);
       assert(/^[0-9a-f]{64}$/.test(m1.json.digest));
 
-      // Uploads are now closed; the administrator can force a replacement.
-      const closed = await put("10/100/music", bytes);
-      assertEquals(closed.status, 409);
-      assert(closed.json.closed_at);
-      const bytes2 = bytes.map((b) => 255 - b) as Uint8Array<ArrayBuffer>;
-      bytes2.set([0x49, 0x44, 0x33]);
-      assertEquals((await put("10/100/music", bytes2, "?force=1")).status, 201);
-      const m2 = await manifest("dj1");
-      assert(m2.json.digest !== m1.json.digest, "digest follows the change");
-
-      // The DJ is told (once per change) that the set is final.
+      // The DJ is told (once) that the set is final.
       const source = {
-        nextSession: getNextSessionForTrack,
-        competitions: getSessionCompetitionsWithRubrics,
+        nextSession: (trackId: number) => {
+          const s = festival().nextSession(trackId, new Set());
+          return Promise.resolve(s && { id: s.id, startTime: s.startTime });
+        },
+        competitions: (id: number) =>
+          Promise.resolve(festival().sessionCompetitions(id)),
       };
       const mock = createMockClient("dj1");
       const deps = { audio, source, connectedClients: () => [mock] };
@@ -793,26 +1016,18 @@ Deno.test({
       assertEquals(told.length, 1);
       assertEquals(
         JSON.parse(told[0].split("data: ")[1]).digest,
-        m2.json.digest,
+        m1.json.digest,
       );
 
-      // Start the session: it reports the audio that never arrived...
-      const dj = await SSEStream.open("dj1");
-      const j2 = await SSEStream.open("judge2");
-      const j3 = await SSEStream.open("judge3");
-      const sb = await SSEStream.open("sb1");
+      // Start the session: it reports the audio the bundle does not have...
+      const [dj, j2, j3, sb] = await openAll();
       streams.push(dj, j2, j3, sb);
-      const start = await app.fetch(
-        new Request("http://localhost/sessions/1/start", {
-          method: "POST",
-          headers: adminHeaders,
-        }),
-      );
+      const start = await admin("POST", "/sessions/1/start");
       const started = await start.json();
       assertEquals(start.status, 200);
       assertEquals(started.missing_audio.length, 3); // 2 announce + 101 music
 
-      // ...and holds the start until the DJ reports holding the current set.
+      // ...and holds the start until the DJ reports holding the set.
       const ready = async (who: string, digest: string) => {
         const res = await app.fetch(
           new Request("http://localhost/audio-ready", {
@@ -832,32 +1047,24 @@ Deno.test({
         SessionManager.getSession(1)!.status().waiting_for,
         ["audio:dj1"],
       );
-      assertEquals(await ready("judge2", m2.json.digest), 403);
+      assertEquals(await ready("judge2", m1.json.digest), 403);
       assertEquals(await ready("dj1", "not-a-digest"), 400);
-      assertEquals(await ready("dj1", m1.json.digest), 200); // the old set
+      assertEquals(await ready("dj1", "f".repeat(64)), 200); // another set
       await delay(100);
       assertEquals(
         SessionManager.getSession(1)!.status().waiting_for,
         ["audio:dj1"],
       );
-      assertEquals(await ready("dj1", m2.json.digest), 200);
+      assertEquals(await ready("dj1", m1.json.digest), 200);
       await dj.next("competition_start");
 
-      // Uploads stay closed during the session, even with force.
-      assertEquals((await put("10/100/music", bytes, "?force=1")).status, 409);
-
-      const abort = await app.fetch(
-        new Request("http://localhost/admin/sessions/1/abort", {
-          method: "POST",
-          headers: adminHeaders,
-        }),
+      await admin("POST", "/admin/sessions/1/abort").then((r) =>
+        r.body?.cancel()
       );
-      await abort.body?.cancel();
       await delay(100);
     } finally {
       await Promise.all(streams.map((s) => s.close()));
       await delay(50);
-      await db`DELETE FROM audio_files`;
       await unseed(db);
       Deno.env.delete("AUDIO_DIR");
       await Deno.remove(dir, { recursive: true });
@@ -865,42 +1072,29 @@ Deno.test({
   },
 });
 
-const DEMO_SEED = new URL(
-  "../../../docker/postgres/demo/demo_seed.sql",
-  import.meta.url,
-).pathname;
-
 Deno.test({
-  name: "Demo: the seed loads twice, and the demo page, audio and reset work",
+  name: "Demo: the demo bundle, the demo page and reset work",
   ignore: !sql,
   fn: async () => {
     const db = sql!;
-    const dir = await Deno.makeTempDir();
-    Deno.env.set("AUDIO_DIR", dir);
-    // psql runs the file in a transaction; the driver runs it as one statement.
-    const seedSql = (await Deno.readTextFile(DEMO_SEED)).replace(
-      /^(BEGIN|COMMIT);$/gm,
-      "",
-    );
+    await seed(db, JSON.parse((await demoBundle()).dataText));
     try {
-      await db.unsafe(seedSql);
-      await db.unsafe(seedSql); // idempotent
-      const [{ n }] =
-        await db`SELECT COUNT(*)::int AS n FROM competitors WHERE id >= 1000`;
-      assertEquals(n, 5);
-
       const demo = new Hono();
       let running = false;
       registerDemoRoutes(demo, {
         adminToken: () => Deno.env.get("ADMIN_TOKEN"),
         safeEqual: (a, b) => Promise.resolve(a === b),
         credentials,
-        audio,
-        getSessionTrackId,
-        getSessionCompetitions: getSessionCompetitionsWithRubrics,
-        resetSession,
+        getSessionTrackId: (id) =>
+          Promise.resolve(festival().sessionTrackId(id)),
+        getSessionCompetitions: (id) =>
+          Promise.resolve(festival().sessionCompetitions(id)),
+        resetSession: (id) =>
+          resetSession(
+            id,
+            festival().sessionCompetitions(id).map((c) => c.id),
+          ),
         isRunning: () => running,
-        announceNow: () => Promise.resolve(),
       });
       const token = Deno.env.get("ADMIN_TOKEN")!;
       const bearer = { authorization: `Bearer ${token}` };
@@ -956,26 +1150,21 @@ Deno.test({
       assertEquals(await credentials.authenticate(oldSecret), undefined);
       assert(again.includes("/join/") && again !== html);
 
-      // Audio: 5 competitors x (announce + music), all valid WAVs on disk.
+      // Every announcement and song is in the bundle.
       assertEquals(
-        (await demo.request("/demo/audio/1000", { method: "POST" })).status,
-        401,
-      );
-      const made = await demo.request("/demo/audio/1000", {
-        method: "POST",
-        headers: bearer,
-      });
-      assertEquals((await made.json()).files, 10);
-      assertEquals(
-        (await audio.missing(
-          await getSessionCompetitionsWithRubrics(1000),
-          ["announce", "music"],
-        )).length,
+        (await audio.missing(festival().sessionCompetitions(1000), [
+          "announce",
+          "music",
+        ])).length,
         0,
       );
 
-      // Reset clears scores and status; refused while running.
-      await db`UPDATE sessions SET status = 'completed' WHERE id = 1000`;
+      // Reset clears the day's records for the session; refused while running.
+      await db`INSERT INTO session_runs (session_id, track_id, finished_at)
+        VALUES (1000, 1000, NOW())`;
+      await db`INSERT INTO track_progress (track_id, open_session) VALUES (1000, 1000)`;
+      await db`INSERT INTO skips (session_id, competition_id, competitor_id, stage, actor)
+        VALUES (1000, 1000, 1002, 'performance', 'dj')`;
       await db`INSERT INTO scores (competition_id, competitor_id, judge_id, criteria_id, score)
         VALUES (1000, 1001, 1001, 1000, 7.5)`;
       running = true;
@@ -996,57 +1185,34 @@ Deno.test({
           .status,
         200,
       );
-      const [ses] = await db`SELECT status FROM sessions WHERE id = 1000`;
-      assertEquals(ses.status, "upcoming");
-      const [{ scores }] = await db`SELECT COUNT(*)::int AS scores FROM scores
-        WHERE competition_id >= 1000`;
-      assertEquals(scores, 0);
+      const [{ n }] = await db`SELECT
+          (SELECT COUNT(*) FROM scores WHERE competition_id >= 1000)
+        + (SELECT COUNT(*) FROM session_runs WHERE session_id = 1000)
+        + (SELECT COUNT(*) FROM skips WHERE session_id = 1000)
+        + (SELECT COUNT(*) FROM track_progress WHERE open_session = 1000)
+        AS n`;
+      assertEquals(Number(n), 0);
 
       // A session with no competitions says how to get demo data.
       const empty = await demo.request(
         `http://lvh.me:8000/demo?token=${token}&session=424242`,
       );
       assertEquals(empty.status, 404);
-      assert((await empty.text()).includes("demo:seed"));
+      assert((await empty.text()).includes("demo:bundle"));
     } finally {
-      await db.unsafe(`
-        DELETE FROM client_credentials;
-        DELETE FROM audio_files WHERE competition_id >= 1000;
-        DELETE FROM scores WHERE competition_id >= 1000;
-        DELETE FROM competition_competitors WHERE competition_id >= 1000;
-        DELETE FROM competitions WHERE id >= 1000;
-        DELETE FROM rubric_judge_criteria WHERE rubric_id = 1000;
-        DELETE FROM rubric_judges WHERE rubric_id = 1000;
-        DELETE FROM rubric_criteria WHERE rubric_id = 1000;
-        DELETE FROM criteria WHERE id >= 1000;
-        DELETE FROM judges WHERE id >= 1000;
-        DELETE FROM users WHERE id >= 1000;
-        DELETE FROM competitors WHERE id >= 1000;
-        DELETE FROM sessions WHERE id = 1000;
-        DELETE FROM tracks WHERE id = 1000;
-        DELETE FROM rubrics WHERE id = 1000;
-        DELETE FROM festivals WHERE id = 1000;
-      `);
-      Deno.env.delete("AUDIO_DIR");
-      await Deno.remove(dir, { recursive: true });
+      await unseed(db);
     }
   },
 });
 
 Deno.test({
   name:
-    "Admin overview: the whole festival tree comes from the database, with live statuses",
+    "Admin overview: the festival tree comes from the bundle, statuses from the cursor",
   ignore: !sql,
   fn: async () => {
     const db = sql!;
-    const seedSql = (await Deno.readTextFile(DEMO_SEED)).replace(
-      /^(BEGIN|COMMIT);$/gm,
-      "",
-    );
-    const dir = await Deno.makeTempDir();
-    Deno.env.set("AUDIO_DIR", dir);
+    await seed(db, JSON.parse((await demoBundle()).dataText));
     try {
-      await db.unsafe(seedSql);
       const cookie = await adminCookie();
       const overview = async () => {
         const res = await app.fetch(
@@ -1059,8 +1225,8 @@ Deno.test({
       };
 
       let o = await overview();
-      const fest = o.festivals.find((f: any) => f.id === 1000);
-      assertEquals(fest.name, "Demo Festival");
+      const fest = o.festivals[0];
+      assertEquals([fest.id, fest.name], [1000, "Demo Festival"]);
       const track = fest.tracks[0];
       assertEquals(track.devices.map((d: any) => d.client_id), [
         "dj1000",
@@ -1086,26 +1252,28 @@ Deno.test({
         session.competitions[0].competitors.map((c: any) => c.name),
         ["Alex Rivera", "Sam Okafor", "Jordan Lee"],
       );
-      assertEquals(
-        o.judges.filter((j: any) => j.id >= 1000).map((j: any) => j.email),
-        [
-          "ada@demo.example",
-          "ben@demo.example",
-        ],
-      );
+      // Every entry has its audio in the bundle; judges carry no email.
+      assertEquals(session.competitions[0].competitors[1].audio, {
+        announce: true,
+        music: true,
+      });
+      assertEquals(o.judges.map((j: any) => [j.id, j.email]), [
+        [1001, null],
+        [1002, null],
+      ]);
 
-      // Progress shows up as colours: one competitor scored by both judges, the
-      // competition under way.
-      await db`UPDATE sessions SET status = 'active', current_competition = 1000,
-        current_competitor = 1002 WHERE id = 1000`;
-      await db`UPDATE competitions SET status = 'active' WHERE id = 1000`;
+      // Progress shows up as colours: the cursor on Sam, performing; Alex
+      // scored by both judges.
+      await db`INSERT INTO track_progress
+          (track_id, open_session, competition_id, competitor_id, phase)
+        VALUES (1000, 1000, 1000, 1002, 'performing')`;
+      await db`INSERT INTO session_runs (session_id, track_id) VALUES (1000, 1000)`;
       await db`INSERT INTO scores (competition_id, competitor_id, judge_id, criteria_id, score)
         VALUES (1000, 1001, 1001, 1000, 8), (1000, 1001, 1002, 1000, 7)`;
       o = await overview();
-      const jive = o.festivals.find((f: any) =>
-        f.id === 1000
-      ).tracks[0].sessions[0]
-        .competitions[0];
+      const s = o.festivals[0].tracks[0].sessions[0];
+      assertEquals(s.status, "in_progress");
+      const jive = s.competitions[0];
       assertEquals(jive.status, "in_progress");
       assertEquals(
         jive.competitors.map((c: any) => [c.name, c.status, c.scored_by]),
@@ -1115,44 +1283,17 @@ Deno.test({
           0,
         ]],
       );
+      assertEquals(s.competitions[1].status, "upcoming");
 
-      // Audio and issued links appear too.
-      await audio.add(
-        { competitionId: 1000, competitorId: 1002, kind: "music" },
-        new Uint8Array([0x49, 0x44, 0x33, 1, 2, 3]),
-      );
+      // Issued links appear too.
       const linksOf = (x: any) =>
         x.judges.find((j: any) => j.id === 1001).device.links.length;
       const before = linksOf(o);
       await credentials.issue("judge1001", "test");
       o = await overview();
-      const sam = o.festivals.find((f: any) =>
-        f.id === 1000
-      ).tracks[0].sessions[0]
-        .competitions[0].competitors[1];
-      assertEquals(sam.audio, { announce: false, music: true });
       assertEquals(linksOf(o), before + 1);
     } finally {
-      await db.unsafe(`
-        DELETE FROM client_credentials;
-        DELETE FROM audio_files WHERE competition_id >= 1000;
-        DELETE FROM scores WHERE competition_id >= 1000;
-        DELETE FROM competition_competitors WHERE competition_id >= 1000;
-        DELETE FROM competitions WHERE id >= 1000;
-        DELETE FROM rubric_judge_criteria WHERE rubric_id = 1000;
-        DELETE FROM rubric_judges WHERE rubric_id = 1000;
-        DELETE FROM rubric_criteria WHERE rubric_id = 1000;
-        DELETE FROM criteria WHERE id >= 1000;
-        DELETE FROM judges WHERE id >= 1000;
-        DELETE FROM users WHERE id >= 1000;
-        DELETE FROM competitors WHERE id >= 1000;
-        DELETE FROM sessions WHERE id = 1000;
-        DELETE FROM tracks WHERE id = 1000;
-        DELETE FROM rubrics WHERE id = 1000;
-        DELETE FROM festivals WHERE id = 1000;
-      `);
-      Deno.env.delete("AUDIO_DIR");
-      await Deno.remove(dir, { recursive: true });
+      await unseed(db);
     }
   },
 });
@@ -1180,17 +1321,9 @@ Deno.test({
     await seed(db);
     const streams: SSEStream[] = [];
     try {
-      const dj = await SSEStream.open("dj1");
-      const j2 = await SSEStream.open("judge2");
-      const j3 = await SSEStream.open("judge3");
-      const sb = await SSEStream.open("sb1");
+      const [dj, j2, j3, sb] = await openAll();
       streams.push(dj, j2, j3, sb);
-      const start = await app.fetch(
-        new Request("http://localhost/sessions/1/start", {
-          method: "POST",
-          headers: adminHeaders,
-        }),
-      );
+      const start = await admin("POST", "/sessions/1/start");
       assertEquals(start.status, 200);
       await start.body?.cancel();
 
@@ -1227,12 +1360,11 @@ Deno.test({
       assertEquals((await dj.next("session_end")).reason, "completed");
       await delay(100); // let the progress writes finish
 
-      const rows =
-        await db`SELECT competitor_id, status FROM competition_competitors
-        WHERE competition_id = 10 ORDER BY order_number`;
-      assertEquals(rows.map((r: any) => [r.competitor_id, r.status]), [
-        [100, "skipped"],
-        [101, "finalized"], // scoring closed: done for good
+      // The skip is recorded (by whom, at which stage); the rest is derived.
+      const skips = await db`SELECT session_id, competition_id, competitor_id,
+          stage, actor, reason FROM skips`;
+      assertEquals(skips.map((r: any) => Object.values(r)), [
+        [1, 10, 100, "performance", "dj", ""],
       ]);
 
       // The admin overview shows it, in its own state.
@@ -1242,42 +1374,16 @@ Deno.test({
         }),
       );
       const overview = await res.json();
-      const competitors =
-        overview.festivals[0].tracks[0].sessions[0].competitions[0]
-          .competitors;
-      assertEquals(competitors.map((c: any) => [c.id, c.status]), [
-        [100, "skipped"],
-        [101, "finished"],
+      const sessions = overview.festivals[0].tracks[0].sessions;
+      assertEquals(sessions.map((s: any) => [s.id, s.status]), [
+        [1, "finished"],
+        [2, "upcoming"],
       ]);
-
-      // Starting the session again begins from scratch: the old outcome is cleared.
-      await db`UPDATE sessions SET status = 'upcoming' WHERE id = 1`;
-      await db`UPDATE competition_competitors SET status = 'skipped' WHERE competition_id = 10`;
-      await recordProgress(1, { kind: "session_started" });
-      const [{ n }] =
-        await db`SELECT COUNT(*)::int AS n FROM competition_competitors
-        WHERE competition_id = 10 AND status = 'upcoming'`;
-      assertEquals(n, 2);
-
-      // Resuming: 100 was skipped, 101 was performed and scoring was cut off
-      // (the scores judges had saved are still in the database).
-      await db`UPDATE sessions SET status = 'active' WHERE id = 1`;
-      await db`UPDATE competition_competitors SET status = 'skipped'
-        WHERE competition_id = 10 AND competitor_id = 100`;
-      await db`UPDATE competition_competitors SET status = 'performed'
-        WHERE competition_id = 10 AND competitor_id = 101`;
-      const plan = planResume(
-        await getSessionCompetitionsWithRubrics(1),
-        await getResumeRows(1),
-      );
-      assertEquals([...plan.finished], ["10:100"]);
-      assertEquals(plan.reopen?.competitorId, 101);
       assertEquals(
-        plan.reopen?.scores.map((x) => [x.judge_id, x.scores]),
-        [[2, [{ criteria_id: 1, score: 7 }]], [3, [{
-          criteria_id: 1,
-          score: 7,
-        }]]],
+        sessions[0].competitions[0].competitors.map((
+          c: any,
+        ) => [c.id, c.status]),
+        [[100, "skipped"], [101, "finished"]],
       );
     } finally {
       await Promise.all(streams.map((s) => s.close()));
@@ -1289,37 +1395,40 @@ Deno.test({
 
 Deno.test({
   name:
-    "Crash: at boot an active session resumes with the competitor that was being scored",
+    "Crash mid-scoring: at boot the open session resumes with the competitor that was being scored",
   ignore: !sql,
   fn: async () => {
     const db = sql!;
     await seed(db);
     const streams: SSEStream[] = [];
     try {
-      // The database as a crash left it: session active, 100 done, 101 performed
-      // and judge 2 had scored before the server died.
-      await db`UPDATE sessions SET status = 'active' WHERE id = 1`;
-      await db`UPDATE competition_competitors SET status = 'finalized'
-        WHERE competition_id = 10 AND competitor_id = 100`;
-      await db`UPDATE competition_competitors SET status = 'performed'
-        WHERE competition_id = 10 AND competitor_id = 101`;
+      // The database as a crash left it: session 1 holds the track, 100 is
+      // done, 101 was performed and judge 2 had scored it.
+      await db`INSERT INTO session_runs (session_id, track_id, started_at)
+        VALUES (1, 1, NOW())`;
+      await db`INSERT INTO track_progress
+          (track_id, open_session, competition_id, competitor_id, phase)
+        VALUES (1, 1, 10, 101, 'scoring')`;
       await db`INSERT INTO scores (competition_id, competitor_id, judge_id, criteria_id, score)
-        VALUES (10, 101, 2, 1, 7)`;
+        VALUES (10, 100, 2, 1, 6), (10, 100, 3, 1, 6), (10, 101, 2, 1, 7)`;
+      const rows = await getResumeRows(1);
+      assertEquals(rows?.cursorScores.map((r) => [r.judge_id, r.score]), [
+        [2, 7],
+      ]);
 
       await resumeActiveSessions();
       const session = SessionManager.getSession(1);
       assert(session?.isRunning(), "the session is running again");
 
-      const dj = await SSEStream.open("dj1");
-      const j2 = await SSEStream.open("judge2");
-      const j3 = await SSEStream.open("judge3");
-      const sb = await SSEStream.open("sb1");
+      const [dj, j2, j3, sb] = await openAll();
       streams.push(dj, j2, j3, sb);
 
       // No new performance; only judge 3 is asked, for the same competitor.
       assertEquals((await j3.next("enable_scoring")).position, 1);
       assertEquals(j2.queued().includes("enable_scoring"), false);
       assertEquals(dj.queued().includes("performance_start"), false);
+      // The scoreboard is shown the score saved before the crash.
+      assertEquals((await sb.next("score_update")).judge_id, 2);
       assertEquals(
         await respond(j3, {
           tag: scoreTag(10, 101, 3),
@@ -1329,14 +1438,42 @@ Deno.test({
       );
       assertEquals((await dj.next("session_end")).reason, "completed");
       await delay(100);
-      const rows =
-        await db`SELECT competitor_id, status FROM competition_competitors
-        WHERE competition_id = 10 ORDER BY order_number`;
-      assertEquals(rows.map((r: any) => [r.competitor_id, r.status]), [
-        [100, "finalized"],
-        [101, "finalized"],
-      ]);
+      const { track, run } = await progressOf(db);
+      assertEquals(track.open_session, null);
+      assert(run.finished_at, "finished");
     } finally {
+      SessionManager.getSession(1)?.abort("test over");
+      await Promise.all(streams.map((s) => s.close()));
+      await delay(100);
+      await unseed(db);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "Crash mid-performance: at boot the competitor in play runs again from its performance",
+  ignore: !sql,
+  fn: async () => {
+    const db = sql!;
+    await seed(db);
+    Deno.env.set("DJ_GATES", "1");
+    const streams: SSEStream[] = [];
+    try {
+      await db`INSERT INTO session_runs (session_id, track_id, started_at)
+        VALUES (1, 1, NOW())`;
+      await db`INSERT INTO track_progress
+          (track_id, open_session, competition_id, competitor_id, phase)
+        VALUES (1, 1, 10, 101, 'performing')`;
+      await resumeActiveSessions();
+
+      const [dj, j2, j3, sb] = await openAll();
+      streams.push(dj, j2, j3, sb);
+      // The competition was under way: no "start competition" button again.
+      assertEquals((await dj.next("performance_start")).position, 1);
+      assertEquals(dj.queued().includes("competition_ready"), false);
+    } finally {
+      Deno.env.set("DJ_GATES", "0");
       SessionManager.getSession(1)?.abort("test over");
       await Promise.all(streams.map((s) => s.close()));
       await delay(100);
@@ -1355,17 +1492,9 @@ Deno.test({
     Deno.env.set("DJ_GATES", "1");
     const streams: SSEStream[] = [];
     try {
-      const dj = await SSEStream.open("dj1");
-      const j2 = await SSEStream.open("judge2");
-      const j3 = await SSEStream.open("judge3");
-      const sb = await SSEStream.open("sb1");
+      const [dj, j2, j3, sb] = await openAll();
       streams.push(dj, j2, j3, sb);
-      const start = await app.fetch(
-        new Request("http://localhost/sessions/1/start", {
-          method: "POST",
-          headers: adminHeaders,
-        }),
-      );
+      const start = await admin("POST", "/sessions/1/start");
       assertEquals(start.status, 200);
       await start.body?.cancel();
 
@@ -1398,11 +1527,21 @@ Deno.test({
       );
 
       // Finished, but the session stays open for the DJ; judges are still held.
+      // The scoreboard is told what comes next on the track.
       const finished = await sb.next("session_finished");
       assertEquals(finished.session_id, 1);
-      assertEquals(finished.next_session_start, null);
+      assertEquals(finished.next_session_name, "Second Session");
+      assertEquals(finished.next_session_start, "2030-01-01T14:00:00.000Z");
       assertEquals(j2.queued().includes("session_end"), false);
       assert(SessionManager.getSession(1)?.isRunning());
+      // Every competitor is done: the cursor is empty, the track still held.
+      await delay(50);
+      assertEquals((await progressOf(db)).track, {
+        open_session: 1,
+        competition_id: null,
+        competitor_id: null,
+        phase: null,
+      });
       assertEquals(
         SessionManager.findConflict(2, 1, ["judge2"]) !== undefined,
         true,

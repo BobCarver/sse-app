@@ -38,29 +38,62 @@ export type ScoreSubmission = {
   scores: Scores;
 };
 
-/** Session progress, persisted so the database shows where a session is. */
+/** The competitor after the current one in running order (null = none left). */
+export type NextEntry = { competitionId: number; competitorId: number } | null;
+
+/**
+ * Session progress, persisted so the database shows where a session is (the
+ * track's cursor, see db.ts) and what happened (skips, missing scores).
+ */
 export type ProgressEvent =
   | { kind: "session_started"; resume?: boolean }
   | { kind: "competition_started"; competitionId: number }
   | {
+    /** The cursor moves to this competitor; its performance begins. */
     kind: "competitor_started";
     competitionId: number;
     competitorId: number;
   }
   | {
+    /** The performance is over: the cursor's phase becomes scoring. */
     kind: "competitor_performed";
     competitionId: number;
     competitorId: number;
   }
-  | { kind: "competitor_skipped"; competitionId: number; competitorId: number }
   | {
-    /** Scoring closed normally: the competitor is done for good (resume skips it). */
+    /** Skipped (recorded as a skip); the cursor moves on to `next`. */
+    kind: "competitor_skipped";
+    competitionId: number;
+    competitorId: number;
+    stage: "performance" | "scoring";
+    actor: "dj" | "operator";
+    reason?: string;
+    next: NextEntry;
+  }
+  | {
+    /** Scoring closed normally: the competitor is done; the cursor moves on. */
     kind: "competitor_finalized";
     competitionId: number;
     competitorId: number;
+    next: NextEntry;
   }
-  | { kind: "competition_completed"; competitionId: number }
-  | { kind: "session_ended"; reason: "completed" | "aborted" | "error" };
+  | {
+    /** A judge's score never arrived (audit record). */
+    kind: "score_missing";
+    competitionId: number;
+    competitorId: number;
+    judgeId: number;
+    reason: "timeout" | "closed" | "absent";
+  }
+  | {
+    kind: "session_ended";
+    reason: "completed" | "aborted" | "error";
+    /**
+     * Nothing ran in this session (no performance began, nothing was
+     * finished): an abort gives the track back instead of keeping it.
+     */
+    untouched?: boolean;
+  };
 
 interface EnqueueController {
   enqueue(chunk: string): void;

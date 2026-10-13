@@ -1649,9 +1649,9 @@ function liveText(s) {
   const wait = s.live.waiting_for.length ? ` \xB7 waiting for ${s.live.waiting_for.map(escapeHtml).join(", ")}` : "";
   return `<span class="live">${escapeHtml(s.live.phase)}${where}${wait}</span>`;
 }
-function audioButton(comp, c, kind) {
+function audioBadge(c, kind) {
   const has = c.audio[kind];
-  return `<label class="audio ${has ? "have" : "missing"}" title="${has ? "Replace" : "Upload"} ${kind} audio">${kind} ${has ? "\u2713" : "\u2717"}<input type="file" accept="audio/*" hidden data-action="upload" data-competition="${comp.id}" data-competitor="${c.id}" data-kind="${kind}"></label>`;
+  return `<span class="audio ${has ? "have" : "missing"}" title="${kind} audio ${has ? "is in the festival bundle" : "is not in the festival bundle"}">${kind} ${has ? "\u2713" : "\u2717"}</span>`;
 }
 function renderCompetitor(comp, c) {
   return `<li class="competitor ${c.status}">
@@ -1660,7 +1660,7 @@ function renderCompetitor(comp, c) {
     <span class="muted">${escapeHtml(c.type)}${c.duration ? ` \xB7 ${c.duration}s` : ""}</span>
     ${badge(c.status)}
     ${c.status === "skipped" ? `<span class="muted">not performed</span>` : `<span class="muted" title="judges who have scored this competitor">scored ${c.scored_by}/${comp.judges.length}</span>`}
-    <span class="audios">${audioButton(comp, c, "announce")} ${audioButton(comp, c, "music")}</span>
+    <span class="audios">${audioBadge(c, "announce")} ${audioBadge(c, "music")}</span>
   </li>`;
 }
 function renderCompetition(c, state) {
@@ -1671,15 +1671,14 @@ function renderCompetition(c, state) {
   return section(`c${c.id}`, c.status === "in_progress", state, `competition ${c.status}`, summary, body);
 }
 function renderSession(s, state) {
-  const closed = state.now >= new Date(s.audio_cutoff).getTime() || s.running;
   const controls = `<span class="controls">
-    <button type="button" class="small primary" data-action="start" data-id="${s.id}" ${s.running ? "disabled" : ""}>${s.status === "finished" ? "Run again" : "Start"}</button>
+    <button type="button" class="small primary" data-action="start" data-id="${s.id}" ${s.running || s.status === "finished" ? "disabled" : ""}>Start</button>
     <button type="button" class="small" data-action="skip" data-id="${s.id}" ${s.running ? "" : "disabled"} title="Stop waiting for whatever the session is stuck on">Skip</button>
+    <button type="button" class="small" data-action="reopen" data-id="${s.id}" ${s.live?.phase === "unscored" ? "" : "disabled"} title="Nobody scored this competitor: ask the judges again (Skip skips the competitor instead)">Re-open scoring</button>
     <button type="button" class="small danger" data-action="abort" data-id="${s.id}" ${s.running ? "" : "disabled"}>Abort</button>
   </span>`;
   const summary = `<span class="name">${escapeHtml(s.name)}</span> ${badge(s.status)} <span class="muted">starts ${escapeHtml(fmtTime(s.start_time))}</span> ${liveText(s)} ${controls}`;
-  const note = `<p class="muted audio-note">Audio uploads ${closed ? "are closed" : "close"} ${closed ? "" : escapeHtml(fmtTime(s.audio_cutoff))}${closed ? " (uploading replaces the file after a confirmation)" : ""}.</p>`;
-  const body = note + (s.competitions.length ? s.competitions.map((c) => renderCompetition(c, state)).join("") : `<p class="muted">No competitions in this session.</p>`);
+  const body = s.competitions.length ? s.competitions.map((c) => renderCompetition(c, state)).join("") : `<p class="muted">No competitions in this session.</p>`;
   return section(`s${s.id}`, s.status !== "finished", state, `session ${s.status}`, summary, body);
 }
 function renderTrack(t, state) {
@@ -1922,28 +1921,6 @@ function startAdminPage(doc = document) {
     last = "";
     void refresh();
   }
-  async function upload(input) {
-    const file = input.files?.[0];
-    if (!file) return;
-    const { competition, competitor, kind } = input.dataset;
-    const path = `/admin/audio/${competition}/${competitor}/${kind}`;
-    let res = await api("PUT", path, file);
-    if (res.status === 409) {
-      if (!confirm("Uploads are closed for this session. Replace the audio anyway?")) {
-        input.value = "";
-        return;
-      }
-      res = await api("PUT", `${path}?force=1`, file);
-    }
-    const body = await res.json().catch(() => ({}));
-    input.value = "";
-    if (!res.ok) {
-      return toast(`Upload failed: ${body.error ?? res.status}`, true);
-    }
-    toast(`Uploaded ${kind} audio`);
-    last = "";
-    void refresh();
-  }
   app.addEventListener("click", (e) => {
     const el = e.target.closest("[data-action]");
     if (!el || el.tagName === "INPUT") return;
@@ -1957,16 +1934,14 @@ function startAdminPage(doc = document) {
       void act("POST", `/sessions/${id}/start`, "Start");
     } else if (action === "skip") {
       void act("POST", `/admin/sessions/${id}/skip`, "Skip");
+    } else if (action === "reopen") {
+      void act("POST", `/admin/sessions/${id}/reopen`, "Re-open scoring");
     } else if (action === "abort") {
       if (confirm("Abort this session now?")) {
         void act("POST", `/admin/sessions/${id}/abort`, "Abort");
       }
     }
     if (el.closest("summary")) e.preventDefault();
-  });
-  app.addEventListener("change", (e) => {
-    const t = e.target;
-    if (t.dataset?.action === "upload") void upload(t);
   });
   fetch("/admin/me", {
     credentials: "same-origin"

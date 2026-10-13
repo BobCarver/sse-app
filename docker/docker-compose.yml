@@ -27,8 +27,7 @@ services:
     entrypoint: ["sh", "-c"]
     command: >
       "until pg_isready -h db -U ${POSTGRES_USER:-postgres}; do sleep 1; done; \
-       psql \"postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-test}@db:5432/${POSTGRES_DB:-test_db}\" -f /db-init/01_schema.sql; \
-       psql \"postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-test}@db:5432/${POSTGRES_DB:-test_db}\" -f /db-init/02_seed.sql"
+       psql \"postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-test}@db:5432/${POSTGRES_DB:-test_db}\" -f /db-init/01_schema.sql"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-test}

@@ -1,5 +1,18 @@
+import {
+  type BundleCompetition,
+  type BundleSession,
+  type FestivalData,
+  sessionsInOrder,
+} from "../../shared/festival-bundle/mod.ts";
 import type { AudioRecord } from "./audioLibrary.ts";
 import { uploadCutoff } from "./audioLibrary.ts";
+import {
+  deriveStatus,
+  entryKey,
+  NOT_STARTED,
+  type Phase,
+  type SessionProgress,
+} from "./progress.ts";
 import type { Credential } from "./credentials.ts";
 import type {
   AdminOverview,
@@ -7,52 +20,29 @@ import type {
   OverviewDevice,
   OverviewLive,
   OverviewSession,
-  Status,
 } from "./adminTypes.ts";
 
-/** Rows as they come out of the database (see getOverviewRows in db.ts). */
-export interface OverviewRows {
-  festivals: { id: number; name: string }[];
-  tracks: {
-    id: number;
-    festival_id: number;
-    name: string;
-    location: string;
-  }[];
-  sessions: {
-    id: number;
-    track_id: number;
-    name: string;
-    status: string;
-    start_time: Date;
-    current_competition: number | null;
-    current_competitor: number | null;
-  }[];
-  competitions: {
-    id: number;
+/** What the database knows about progress (see getProgressRows in db.ts). */
+export interface ProgressRows {
+  runs: {
     session_id: number;
-    order_number: number;
-    name: string;
-    status: string;
-    rubric_id: number;
+    started_at: Date | null;
+    finished_at: Date | null;
+    cancelled_at: Date | null;
   }[];
-  competitors: {
+  /** One per track: the open session and its cursor. */
+  cursors: {
+    track_id: number;
+    open_session: number | null;
+    competition_id: number | null;
+    competitor_id: number | null;
+    phase: Phase | null;
+  }[];
+  skips: {
+    session_id: number;
     competition_id: number;
-    id: number;
-    name: string | null;
-    type: string;
-    duration: number | null;
-    order_number: number;
-    /** upcoming, performed, skipped or finalized (competition_competitors.status). */
-    status: string;
+    competitor_id: number;
   }[];
-  rubricJudges: {
-    rubric_id: number;
-    judge_id: number;
-    name: string;
-    email: string | null;
-  }[];
-  judges: { id: number; name: string; email: string | null }[];
   /** How many distinct judges have scored each competitor in each competition. */
   scores: { competition_id: number; competitor_id: number; judges: number }[];
 }
@@ -69,21 +59,43 @@ export interface OverviewContext {
   cutoffMinutes?: number;
 }
 
-/** Database status -> the three states the page colours. */
-export function statusOf(db: string): Status {
-  return db === "completed"
-    ? "finished"
-    : db === "active"
-    ? "in_progress"
-    : "upcoming";
+/** Where each session is, from the progress rows. */
+export function sessionProgress(
+  rows: ProgressRows,
+): (sessionId: number) => SessionProgress {
+  const runs = new Map(rows.runs.map((r) => [r.session_id, r]));
+  const open = new Map(
+    rows.cursors.filter((c) => c.open_session !== null).map((
+      c,
+    ) => [c.open_session!, c]),
+  );
+  return (sessionId) => {
+    const run = runs.get(sessionId);
+    const c = open.get(sessionId);
+    if (!run && !c) return NOT_STARTED;
+    return {
+      finished: !!run?.finished_at,
+      cancelled: !!run?.cancelled_at,
+      open: !!c,
+      cursor: c && c.competition_id !== null && c.competitor_id !== null
+        ? {
+          competitionId: c.competition_id,
+          competitorId: c.competitor_id,
+          phase: c.phase,
+        }
+        : null,
+    };
+  };
 }
 
 /**
  * The whole festival tree in one object: tracks, sessions, competitions,
- * competitors, and the devices (with their links) that run them.
+ * competitors, and the devices (with their links) that run them. The structure
+ * comes from the bundle; statuses are derived from the progress rows.
  */
 export function buildOverview(
-  rows: OverviewRows,
+  data: FestivalData,
+  rows: ProgressRows,
   ctx: OverviewContext,
 ): AdminOverview {
   const activeLinks = new Map<string, OverviewDevice["links"]>();
@@ -115,128 +127,112 @@ export function buildOverview(
   const scoredBy = new Map(
     rows.scores.map((
       s,
-    ) => [`${s.competition_id}:${s.competitor_id}`, s.judges]),
+    ) => [entryKey(s.competition_id, s.competitor_id), s.judges]),
   );
+  const skipped = new Set(
+    rows.skips.map((s) => entryKey(s.competition_id, s.competitor_id)),
+  );
+  const progressOf = sessionProgress(rows);
 
-  const judgesByRubric = new Map<number, { id: number; name: string }[]>();
-  for (const rj of rows.rubricJudges) {
-    const list = judgesByRubric.get(rj.rubric_id) ?? [];
-    list.push({ id: rj.judge_id, name: rj.name });
-    judgesByRubric.set(rj.rubric_id, list);
-  }
-  const competitorsByCompetition = new Map<
-    number,
-    OverviewRows["competitors"]
-  >();
-  for (const c of rows.competitors) {
-    const list = competitorsByCompetition.get(c.competition_id) ?? [];
-    list.push(c);
-    competitorsByCompetition.set(c.competition_id, list);
-  }
+  const rubrics = new Map(data.festival.rubrics.map((r) => [r.id, r]));
+  const judgesOf = (c: BundleCompetition) =>
+    (rubrics.get(c.rubric_id)?.judges ?? []).map((j) => ({
+      id: j.id,
+      name: j.name,
+    }));
+  const byOrder = <T extends { order_number: number }>(a: T, b: T) =>
+    a.order_number - b.order_number;
 
-  const buildCompetition = (
-    comp: OverviewRows["competitions"][number],
-    session: OverviewRows["sessions"][number],
-  ): OverviewCompetition => {
-    const judges = judgesByRubric.get(comp.rubric_id) ?? [];
-    const compStatus = statusOf(comp.status);
-    return {
-      id: comp.id,
-      name: comp.name,
-      order: comp.order_number,
-      status: compStatus,
-      judges,
-      competitors: (competitorsByCompetition.get(comp.id) ?? [])
-        .toSorted((a, b) => a.order_number - b.order_number)
-        .map((c) => {
-          const scored = scoredBy.get(`${comp.id}:${c.id}`) ?? 0;
-          // Finished once everyone scored (or the whole competition is over);
-          // in progress while it is the one being performed.
-          const status: Status = c.status === "skipped"
-            ? "skipped"
-            : c.status === "finalized" || compStatus === "finished" ||
-                (judges.length > 0 && scored >= judges.length)
-            ? "finished"
-            : compStatus === "in_progress" &&
-                session.current_competition === comp.id &&
-                session.current_competitor === c.id
-            ? "in_progress"
-            : "upcoming";
-          return {
-            id: c.id,
-            name: c.name ?? `Competitor ${c.id}`,
-            type: c.type,
-            order: c.order_number,
-            duration: c.duration,
-            status,
-            scored_by: scored,
-            audio: {
-              announce: audioByKey.has(`${comp.id}:${c.id}:announce`),
-              music: audioByKey.has(`${comp.id}:${c.id}:music`),
-            },
-          };
-        }),
-    };
-  };
-
-  const buildSession = (
-    s: OverviewRows["sessions"][number],
-  ): OverviewSession => {
+  const buildSession = (s: BundleSession): OverviewSession => {
     const live = ctx.live(s.id);
+    const competitions = s.competitions.toSorted(byOrder).map((c) => ({
+      ...c,
+      competitors: c.competitors.toSorted(byOrder),
+    }));
+    const derived = deriveStatus(
+      competitions.map((c) => ({
+        id: c.id,
+        competitorIds: c.competitors.map((p) => p.id),
+        judges: judgesOf(c).length,
+      })),
+      progressOf(s.id),
+      skipped,
+      scoredBy,
+    );
+    const startTime = new Date(s.start_time);
     return {
       id: s.id,
       name: s.name,
-      status: statusOf(s.status),
-      start_time: s.start_time.toISOString(),
-      audio_cutoff: uploadCutoff(s.start_time, ctx.cutoffMinutes).toISOString(),
+      status: derived.session,
+      start_time: startTime.toISOString(),
+      audio_cutoff: uploadCutoff(startTime, ctx.cutoffMinutes).toISOString(),
       running: live !== null,
       live,
-      competitions: rows.competitions
-        .filter((c) => c.session_id === s.id)
-        .toSorted((a, b) => a.order_number - b.order_number)
-        .map((c) => buildCompetition(c, s)),
+      competitions: competitions.map((comp): OverviewCompetition => ({
+        id: comp.id,
+        name: comp.name,
+        order: comp.order_number,
+        status: derived.competitions.get(comp.id)!,
+        judges: judgesOf(comp),
+        competitors: comp.competitors.map((c) => ({
+          id: c.id,
+          name: c.name,
+          type: c.type,
+          order: c.order_number,
+          duration: c.duration,
+          status: derived.competitors.get(entryKey(comp.id, c.id))!,
+          scored_by: scoredBy.get(entryKey(comp.id, c.id)) ?? 0,
+          audio: {
+            announce: audioByKey.has(`${comp.id}:${c.id}:announce`),
+            music: audioByKey.has(`${comp.id}:${c.id}:music`),
+          },
+        })),
+      })),
     };
   };
 
+  const judges = new Map<number, string>();
   const judgedBy = new Map<number, { id: number; name: string }[]>();
-  for (const comp of rows.competitions) {
-    for (const j of judgesByRubric.get(comp.rubric_id) ?? []) {
-      const list = judgedBy.get(j.id) ?? [];
-      if (!list.some((c) => c.id === comp.id)) {
-        list.push({ id: comp.id, name: comp.name });
+  for (const t of data.festival.tracks) {
+    for (const s of sessionsInOrder(t)) {
+      for (const comp of s.competitions.toSorted(byOrder)) {
+        for (const j of judgesOf(comp)) {
+          const list = judgedBy.get(j.id) ?? [];
+          if (!list.some((c) => c.id === comp.id)) {
+            list.push({ id: comp.id, name: comp.name });
+          }
+          judgedBy.set(j.id, list);
+        }
       }
-      judgedBy.set(j.id, list);
     }
   }
+  for (const r of data.festival.rubrics) {
+    for (const j of r.judges) if (!judges.has(j.id)) judges.set(j.id, j.name);
+  }
 
+  const f = data.festival;
   return {
-    festivals: rows.festivals.map((f) => ({
+    festivals: f.id === 0 ? [] : [{
       id: f.id,
       name: f.name,
-      tracks: rows.tracks
-        .filter((t) => t.festival_id === f.id)
-        .map((t) => ({
-          id: t.id,
-          name: t.name,
-          location: t.location,
-          devices: [
-            device("dj", `dj${t.id}`, "DJ"),
-            device("sb", `sb${t.id}`, "Scoreboard"),
-          ],
-          sessions: rows.sessions
-            .filter((s) => s.track_id === t.id)
-            .toSorted((a, b) =>
-              a.start_time.getTime() - b.start_time.getTime() || a.id - b.id
-            )
-            .map(buildSession),
-        })),
-    })),
-    judges: rows.judges.map((j) => ({
-      id: j.id,
-      name: j.name,
-      email: j.email,
-      device: device("judge", `judge${j.id}`, j.name),
-      competitions: judgedBy.get(j.id) ?? [],
+      tracks: f.tracks.toSorted((a, b) => a.id - b.id).map((t) => ({
+        id: t.id,
+        name: t.name,
+        location: t.location,
+        devices: [
+          device("dj", `dj${t.id}`, "DJ"),
+          device("sb", `sb${t.id}`, "Scoreboard"),
+        ],
+        sessions: sessionsInOrder(t).map(buildSession),
+      })),
+    }],
+    // The bundle carries no emails (privacy boundary).
+    judges: [...judges].toSorted(([a], [b]) => a - b).map(([id, name]) => ({
+      id,
+      name,
+      email: null,
+      device: device("judge", `judge${id}`, name),
+      competitions: judgedBy.get(id) ?? [],
     })),
   };
 }

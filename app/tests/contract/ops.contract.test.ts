@@ -1,4 +1,4 @@
-// Admin session controls over HTTP: status, skip, abort.
+// Admin session controls over HTTP: status, skip, reopen, abort.
 import { assert, assertEquals } from "@std/assert";
 import { app } from "../../src/main.ts";
 import { Session } from "../../src/session.ts";
@@ -40,10 +40,15 @@ function live(connect: string[]) {
 
 Deno.test("ops: session controls require the admin token", async () => {
   for (
-    const [m, p] of [["GET", "/admin/sessions"], [
-      "POST",
-      "/admin/sessions/1/skip",
-    ], ["POST", "/admin/sessions/1/abort"]]
+    const [m, p] of [
+      ["GET", "/admin/sessions"],
+      [
+        "POST",
+        "/admin/sessions/1/skip",
+      ],
+      ["POST", "/admin/sessions/1/reopen"],
+      ["POST", "/admin/sessions/1/abort"],
+    ]
   ) {
     assertEquals((await call(m, p, false)).status, 401, `${m} ${p}`);
   }
@@ -52,6 +57,7 @@ Deno.test("ops: session controls require the admin token", async () => {
 Deno.test("ops: unknown sessions are 404", async () => {
   sessions.clear();
   assertEquals((await call("POST", "/admin/sessions/99/skip")).status, 404);
+  assertEquals((await call("POST", "/admin/sessions/99/reopen")).status, 404);
   assertEquals((await call("POST", "/admin/sessions/99/abort")).status, 404);
   assertEquals(await (await call("GET", "/admin/sessions")).json(), []);
 });
@@ -71,6 +77,8 @@ Deno.test("ops: status shows what a stuck session is waiting for; skip goes on w
   await delay(30);
   const after = (await (await call("GET", "/admin/sessions")).json())[0];
   assertEquals([after.phase, after.position], ["performing", 0]);
+  // Re-open is only for a competitor nobody scored.
+  assertEquals((await call("POST", "/admin/sessions/1/reopen")).status, 409);
 
   // performing: skipping again skips the performance, then nothing is pending
   assertEquals(

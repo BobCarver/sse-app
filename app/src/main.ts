@@ -7,24 +7,16 @@ import { streamSSE } from "@hono/hono/streaming";
 // ============================================================================
 
 import { ProgressEvent, ScoreSubmission, SSEClient } from "./types.ts";
-import {
-  AudioLibrary,
-  AudioRejectedError,
-  DEFAULT_MAX_AUDIO_BYTES,
-  MemoryAudioMetadata,
-  uploadCutoff,
-} from "./audioLibrary.ts";
+import { AudioLibrary, type AudioMetadataStore } from "./audioLibrary.ts";
+import { BundleError, loadBundle } from "./bundle.ts";
+import { Festival, festival, setFestival } from "./festival.ts";
 import { DiskAudioStorage } from "./audioStorage.ts";
 import {
   buildManifest,
   type ManifestSource,
   sessionAudioDigest,
 } from "./audioManifest.ts";
-import {
-  announceAudio,
-  type AnnouncerDeps,
-  startAudioAnnouncer,
-} from "./audioAnnouncer.ts";
+import { type AnnouncerDeps, startAudioAnnouncer } from "./audioAnnouncer.ts";
 import { AUDIO_KINDS, type AudioKind } from "./contract.ts";
 import { DEFAULT_DEMO_SESSION, registerDemoRoutes } from "./demo.ts";
 import { ADMIN_COOKIE, AdminSessions } from "./adminAuth.ts";
@@ -40,18 +32,15 @@ import {
   parseClientId,
 } from "./credentials.ts";
 import {
-  audioStore,
-  clientExists,
   credentialStore,
   getActiveSessionIds,
-  getCompetitionSession,
-  getFollowingSession,
-  getNextSessionForTrack,
-  getOverviewRows,
+  getProgressRows,
   getResumeRows,
-  getSessionCompetitionsWithRubrics,
-  getSessionTrackId,
+  getSessionMarks,
+  openSession,
+  pairBundle,
   recordProgress,
+  releaseSession,
   resetSession,
   saveScore,
   sql,
@@ -93,23 +82,17 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-// Health/readiness endpoint for e2e harness and external checks
+// Health/readiness endpoint for e2e harness and external checks: the festival
+// bundle is loaded and, when one is configured, the database answers.
 app.get(
   "/_health",
   async (c: Ctx) => {
-    // If the app is expected to rely on a database for e2e tests, verify DB is configured
-    const dbUrl = Deno.env.get("DATABASE_URL");
-    if (!dbUrl) {
-      return c.json({ ok: false, error: "DATABASE_URL not set" }, 500);
+    if (!festival().loaded) {
+      return c.json({ ok: false, error: "no festival bundle loaded" }, 500);
     }
-
     try {
-      // Quick check: ensure at least one competition exists (seeded in e2e)
-      const comps = await getSessionCompetitionsWithRubrics(1);
-      if (!comps || comps.length === 0) {
-        return c.json({ ok: false, error: "No competitions found" }, 500);
-      }
-      return c.json({ ok: true });
+      if (sql) await sql`SELECT 1`;
+      return c.json({ ok: true, festival: festival().id });
     } catch (err) {
       console.error("health check failed:", err);
       return c.json({ ok: false, error: "database unavailable" }, 500);
@@ -128,21 +111,50 @@ app.get(
 // Admin operations use a separate bearer token (ADMIN_TOKEN).
 
 export const credentials = new Credentials(credentialStore);
-/** Competitors' music and announcements, stored on disk under AUDIO_DIR. */
+/** Competitors' music and announcements: listed in the bundle, files in AUDIO_DIR. */
+const bundleAudio: AudioMetadataStore = {
+  get: (ref) => Promise.resolve(festival().audioFile(ref)),
+  listForCompetitions: (ids) => Promise.resolve(festival().audioFor(ids)),
+};
 export const audio = new AudioLibrary(
   new DiskAudioStorage(() => Deno.env.get("AUDIO_DIR") ?? "./audio"),
-  audioStore ?? new MemoryAudioMetadata(),
-  Number(Deno.env.get("MAX_AUDIO_BYTES")) || DEFAULT_MAX_AUDIO_BYTES,
+  bundleAudio,
 );
 /** What each DJ last reported holding (see POST /audio-ready). */
 const audioReports = new Map<string, string>();
 
+/** The next session a track will run: its open one, else the first not done. */
+async function nextSessionForTrack(trackId: number) {
+  const marks = await getSessionMarks();
+  const s = festival().nextSession(
+    trackId,
+    marks.done,
+    marks.openByTrack.get(trackId),
+  );
+  return s && { id: s.id, startTime: s.startTime };
+}
+
+/** The session after this one on its track that has not run yet, if any. */
+async function followingSession(sessionId: number) {
+  const s = festival().followingSession(
+    sessionId,
+    (await getSessionMarks()).done,
+  );
+  return s && { name: s.name, startTime: s.startTime };
+}
+
 const manifestSource: ManifestSource = {
-  nextSession: getNextSessionForTrack,
-  competitions: getSessionCompetitionsWithRubrics,
+  nextSession: nextSessionForTrack,
+  competitions: (sessionId) =>
+    Promise.resolve(festival().sessionCompetitions(sessionId)),
 };
-/** Whether the judge/track behind a client id exists (replaceable in contract tests). */
-export const clientCheck = { exists: clientExists };
+/** Whether the judge/track behind a client id is in the festival bundle. */
+export const clientCheck = {
+  exists: (kind: "dj" | "judge" | "sb", num: number) =>
+    Promise.resolve(
+      kind === "judge" ? festival().hasJudge(num) : festival().hasTrack(num),
+    ),
+};
 
 const COOKIE = "session_token";
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // credentials are revoked server-side, not by expiry
@@ -300,9 +312,13 @@ function connectedClientIds(): Set<string> {
 /** The whole festival at once: tracks, sessions, competitions, competitors, links. */
 app.get("/admin/overview", requireAdmin, async (c: Ctx) => {
   try {
-    const rows = await getOverviewRows();
-    const overview = buildOverview(rows, {
-      audio: await audio.list(rows.competitions.map((x) => x.id)),
+    const f = festival();
+    const overview = buildOverview(f.data, await getProgressRows(), {
+      audio: f.audioFor(
+        f.tracks.flatMap((t) =>
+          t.sessions.flatMap((s) => s.competitions.map((x) => x.id))
+        ),
+      ),
       credentials: await credentials.all(),
       connected: connectedClientIds(),
       live: (id: number) => {
@@ -402,7 +418,27 @@ app.post("/admin/sessions/:id/skip", requireAdmin, (c: Ctx) => {
   return c.json({ success: true, skipped });
 });
 
-/** End a session now (stuck, or started by mistake) and free its track and judges. */
+/**
+ * Re-open scoring for a competitor nobody scored: the session is waiting for
+ * the operator to skip it or do this.
+ */
+app.post("/admin/sessions/:id/reopen", requireAdmin, (c: Ctx) => {
+  const session = SessionManager.getSession(Number(c.req.param("id")));
+  if (!session?.isRunning()) {
+    return c.json({ error: "no running session" }, 404);
+  }
+  if (!session.reopen()) {
+    return c.json({
+      error: "nothing to re-open: scoring has not closed without scores",
+    }, 409);
+  }
+  return c.json({ success: true });
+});
+
+/**
+ * End a session now (stuck, or started by mistake) and free its judges. A
+ * session that got under way keeps its track: it is resumed by the next start.
+ */
 app.post("/admin/sessions/:id/abort", requireAdmin, (c: Ctx) => {
   const id = Number(c.req.param("id"));
   const session = SessionManager.getSession(id);
@@ -483,10 +519,10 @@ app.get("/js/:file", (c) => {
   );
 });
 
-// Start a session - queries DB, builds session, and runs it.
-// Rules: one running session per track; the track's DJ (dj<trackId>) and
-// scoreboard (sb<trackId>) are permanent clients; judges are held by the
-// session until it completes.
+// Start a session - loads it from the festival bundle and runs it.
+// Rules: one open session per track (the database's progress row is the lock);
+// the track's DJ (dj<trackId>) and scoreboard (sb<trackId>) are permanent
+// clients; judges are held by the session until it completes.
 type StartResult = { status: 200 | 400 | 404 | 409 | 500; body: object };
 const reply = (
   body: object,
@@ -494,7 +530,7 @@ const reply = (
 ): StartResult => ({ status, body });
 
 /**
- * Load a session from the database and run it from wherever it stopped.
+ * Load a session from the bundle and run it from wherever it stopped.
  * `afterCrash`: the server is restarting a session it lost, not an administrator
  * starting one (the audio start gate is skipped).
  */
@@ -512,29 +548,28 @@ async function startSession(
     });
   }
 
-  let competitions;
-  let trackId;
-  let resume: ReturnType<typeof planResume>;
-  try {
-    competitions = await getSessionCompetitionsWithRubrics(sessionId);
-    trackId = await getSessionTrackId(sessionId);
-    // Start where the session left off (after a stop or a server restart).
-    resume = planResume(
-      competitions,
-      await getResumeRows(sessionId),
-    );
-  } catch (err) {
-    // A real database failure is not "no competitions": say so.
-    console.error(`Session ${sessionId}: database error on start:`, err);
-    return reply({ error: "Database error while loading session" }, 500);
+  const competitions = festival().sessionCompetitions(sessionId);
+  const trackId = festival().sessionTrackId(sessionId);
+  if (trackId === undefined) {
+    return reply({ error: `No session ${sessionId} in the festival` }, 404);
   }
-  if (!competitions || competitions.length === 0) {
+  if (competitions.length === 0) {
     return reply({
       error: `No competitions provided for session ${sessionId}`,
     }, 400);
   }
-  if (trackId === undefined) {
-    return reply({ error: `Session ${sessionId} has no track` }, 404);
+
+  let resume: ReturnType<typeof planResume>;
+  try {
+    const rows = await getResumeRows(sessionId);
+    if (rows?.finished) {
+      return reply({ error: `Session ${sessionId} has already finished` }, 409);
+    }
+    // Start where the session left off (after a stop or a server restart).
+    resume = planResume(competitions, rows);
+  } catch (err) {
+    console.error(`Session ${sessionId}: database error on start:`, err);
+    return reply({ error: "Database error while loading session" }, 500);
   }
 
   const judgeClients = [
@@ -546,8 +581,8 @@ async function startSession(
   ];
   const permanentClientIds = [`dj${trackId}`, `sb${trackId}`];
 
-  // Report (don't block on) audio that never arrived: those performances
-  // would be skipped.
+  // Report (don't block on) audio the bundle does not have: those
+  // performances would be skipped.
   const missingAudio = (await audio.missing(competitions, AUDIO_KINDS)).map(
     (m) => ({
       competition_id: m.competitionId,
@@ -556,13 +591,41 @@ async function startSession(
     }),
   );
 
-  // No await between this check and createSession: the claim is atomic.
-  const conflict = SessionManager.findConflict(
+  let conflict = SessionManager.findConflict(
     sessionId,
     trackId,
     judgeClients,
   );
   if (conflict) return reply({ error: conflict }, 409);
+
+  // The track's lock in the database: survives a restart, unlike the check
+  // above. A fresh session's cursor starts on its first competitor.
+  let lock;
+  try {
+    lock = await openSession(sessionId, trackId, {
+      competitionId: competitions[0].id,
+      competitorId: competitions[0].competitors[0].id,
+    });
+  } catch (err) {
+    console.error(
+      `Session ${sessionId}: could not take track ${trackId}:`,
+      err,
+    );
+    return reply({ error: "Database error while opening the session" }, 500);
+  }
+  if (!lock.ok) {
+    return reply({
+      error:
+        `Track ${trackId} has session ${lock.heldBy} open: it must finish first`,
+    }, 409);
+  }
+
+  // No await between this check and createSession: the claim is atomic.
+  conflict = SessionManager.findConflict(sessionId, trackId, judgeClients);
+  if (conflict) {
+    if (lock.fresh) await releaseSession(sessionId);
+    return reply({ error: conflict }, 409);
+  }
 
   if (existing) {
     console.warn(`Session ${sessionId} is stale (not running); replacing`);
@@ -576,7 +639,7 @@ async function startSession(
       trackId,
       claimedClients: judgeClients,
       djGates: Deno.env.get("DJ_GATES") !== "0",
-      followingSession: () => getFollowingSession(trackId, sessionId),
+      followingSession: () => followingSession(sessionId),
       saveScore: (scoreData: ScoreSubmission) => {
         dlog("Saving score data:", scoreData);
         return saveScore(scoreData);
@@ -639,10 +702,10 @@ app.post(
 );
 
 /**
- * At boot, run again the sessions a crash cut off: the database still says
- * `active` (every normal end writes `completed` or `upcoming`). They resume
- * where they stopped and wait for their clients, which reconnect on their own.
- * AUTO_RESUME=0 turns this off.
+ * At boot, run again the sessions that are still open: a crash or a shutdown
+ * cut them off (a session that ends normally gives its track back). They
+ * resume at their cursor and wait for their clients, which reconnect on their
+ * own. AUTO_RESUME=0 turns this off.
  */
 export async function resumeActiveSessions(): Promise<void> {
   if (Deno.env.get("AUTO_RESUME") === "0") return;
@@ -711,62 +774,6 @@ app.post("/audio-ready", requireClient, async (c: Ctx) => {
   return c.json({ success: true });
 });
 
-// Upload (admin for now; the competitor portal will reuse audio.add). Raw bytes
-// in the body. Closes when the competition's session starts.
-app.put(
-  "/admin/audio/:competitionId/:competitorId/:kind",
-  requireAdmin,
-  async (c: Ctx) => {
-    const ref = parseAudioParams(c);
-    if (!ref) return c.json({ error: "invalid audio reference" }, 400);
-
-    // Uploads close before the session starts (AUDIO_CUTOFF_MINUTES before
-    // start_time) so DJs can fetch a final set. `?force=1` is the administrator's
-    // logged emergency override (DJs are told the set changed).
-    const session = SessionManager.findSessionForCompetition(ref.competitionId);
-    const info = await getCompetitionSession(ref.competitionId);
-    const cutoff = info && uploadCutoff(info.startTime);
-    const closed = session?.isRunning() ||
-      (info && info.status !== "upcoming") ||
-      (cutoff !== undefined && new Date() >= cutoff);
-    if (closed) {
-      if (c.req.query("force") !== "1") {
-        return c.json({
-          error: "audio uploads are closed for this session",
-          closed_at: cutoff?.toISOString() ?? null,
-        }, 409);
-      }
-      if (session?.isRunning()) {
-        return c.json({ error: "cannot replace audio during a session" }, 409);
-      }
-      console.warn(
-        `AUDIO OVERRIDE: replacing ${JSON.stringify(ref)} after cut-off`,
-      );
-    }
-
-    const data = new Uint8Array(await c.req.arrayBuffer());
-    try {
-      const rec = await audio.add(ref, data);
-      return c.json({
-        ...ref,
-        bytes: rec.bytes,
-        content_type: rec.contentType,
-        sha256: rec.sha256,
-      }, 201);
-    } catch (err) {
-      if (err instanceof AudioRejectedError) {
-        return c.json({ error: err.message }, err.status);
-      }
-      // 23503: the competitor is not registered in that competition.
-      if ((err as { code?: string })?.code === "23503") {
-        return c.json({ error: "competitor is not in that competition" }, 404);
-      }
-      console.error("audio upload failed:", err);
-      return c.json({ error: "could not store audio" }, 500);
-    }
-  },
-);
-
 // Playback: only a DJ of the competition's track. Supports Range requests so
 // the browser can seek.
 app.get(
@@ -778,7 +785,7 @@ app.get(
 
     const who = parseClientId(c.get("client").sub);
     if (who?.kind !== "dj") return c.json({ error: "DJs only" }, 403);
-    const info = await getCompetitionSession(ref.competitionId);
+    const info = festival().competition(ref.competitionId);
     if (info && info.trackId !== who.num) {
       return c.json({ error: "not your track" }, 403);
     }
@@ -880,11 +887,12 @@ if (Deno.env.get("DEMO") === "1") {
     adminToken: () => Deno.env.get("ADMIN_TOKEN"),
     safeEqual,
     credentials,
-    audio,
-    getSessionTrackId,
-    getSessionCompetitions: getSessionCompetitionsWithRubrics,
-    resetSession,
-    announceNow: () => announceAudio(announcerDeps),
+    getSessionTrackId: (id: number) =>
+      Promise.resolve(festival().sessionTrackId(id)),
+    getSessionCompetitions: (id: number) =>
+      Promise.resolve(festival().sessionCompetitions(id)),
+    resetSession: (id: number) =>
+      resetSession(id, festival().sessionCompetitions(id).map((c) => c.id)),
     isRunning: (id: number) =>
       SessionManager.getSession(id)?.isRunning() ?? false,
   });
@@ -925,8 +933,41 @@ export const port = parseInt(Deno.env.get("PORT") || "3000");
 // Default export is the fetch handler so `deno serve` can use it directly.
 export default app.fetch;
 
+/**
+ * Load and verify the festival bundle (BUNDLE_DIR, audio in AUDIO_DIR), pair
+ * the database with it, and make it the festival. Throws BundleError (with
+ * every problem found) if the bundle or the pairing is refused.
+ */
+export async function loadFestival(
+  bundleDir = Deno.env.get("BUNDLE_DIR") ?? "./bundle",
+  audioDir = Deno.env.get("AUDIO_DIR") ?? "./audio",
+): Promise<Festival> {
+  const bundle = await loadBundle(bundleDir, audioDir);
+  const refused = await pairBundle({
+    festivalId: bundle.data.festival.id,
+    digest: bundle.manifest.digest,
+    dataText: bundle.dataText,
+  });
+  if (refused) throw new BundleError([refused]);
+  const f = new Festival(bundle.data, bundle.manifest.digest);
+  setFestival(f);
+  console.log(
+    `Festival ${f.id} "${f.name}" loaded from ${bundleDir} (bundle ${
+      f.digest.slice(0, 12)
+    }, ${bundle.manifest.audio.length} audio files verified)`,
+  );
+  return f;
+}
+
 // When run directly, start an HTTP listener to allow real network e2e tests.
 if (import.meta.main) {
+  try {
+    await loadFestival();
+  } catch (err) {
+    console.error(err instanceof BundleError ? err.message : err);
+    await sql?.end({ timeout: 5 });
+    Deno.exit(1);
+  }
   startAudioAnnouncer(announcerDeps);
   if (Deno.env.get("DEMO") !== "1") resumeActiveSessions();
   (async () => {

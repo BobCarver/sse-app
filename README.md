@@ -6,8 +6,28 @@ Architecture, decisions and open items: see `CLAUDE.md`.
 
 Run locally:
 
-- Start server: `deno task start`
+- Start server: `deno task start` (needs a festival bundle, see below)
 - Run tests: `deno task test`
+
+## The festival bundle
+
+The festival's structure (tracks, sessions, competitions, rubrics, judges,
+competitors and their audio) is not entered on this server: it comes from a
+**festival bundle** exported by the registration portal (`portal.md` section 5):
+`manifest.json`, `data.json` and `audio/<sha256>.<ext>`. Copy it with any tool
+(USB stick, `cp`, `rsync -a --ignore-existing`) and point the server at it:
+
+```sh
+BUNDLE_DIR=/srv/sse/bundle AUDIO_DIR=/srv/sse/audio ADMIN_TOKEN=... deno task start
+```
+
+`BUNDLE_DIR` (default `./bundle`) holds `manifest.json` and `data.json`;
+`AUDIO_DIR` (default `./audio`) holds the audio files. At start the server checks
+everything (the data's running order and references, the manifest, every audio
+file's size and sha256) and refuses to start with a list of what is wrong. The
+database remembers the bundle it first ran with and refuses a different one once
+anything has happened (use a fresh database for a different bundle). The bundle
+is final: there are no uploads or changes on this server.
 
 Access: links for DJs, judges and scoreboards
 
@@ -33,9 +53,14 @@ Nothing on the server trusts a device until it opens an admin-issued link.
     never connected (the session goes on without them), a performance (treated
     as skipped; the DJ's audio stops), or judges who have not scored (scoring
     closes with the scores received). Missing scores are listed under
-    `sessions` and judges are told scoring closed.
-  - `abort <sessionId>` ends it now and frees the track and judges; every page
-    is told. Start it again with `POST /sessions/<id>/start`.
+    `sessions`, recorded in the database, and judges are told scoring closed.
+  - Scoring cannot close with no scores at all: if nobody scored a competitor,
+    the session stops and waits. `skip <sessionId>` then skips that competitor
+    (recorded as a skip), or `reopen <sessionId>` asks the judges again.
+  - `abort <sessionId>` ends it now and frees the judges; every page is told.
+    A session that got under way keeps its track: no other session on that
+    track can start until it is started again (it resumes where it stopped) and
+    completed. A finished session cannot be started again.
   - Judges have `JUDGE_SCORE_TIMEOUT_MS` (default 60000) to score; set
     `PERFORMANCE_TIMEOUT_MS` to cap a performance (default: no limit).
   - The DJ presses **Enable audio** once after opening the page; browsers block
@@ -57,7 +82,7 @@ Everything CI runs can be run locally with the same commands:
 | `deno task test:contract` | the real HTTP app (auth, `/response`, admin API) | no |
 | `deno task test:integration` | full sessions over real event streams and Postgres | yes (`DATABASE_URL`, schema loaded, tables empty) |
 | `deno task test` | the four suites above, in order | for the last one |
-| `deno task test:e2e` | browser tests (Playwright) driving the real pages | yes (schema **and** seed) |
+| `deno task test:e2e` | browser tests (Playwright) driving the real pages, with the e2e bundle | yes (schema loaded) |
 
 - Integration tests skip themselves without `DATABASE_URL`. Set `REQUIRE_DB=1`
   to make a missing database a failure (CI does).
@@ -68,10 +93,10 @@ Everything CI runs can be run locally with the same commands:
 
 ### Database for the integration and browser tests
 
-With Docker (Postgres on localhost:5432; schema and seed loaded):
+With Docker (Postgres on localhost:5432; schema loaded):
 
 ```sh
-./tools/run-e2e.sh              # up -> load schema + seed -> browser tests -> down
+./tools/run-e2e.sh              # up -> load schema -> browser tests -> down
 TEARDOWN=0 ./tools/run-e2e.sh   # leave the database running afterwards
 ```
 
@@ -79,7 +104,7 @@ or step by step:
 
 ```sh
 deno task docker:postgres:compose:up
-deno task docker:postgres:db-init      # schema + seed (session 1, competition 10, judges 2/3)
+deno task docker:postgres:db-init      # the schema
 export DATABASE_URL=postgres://postgres:test@localhost:5432/test_db
 deno task test:e2e                     # builds the bundles, starts the app, runs Playwright
 docker compose -f docker/docker-compose.yml down -v   # reset completely
@@ -94,17 +119,16 @@ TEARDOWN=0 ./tools/run-tests.sh   # leave the database running afterwards
 ```
 
 It uses a separate schema-only database (`test_empty`) because the compose
-default database is seeded for the browser tests, and the contract and integration
-tests expect empty tables.
+default database may hold what a browser-test run left behind, and the contract
+and integration tests expect empty tables.
 
 Without Docker, point `DATABASE_URL` at any Postgres and load
-`docker/postgres/db-init/01_schema.sql` (and `02_seed.sql` for the browser
-tests) with `psql`. The integration tests need a database with the schema but
-**empty tables** (they seed and clean up after themselves); the browser tests
-need the seed. Playwright starts the app on port 8000 (`E2E_PORT` to change),
-or reuses one already running there.
-
-If `/sessions/1/start` returns `No competitions found`, the seed is not loaded.
+`docker/postgres/db-init/01_schema.sql` with `psql`. The integration tests need
+**empty tables** (they bring their festival and clean up after themselves). The
+browser tests run the server with the committed e2e bundle
+(`fixtures/bundles/e2e`: session 1, competition 10, judges 2/3; regenerate with
+`deno task fixtures` after changing `scripts/fixtures.ts`). Playwright starts the
+app on port 8000 (`E2E_PORT` to change), or reuses one already running there.
 
 ## Admin page
 
@@ -118,11 +142,11 @@ using the bearer token.
   level: festival, track, session, competition, competitor. Upcoming, in progress and
   finished are shown in grey, amber and green (and as text, not colour alone).
   Everything refreshes every three seconds; which triangles are open is remembered.
-- **Sessions** have Start, Skip and Abort (Skip stops waiting for whatever the session
-  is stuck on), what the running session is doing, and who it is waiting for.
-- **Competitors** show how many judges have scored them and whether announcement and
-  music audio exist; click an audio badge to upload or replace it (after the cut-off
-  you are asked to confirm).
+- **Sessions** have Start, Skip, Re-open scoring and Abort (Skip stops waiting for
+  whatever the session is stuck on; Re-open scoring is for a competitor nobody
+  scored), what the running session is doing, and who it is waiting for.
+- **Competitors** show how many judges have scored them and whether the bundle has
+  their announcement and music audio.
 - **Links**: every track's DJ and scoreboard, and every judge (Judges tab), has a
   **New link** button. The link is shown once with **Copy**, a **QR code** to scan,
   and **Email** / **Text message** / **WhatsApp** buttons that open your own mail,
@@ -140,27 +164,27 @@ session. It is off unless `DEMO=1` (it hands out sign-in links to whoever holds
 the admin token), so never enable it in production.
 
 ```sh
-# 1. a database with the schema, then the demo data (psql required)
-export DATABASE_URL=postgres://postgres:test@localhost:5432/test_db
+# 1. a database with the schema (a fresh one: it pairs with the demo bundle)
+export DATABASE_URL=postgres://postgres:test@localhost:5432/demo_db
 psql "$DATABASE_URL" -f docker/postgres/db-init/01_schema.sql
-deno task demo:seed          # one track, one session, two competitions, five competitors, two judges
+deno task demo:bundle        # fixtures/bundles/demo: one track, one session, two competitions,
+                             # five competitors with generated tones, two judges
 
-# 2. the server in demo mode
+# 2. the server in demo mode, with the demo bundle
 ADMIN_TOKEN=demo deno task demo
 
 # 3. open the page (it moves itself to lvh.me, see below)
 open "http://localhost:3000/demo?token=demo"
 ```
 
-In the page: **1. Reset + make audio** (generates a short beep and a tone melody
-per competitor), wait for the DJ frame to say *Audio ready*, click **Enable
-audio** in the DJ frame once, then **2. Start session**. For each act the DJ frame
-plays the announcement; press **play** there to start the song (it never starts by
-itself), or **skip** to move on to the next competitor. When the song ends the judges
-get sliders and the scoreboard fills in. **Reset** clears it
-to run again. The demo data is `docker/postgres/demo/demo_seed.sql` (ids 1000+, so
-it can sit next to the test seed; it is deliberately not in `db-init/`). Use
-`&session=<id>` to demo a different session, for example `1` with the test seed.
+In the page: wait for the DJ frame to say *Audio ready* (it downloads the bundle's
+audio: a short beep and a tone melody per competitor), click **Enable audio** in
+the DJ frame once, then **Start session**. For each act the DJ frame plays the
+announcement; press **play** there to start the song (it never starts by itself),
+or **skip** to move on to the next competitor. When the song ends the judges get
+sliders and the scoreboard fills in. **Reset** clears the session's scores, skips
+and progress to run it again. The demo festival is defined in `scripts/fixtures.ts`
+(ids 1000+). Use `&session=<id>` to demo a different session of the loaded bundle.
 
 **Why `lvh.me`?** A device is identified by one cookie and cookies are shared by
 everything on a host, so four frames on `localhost` would all be the same device.

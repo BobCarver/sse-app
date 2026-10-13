@@ -1,0 +1,79 @@
+{
+  "festival": {
+    "id": 1,
+    "name": "test1",
+    "rubrics": [
+      {
+        "criteria": [
+          {
+            "id": 1,
+            "name": "Technique",
+            "weight": 1
+          }
+        ],
+        "id": 1,
+        "judges": [
+          {
+            "criteria": [
+              1
+            ],
+            "id": 2,
+            "name": "Judge A"
+          },
+          {
+            "criteria": [
+              1
+            ],
+            "id": 3,
+            "name": "Judge B"
+          }
+        ],
+        "name": "rubric1"
+      }
+    ],
+    "tracks": [
+      {
+        "id": 1,
+        "location": "Main Stage",
+        "name": "track1",
+        "sessions": [
+          {
+            "competitions": [
+              {
+                "competitors": [
+                  {
+                    "audio": {
+                      "announce": {
+                        "bytes": 2444,
+                        "content_type": "audio/wav",
+                        "sha256": "0af070e5a8a399297288879d6cf7a8c5b8358bd9d53a6a7dc1f2726caacbd3c8"
+                      },
+                      "music": {
+                        "bytes": 2444,
+                        "content_type": "audio/wav",
+                        "sha256": "0af070e5a8a399297288879d6cf7a8c5b8358bd9d53a6a7dc1f2726caacbd3c8"
+                      }
+                    },
+                    "duration": 120,
+                    "id": 100,
+                    "name": "Competitor 1",
+                    "order_number": 1,
+                    "type": "individual"
+                  }
+                ],
+                "id": 10,
+                "name": "Competition 1",
+                "order_number": 1,
+                "rubric_id": 1
+              }
+            ],
+            "id": 1,
+            "name": "session1",
+            "order_number": 1,
+            "start_time": "2026-01-01T09:00:00Z"
+          }
+        ]
+      }
+    ]
+  }
+}

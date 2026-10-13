@@ -2,9 +2,10 @@
   "tasks": {
     "dev": "deno run --watch --allow-net --allow-env --allow-read --allow-write app/src/main.ts",
     "start": "deno run --allow-net --allow-env --allow-read --allow-write app/src/main.ts",
-    "demo": "DEMO=1 deno run --watch --allow-net --allow-env --allow-read --allow-write app/src/main.ts",
-    "demo:seed": "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f docker/postgres/demo/demo_seed.sql",
-    "check": "deno check --quiet app scripts",
+    "demo": "DEMO=1 BUNDLE_DIR=fixtures/bundles/demo AUDIO_DIR=fixtures/bundles/demo/audio deno run --watch --allow-net --allow-env --allow-read --allow-write app/src/main.ts",
+    "demo:bundle": "deno run --allow-read --allow-write scripts/fixtures.ts demo",
+    "fixtures": "deno run --allow-read --allow-write scripts/fixtures.ts e2e",
+    "check": "deno check --quiet app scripts shared",
     "fmt": "deno fmt",
     "fmt:check": "deno fmt --check",
     "lint": "deno lint",
@@ -14,7 +15,7 @@
     "docker:postgres:compose:down": "docker compose -f docker/docker-compose.yml down",
     "docker:postgres:db-init": "docker compose -f docker/docker-compose.yml run --rm db-init",
     "docker:postgres:reinit": "docker compose -f docker/docker-compose.yml down -v && docker compose -f docker/docker-compose.yml up -d db && deno task docker:postgres:db-init",
-    "test:unit": "deno test --allow-read --allow-write --allow-env --allow-net=127.0.0.1,localhost app/tests/unit",
+    "test:unit": "deno test --allow-read --allow-write --allow-env --allow-net=127.0.0.1,localhost app/tests/unit shared/festival-bundle",
     "test:frontend": "deno test --allow-read --allow-env --allow-net=127.0.0.1,localhost app/tests/frontend",
     "test:integration": "deno test --allow-read --allow-write --allow-env --allow-net app/tests/integration",
     "test:contract": "deno test --allow-read --allow-write --allow-env --allow-net=127.0.0.1,localhost app/tests/contract",
@@ -28,7 +29,7 @@
     "exclude": ["public/", "node-tests/"]
   },
   "fmt": {
-    "include": ["app/", "scripts/"],
+    "include": ["app/", "scripts/", "shared/"],
     "exclude": ["app/frontend-src/*.html"]
   },
   "imports": {

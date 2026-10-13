@@ -1,7 +1,8 @@
 /**
  * Demo page (development only, enabled by DEMO=1): one browser tab showing a
  * scoreboard, a DJ and two judges side by side, each signed in as its own
- * device, with buttons to start, skip, abort and reset the session.
+ * device, with buttons to start, skip, abort and reset the session. The data
+ * and the audio come from the demo festival bundle (deno task demo:bundle).
  *
  * Why the frames live on different hostnames: a device is identified by one
  * cookie, and cookies are shared by everything on the same host. Giving each
@@ -11,73 +12,21 @@
  * relaxed. Offline, map the names in /etc/hosts instead (the page lists them).
  */
 import type { Hono } from "@hono/hono";
-import type { AudioLibrary } from "./audioLibrary.ts";
 import type { Credentials } from "./credentials.ts";
-import type { AudioKind } from "./contract.ts";
 import type { Competition } from "./types.ts";
 
 export interface DemoDeps {
   adminToken(): string | undefined;
   safeEqual(a: string, b: string): Promise<boolean>;
   credentials: Credentials;
-  audio: AudioLibrary;
   getSessionTrackId(sessionId: number): Promise<number | undefined>;
   getSessionCompetitions(sessionId: number): Promise<Competition[]>;
   resetSession(sessionId: number): Promise<void>;
   isRunning(sessionId: number): boolean;
-  /** Tell connected DJs about new audio now instead of at the next tick. */
-  announceNow(): Promise<void>;
 }
 
 export const DEFAULT_DEMO_SESSION = 1000;
 const DEMO_LABEL = "demo";
-
-// --- generated audio ---------------------------------------------------------
-
-/** A mono 16-bit WAV of `seconds`, stepping through `notes` (0 = rest). */
-export function makeWav(
-  seconds: number,
-  notes: number[],
-  noteSeconds = 0.25,
-  rate = 11025,
-): Uint8Array<ArrayBuffer> {
-  const n = Math.floor(seconds * rate);
-  const out = new Uint8Array(44 + n * 2);
-  const v = new DataView(out.buffer);
-  const text = (at: number, s: string) =>
-    [...s].forEach((ch, i) => out[at + i] = ch.charCodeAt(0));
-  text(0, "RIFF");
-  v.setUint32(4, 36 + n * 2, true);
-  text(8, "WAVEfmt ");
-  v.setUint32(16, 16, true);
-  v.setUint16(20, 1, true); // PCM
-  v.setUint16(22, 1, true); // mono
-  v.setUint32(24, rate, true);
-  v.setUint32(28, rate * 2, true);
-  v.setUint16(32, 2, true);
-  v.setUint16(34, 16, true);
-  text(36, "data");
-  v.setUint32(40, n * 2, true);
-  for (let i = 0; i < n; i++) {
-    const t = i / rate;
-    const freq = notes[Math.floor(t / noteSeconds) % notes.length];
-    const local = (t % noteSeconds) / noteSeconds; // 0..1 within the note
-    const envelope = Math.min(1, local * 25) * (1 - local * 0.5);
-    const sample = freq ? Math.sin(2 * Math.PI * freq * t) * envelope * 0.3 : 0;
-    v.setInt16(44 + i * 2, Math.round(sample * 32767), true);
-  }
-  return out;
-}
-
-const SCALE = [261.63, 293.66, 329.63, 392.0, 440.0, 523.25];
-const PATTERN = [0, 2, 4, 2, 1, 3, 5, 3];
-
-/** Audio for the k-th competitor: a short beep-beep, and a melody of its own. */
-export function demoAudio(k: number, kind: AudioKind): Uint8Array<ArrayBuffer> {
-  if (kind === "announce") return makeWav(1.2, [880, 0, 880], 0.3);
-  const melody = PATTERN.map((p) => SCALE[(p + k) % SCALE.length]);
-  return makeWav(12, melody, 0.25 + (k % 3) * 0.05);
-}
 
 // --- page --------------------------------------------------------------------
 
@@ -140,11 +89,10 @@ function renderPage(
 <body>
 <header>
   <strong>Session ${opts.sessionId}</strong>
-  <button id="audio" title="Clear scores and statuses, then generate a tone for every announcement and song">1. Reset + make audio</button>
-  <button id="start">2. Start session</button>
+  <button id="start">Start session</button>
   <button id="skip" title="Stop waiting for whatever the session is stuck on">Skip</button>
   <button id="abort">Abort</button>
-  <button id="reset" title="Clear scores and statuses to run it again">Reset</button>
+  <button id="reset" title="Clear scores, skips and progress to run it again">Reset</button>
   <button id="reload" title="New links for every frame">Reload frames</button>
   <span id="state">...</span>
 </header>
@@ -168,13 +116,10 @@ async function call(method, path, label) {
   try {
     const res = await fetch(path, { method, headers });
     const body = await res.json().catch(() => ({}));
-    msg(label + ": " + (res.ok ? "ok" : (body.error || res.status)) + (body.missing_audio && body.missing_audio.length ? " (" + body.missing_audio.length + " audio files missing - press 1)" : ""));
+    msg(label + ": " + (res.ok ? "ok" : (body.error || res.status)) + (body.missing_audio && body.missing_audio.length ? " (" + body.missing_audio.length + " audio files missing from the bundle)" : ""));
     return res.ok;
   } catch (e) { msg(label + " failed: " + e.message); return false; }
 }
-document.getElementById("audio").onclick = async () => {
-  if (await call("POST", "/demo/reset/" + sid, "Resetting")) await call("POST", "/demo/audio/" + sid, "Making audio");
-};
 document.getElementById("start").onclick = () => call("POST", "/sessions/" + sid + "/start", "Starting");
 document.getElementById("skip").onclick = () => call("POST", "/admin/sessions/" + sid + "/skip", "Skipping");
 document.getElementById("abort").onclick = () => call("POST", "/admin/sessions/" + sid + "/abort", "Aborting");
@@ -239,8 +184,9 @@ export function registerDemoRoutes(app: Hono<any>, deps: DemoDeps): void {
       : await deps.getSessionCompetitions(sessionId);
     if (trackId === undefined || competitions.length === 0) {
       return c.text(
-        `Session ${sessionId} has no competitions. Load the demo data ` +
-          `(deno task demo:seed) or open /demo?token=...&session=<id>.`,
+        `Session ${sessionId} has no competitions. Run the server with the ` +
+          `demo bundle (deno task demo:bundle, then deno task demo) or open ` +
+          `/demo?token=...&session=<id>.`,
         404,
       );
     }
@@ -291,35 +237,6 @@ export function registerDemoRoutes(app: Hono<any>, deps: DemoDeps): void {
         `${h}.${domain}`
       ),
     }));
-  });
-
-  // Tones for every announcement and song in the session, so the DJ can play.
-  app.post("/demo/audio/:id", async (c) => {
-    if (!(await authorized(c.req.header("authorization")))) {
-      return c.json({ error: "admin credentials required" }, 401);
-    }
-    const sessionId = sessionIdOf(c.req.param("id"));
-    if (sessionId === undefined) return c.json({ error: "invalid id" }, 400);
-    const competitions = await deps.getSessionCompetitions(sessionId);
-    if (competitions.length === 0) {
-      return c.json({ error: "no competitions in that session" }, 404);
-    }
-    let files = 0;
-    let k = 0;
-    for (const comp of competitions) {
-      for (const competitor of comp.competitors) {
-        for (const kind of ["announce", "music"] as const) {
-          await deps.audio.add(
-            { competitionId: comp.id, competitorId: competitor.id, kind },
-            demoAudio(k, kind),
-          );
-          files++;
-        }
-        k++;
-      }
-    }
-    await deps.announceNow();
-    return c.json({ success: true, files });
   });
 
   app.post("/demo/reset/:id", async (c) => {

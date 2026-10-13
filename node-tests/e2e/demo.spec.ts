@@ -20,7 +20,7 @@ test("demo page: four devices in one tab run a whole session", async ({ page }) 
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
 
-    // The e2e seed's session 1 (one competitor, judges 2 and 3).
+    // The e2e bundle's session 1 (one competitor, judges 2 and 3).
     await page.goto(`/demo?token=${TOKEN}&session=1`);
     await expect(page).toHaveURL(/lvh\.me:\d+\/demo/); // moved to the demo domain
 
@@ -35,9 +35,10 @@ test("demo page: four devices in one tab run a whole session", async ({ page }) 
     await expect(j1.locator("#judge")).toBeVisible();
     await expect(j2.locator("#judge")).toBeVisible();
 
-    // 1. audio for the performance, which the DJ frame downloads and verifies.
-    await page.getByRole("button", { name: /Reset \+ make audio/ }).click();
-    await expect(page.locator("#msg")).toContainText("Making audio: ok");
+    // A clean start, then the audio from the bundle, which the DJ frame
+    // downloads and verifies.
+    await page.getByRole("button", { name: "Reset", exact: true }).click();
+    await expect(page.locator("#msg")).toContainText("Resetting: ok");
     await expect(dj.locator("#audioStatus")).toContainText("Audio ready", { timeout: 20_000 });
 
     // The DJ turns audio on once, then the session is started from the page.

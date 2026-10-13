@@ -54,7 +54,6 @@
   details.competition.finished > summary { background: var(--finished-bg); }
   .controls { margin-left: auto; display: flex; gap: 4px; }
   .live { color: var(--in_progress); font-weight: 600; }
-  .audio-note { margin: 2px 22px; font-size: 12px; }
   ul { list-style: none; padding: 0; }
   li.competitor { display: flex; align-items: center; gap: 8px; padding: 3px 8px; border-left: 4px solid var(--upcoming); margin: 2px 0; border-radius: 0 4px 4px 0; flex-wrap: wrap; }
   li.competitor.in_progress { border-left-color: var(--in_progress); background: var(--in_progress-bg); }
@@ -65,9 +64,9 @@
   .order { width: 1.5em; text-align: right; color: var(--muted); }
   .cname { font-weight: 600; }
   .audios { margin-left: auto; display: flex; gap: 6px; }
-  label.audio { font-size: 12px; padding: 1px 8px; border: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
-  label.audio.have { color: var(--finished); }
-  label.audio.missing { color: #dc2626; }
+  span.audio { font-size: 12px; padding: 1px 8px; border: 1px solid var(--line); border-radius: 4px; }
+  span.audio.have { color: var(--finished); }
+  span.audio.missing { color: #dc2626; }
   .devices { display: flex; flex-direction: column; gap: 4px; padding: 4px 0 6px; }
   .device { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }

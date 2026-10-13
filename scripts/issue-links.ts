@@ -6,7 +6,9 @@
 //
 //   ADMIN_TOKEN=... deno task links sessions        what is running / who it waits for
 //   ADMIN_TOKEN=... deno task links skip 1          stop waiting for whatever session 1 is stuck on
-//   ADMIN_TOKEN=... deno task links abort 1         end session 1 now and free its track and judges
+//                                                   (a competitor nobody scored: skip it)
+//   ADMIN_TOKEN=... deno task links reopen 1        nobody scored the competitor: ask the judges again
+//   ADMIN_TOKEN=... deno task links abort 1         end session 1 now and free its judges
 //
 // Options: --base <url>   server address (default $BASE_URL or http://localhost:3000)
 //          --tracks 1,2   issue a DJ (dj<N>) and a scoreboard (sb<N>) link per track
@@ -121,6 +123,7 @@ switch (command) {
     break;
   }
   case "skip":
+  case "reopen":
   case "abort": {
     if (!arg) {
       console.error(`Usage: ${command} <sessionId>`);
@@ -130,13 +133,17 @@ switch (command) {
       method: "POST",
     });
     console.log(
-      command === "skip" ? `skipped: ${r.skipped}` : r.message ?? "aborted",
+      command === "skip"
+        ? `skipped: ${r.skipped}`
+        : command === "reopen"
+        ? "scoring re-opened"
+        : r.message ?? "aborted",
     );
     break;
   }
   default:
     console.error(
-      "Usage: issue | list | revoke <id> | sessions | skip <sessionId> | abort <sessionId>",
+      "Usage: issue | list | revoke <id> | sessions | skip <sessionId> | reopen <sessionId> | abort <sessionId>",
     );
     Deno.exit(2);
 }

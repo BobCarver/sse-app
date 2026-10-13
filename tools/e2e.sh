@@ -1,6 +1,7 @@
 #!/usr/bin/env sh
-# Browser tests (Playwright) against a database that already has the schema and
-# seed loaded. Playwright starts the app itself (see node-tests/playwright.config.ts).
+# Browser tests (Playwright) against a database that already has the schema
+# loaded. Playwright starts the app itself, with the e2e festival bundle
+# (fixtures/bundles/e2e; see node-tests/playwright.config.ts).
 #
 #   DATABASE_URL=postgres://... sh tools/e2e.sh          # or: deno task test:e2e
 #
@@ -8,7 +9,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 
-: "${DATABASE_URL:?set DATABASE_URL to a database with the schema and seed loaded}"
+: "${DATABASE_URL:?set DATABASE_URL to a database with the schema loaded}"
 
 echo "[e2e] building browser bundles"
 deno task build

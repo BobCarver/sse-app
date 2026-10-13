@@ -1,210 +1,100 @@
--- 01_schema.sql: idempotent schema creation (run on init)
--- Use IF NOT EXISTS wherever possible to allow safe repeated runs
+-- 01_schema.sql: idempotent schema creation (run on init; safe to run again).
+--
+-- The festival structure (tracks, sessions, competitions, rubrics, judges,
+-- competitors, audio) is NOT in the database: it comes from the festival bundle
+-- (BUNDLE_DIR), held in memory and never written. The database holds only what
+-- happens on the day: the loaded bundle (pairing guard), scores, the per-track
+-- cursor, session start/end markers, skips, missing scores and device links.
+-- Ids are the bundle's; they are checked against the loaded bundle in code, not
+-- with foreign keys.
+--
+-- A database made by an older version still has the structure tables
+-- (festivals, tracks, sessions, competitions, ...). Nothing reads them any more;
+-- they are left alone here (drop them by hand once their data is not needed).
 
--- Festivals Table
-CREATE TABLE IF NOT EXISTS festivals (
-    id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+-- The one festival bundle this database belongs to. Recorded on first use; the
+-- server refuses a different bundle once anything has run. data_json is the
+-- exact data.json text (text, not jsonb, which would reorder keys), so a backup
+-- of the database is complete on its own.
+CREATE TABLE IF NOT EXISTS festival_bundle (
+    singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    festival_id INT NOT NULL,
+    digest TEXT NOT NULL,
+    data_json TEXT NOT NULL,
+    loaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-
--- Tracks Table
-CREATE TABLE IF NOT EXISTS tracks (
-    id SERIAL PRIMARY KEY,
-    festival_id INT NOT NULL REFERENCES festivals(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    location TEXT NOT NULL,
-    current_session INT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Rubrics Table
-CREATE TABLE IF NOT EXISTS rubrics (
-    id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Criteria Table
-CREATE TABLE IF NOT EXISTS criteria (
-    id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL
-);
-
--- Sessions Table
-CREATE TABLE IF NOT EXISTS sessions (
-    id SERIAL PRIMARY KEY,
-    track_id INT NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
-    current_competition INT,
-    current_competitor INT,
-    name TEXT NOT NULL,
-    status text NOT NULL CHECK (status IN ('upcoming', 'active', 'completed')),
-    start_time TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Competitions Table
-CREATE TABLE IF NOT EXISTS competitions (
-    id SERIAL PRIMARY KEY,
-    session_id INT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    order_number INT NOT NULL,
-    rubric_id INT NOT NULL REFERENCES rubrics(id) ON DELETE RESTRICT,
-    name TEXT NOT NULL,
-    status text NOT NULL CHECK (status IN ('upcoming', 'active', 'completed')),
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Users Table
-CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL,
-    email TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    role TEXT NOT NULL CHECK (role IN ('admin', 'judge', 'competitor')),
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Judges Table
-CREATE TABLE IF NOT EXISTS judges (
-    id SERIAL PRIMARY KEY,
-    user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Competitors Table
-CREATE TABLE IF NOT EXISTS competitors (
-    id SERIAL PRIMARY KEY,
-    name TEXT,
-    type TEXT NOT NULL CHECK (type IN ('individual', 'couple', 'team')),
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Competitor members
-CREATE TABLE IF NOT EXISTS competitor_members (
-  competitor_id INT NOT NULL REFERENCES competitors(id) ON DELETE CASCADE,
-  user_id INT NOT NULL REFERENCES users(id),
-  PRIMARY KEY (competitor_id, user_id)
-);
-
--- Add foreign key constraints for pointers (if not already enforced)
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'fk_tracks_current_session'
-  ) THEN
-    ALTER TABLE tracks
-      ADD CONSTRAINT fk_tracks_current_session
-        FOREIGN KEY (current_session) REFERENCES sessions(id)
-        ON DELETE SET NULL ON UPDATE CASCADE;
-  END IF;
-END
-$$;
-
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'fk_sessions_current_competition'
-  ) THEN
-    ALTER TABLE sessions
-      ADD CONSTRAINT fk_sessions_current_competition
-        FOREIGN KEY (current_competition) REFERENCES competitions(id)
-        ON DELETE SET NULL ON UPDATE CASCADE;
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'fk_sessions_current_competitor'
-  ) THEN
-    ALTER TABLE sessions
-      ADD CONSTRAINT fk_sessions_current_competitor
-        FOREIGN KEY (current_competitor) REFERENCES competitors(id)
-        ON DELETE SET NULL ON UPDATE CASCADE;
-  END IF;
-END
-$$;
-
--- Rubric Criteria Junction Table
-CREATE TABLE IF NOT EXISTS rubric_criteria (
-    rubric_id INT NOT NULL REFERENCES rubrics(id) ON DELETE CASCADE,
-    criteria_id INT NOT NULL REFERENCES criteria(id) ON DELETE CASCADE,
-    weight DECIMAL(3,1) NOT NULL DEFAULT 1.0,
-    PRIMARY KEY (rubric_id, criteria_id)
-);
-
--- Rubric Judges Junction Table
-CREATE TABLE IF NOT EXISTS rubric_judges (
-    rubric_id INT NOT NULL REFERENCES rubrics(id) ON DELETE CASCADE,
-    judge_id INT NOT NULL REFERENCES judges(id) ON DELETE CASCADE,
-    PRIMARY KEY (rubric_id, judge_id)
-);
-
--- Rubric Judge-Criteria Mapping Table
-CREATE TABLE IF NOT EXISTS rubric_judge_criteria (
-    rubric_id INT NOT NULL,
-    judge_id INT NOT NULL,
-    criteria_id INT NOT NULL,
-    PRIMARY KEY (rubric_id, judge_id, criteria_id),
-    CONSTRAINT fk_rjc_rubric_judge FOREIGN KEY (rubric_id, judge_id)
-        REFERENCES rubric_judges(rubric_id, judge_id) ON DELETE CASCADE,
-    CONSTRAINT fk_rjc_rubric_criteria FOREIGN KEY (rubric_id, criteria_id)
-        REFERENCES rubric_criteria(rubric_id, criteria_id) ON DELETE CASCADE
-);
-
--- Databases created before the foreign keys existed get them here.
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'fk_rjc_rubric_judge'
-  ) THEN
-    ALTER TABLE rubric_judge_criteria
-      ADD CONSTRAINT fk_rjc_rubric_judge FOREIGN KEY (rubric_id, judge_id)
-        REFERENCES rubric_judges(rubric_id, judge_id) ON DELETE CASCADE;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'fk_rjc_rubric_criteria'
-  ) THEN
-    ALTER TABLE rubric_judge_criteria
-      ADD CONSTRAINT fk_rjc_rubric_criteria FOREIGN KEY (rubric_id, criteria_id)
-        REFERENCES rubric_criteria(rubric_id, criteria_id) ON DELETE CASCADE;
-  END IF;
-END
-$$;
-
--- Competition Competitors Junction Table
-CREATE TABLE IF NOT EXISTS competition_competitors (
-    competition_id INT NOT NULL REFERENCES competitions(id) ON DELETE CASCADE,
-    competitor_id INT NOT NULL REFERENCES competitors(id) ON DELETE RESTRICT,
-    duration INT,  -- length of the performance, in SECONDS
-    score FLOAT,
-    order_number INT NOT NULL,
-    -- upcoming until the DJ finishes the performance (performed) or skips it
-    -- (skipped); finalized once scoring has closed, right before the next competitor
-    status TEXT NOT NULL DEFAULT 'upcoming'
-        CHECK (status IN ('upcoming', 'performed', 'skipped', 'finalized')),
-    PRIMARY KEY (competition_id, competitor_id)
-);
-
--- Databases created before performance status existed get the column here.
-ALTER TABLE competition_competitors
-    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'upcoming';
-
--- Databases created before 'finalized' existed get the wider check here
--- (idempotent; the constraint keeps the name PostgreSQL gave the inline one).
-ALTER TABLE competition_competitors
-    DROP CONSTRAINT IF EXISTS competition_competitors_status_check;
-ALTER TABLE competition_competitors
-    ADD CONSTRAINT competition_competitors_status_check
-    CHECK (status IN ('upcoming', 'performed', 'skipped', 'finalized'));
 
 -- Scores Table
 CREATE TABLE IF NOT EXISTS scores (
     id SERIAL PRIMARY KEY,
-    competition_id INT NOT NULL REFERENCES competitions(id) ON DELETE CASCADE,
-    competitor_id INT NOT NULL REFERENCES competitors(id) ON DELETE RESTRICT,
-    judge_id INT NOT NULL REFERENCES judges(id) ON DELETE CASCADE,
-    criteria_id INT NOT NULL REFERENCES criteria(id) ON DELETE CASCADE,
+    competition_id INT NOT NULL,
+    competitor_id INT NOT NULL,
+    judge_id INT NOT NULL,
+    criteria_id INT NOT NULL,
     score NUMERIC(3, 1) NOT NULL CHECK (score >= 1 AND score <= 10),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (competition_id, judge_id, competitor_id, criteria_id)
+);
+
+-- Older databases: scores referred to the structure tables.
+ALTER TABLE scores DROP CONSTRAINT IF EXISTS scores_competition_id_fkey;
+ALTER TABLE scores DROP CONSTRAINT IF EXISTS scores_competitor_id_fkey;
+ALTER TABLE scores DROP CONSTRAINT IF EXISTS scores_judge_id_fkey;
+ALTER TABLE scores DROP CONSTRAINT IF EXISTS scores_criteria_id_fkey;
+
+-- Progress: one row per track. The row is the lock: a track has at most one
+-- open session (open_session), taken when a session starts and given back when
+-- it finishes. The cursor is the competitor in play or next to play:
+-- everything before it in running order is finished, everything after it is
+-- upcoming. phase: NULL = not started yet, performing, scoring. A cursor with
+-- no competitor while a session is open = every competitor is done (the
+-- session waits to be ended).
+CREATE TABLE IF NOT EXISTS track_progress (
+    track_id INT PRIMARY KEY,
+    open_session INT UNIQUE,
+    competition_id INT,
+    competitor_id INT,
+    phase TEXT CHECK (phase IN ('performing', 'scoring')),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- What actually happened to each session: opened (first start), started (its
+-- first competition began), finished (ended normally) or cancelled.
+CREATE TABLE IF NOT EXISTS session_runs (
+    session_id INT PRIMARY KEY,
+    track_id INT NOT NULL,
+    opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    cancelled_at TIMESTAMPTZ
+);
+
+-- A competitor skipped by an explicit action (append-only). stage: the
+-- performance was skipped, or scoring closed with no scores and was skipped.
+-- actor: the DJ or the operator. A skip that only releases a judge or client
+-- wait is not a competitor skip and is not written here.
+CREATE TABLE IF NOT EXISTS skips (
+    session_id INT NOT NULL,
+    competition_id INT NOT NULL,
+    competitor_id INT NOT NULL,
+    stage TEXT NOT NULL CHECK (stage IN ('performance', 'scoring')),
+    actor TEXT NOT NULL CHECK (actor IN ('dj', 'operator')),
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (session_id, competition_id, competitor_id)
+);
+
+-- A judge's score that never arrived (append-only; never updated or deleted).
+-- A later score from a re-opened judge does not remove the row: the audit shows
+-- both. A judge with a row here and no score for that competitor is missing.
+CREATE TABLE IF NOT EXISTS missing_scores (
+    id BIGSERIAL PRIMARY KEY,
+    session_id INT NOT NULL,
+    competition_id INT NOT NULL,
+    competitor_id INT NOT NULL,
+    judge_id INT NOT NULL,
+    reason TEXT NOT NULL CHECK (reason IN ('timeout', 'closed', 'absent')),
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Client credentials: admin-issued links for DJs, judges and scoreboards.
@@ -219,28 +109,8 @@ CREATE TABLE IF NOT EXISTS client_credentials (
     revoked_at TIMESTAMPTZ
 );
 
--- Audio each competitor performs with. The bytes live on disk (AUDIO_DIR) under
--- storage_key (sha256 + extension); one row per (competition, competitor, kind).
--- Uploads close when the competition's session starts.
-CREATE TABLE IF NOT EXISTS audio_files (
-    competition_id INT NOT NULL,
-    competitor_id INT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('announce', 'music')),
-    storage_key TEXT NOT NULL,
-    content_type TEXT NOT NULL,
-    bytes INT NOT NULL,
-    sha256 TEXT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (competition_id, competitor_id, kind),
-    FOREIGN KEY (competition_id, competitor_id)
-        REFERENCES competition_competitors(competition_id, competitor_id)
-        ON DELETE CASCADE
-);
-
 -- Indexes
-CREATE INDEX IF NOT EXISTS idx_competition_competitors_order
-    ON competition_competitors(competition_id, order_number);
 CREATE INDEX IF NOT EXISTS idx_scores_competition
     ON scores(competition_id, competitor_id);
-CREATE INDEX IF NOT EXISTS idx_track_current_session
-    ON tracks(current_session);
+CREATE INDEX IF NOT EXISTS idx_missing_scores_competitor
+    ON missing_scores(competition_id, competitor_id);

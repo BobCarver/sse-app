@@ -14,20 +14,22 @@ Playwright browser tests in `node-tests/`. **Docker** = Postgres.
 deno task static        # type-check + lint + fmt check + "committed bundles are current"
 deno task test          # unit -> frontend -> contract -> integration (stops on first failure)
 deno task test:unit | test:frontend | test:contract | test:integration
-deno task test:e2e      # Playwright, needs DATABASE_URL with schema AND seed (see README)
+deno task test:e2e      # Playwright with the e2e bundle, needs DATABASE_URL with the schema (see README)
 ./tools/run-e2e.sh      # same, with Docker providing Postgres
 ./tools/run-tests.sh    # deno task test with Docker Postgres (schema-only DB; `... test:unit` for one task)
 deno task build         # rebuild public/*.js (tracked in git; deno bundle)
-deno task fmt           # fix formatting (covers app/ and scripts/ only)
-deno task demo          # DEMO=1 server + /demo page (see "Demo"); deno task demo:seed loads its data
-deno task dev           # run the server, restarting on file changes (needs ADMIN_TOKEN, DATABASE_URL to be useful)
+deno task fmt           # fix formatting (covers app/, scripts/ and shared/ only)
+deno task demo          # DEMO=1 server + /demo page with the demo bundle (see "Demo"); deno task demo:bundle makes it
+deno task fixtures      # regenerate the committed e2e bundle (fixtures/bundles/e2e) from scripts/fixtures.ts
+deno task dev           # run the server, restarting on file changes (needs a bundle; ADMIN_TOKEN, DATABASE_URL to be useful)
 ADMIN_TOKEN=... deno task links issue --tracks 1,2 --judges 2,3   # see "Operating"
 ```
 
 Always check **exit codes**, not just "N passed" (see Gotchas). Environment:
 `DATABASE_URL`, `ADMIN_TOKEN` (admin routes return 503 without it), `PORT`
 (3000), `PUBLIC_URL` (base for issued links), `JUDGE_SCORE_TIMEOUT_MS` (60000),
-`PERFORMANCE_TIMEOUT_MS` (0 = none), `AUDIO_DIR` (./audio, gitignored), `MAX_AUDIO_BYTES` (50 MB), `AUDIO_CUTOFF_MINUTES` (30), `DJ_GATES` (0 = no DJ start/end buttons; tests and e2e set it), `AUTO_RESUME` (0 turns off resuming crashed sessions at boot), `REQUIRE_DB=1` (integration tests fail
+`PERFORMANCE_TIMEOUT_MS` (0 = none), `BUNDLE_DIR` (./bundle: manifest.json + data.json),
+`AUDIO_DIR` (./audio, gitignored: the bundle's audio files), `AUDIO_CUTOFF_MINUTES` (30), `DJ_GATES` (0 = no DJ start/end buttons; tests and e2e set it), `AUTO_RESUME` (0 turns off resuming open sessions at boot), `REQUIRE_DB=1` (integration tests fail
 instead of skipping), `E2E_PORT` (8000), `DEBUG=1`.
 
 ## Layout
@@ -40,9 +42,12 @@ app/src/            server
   sse.ts            per-connection lifecycle (identity-guarded cleanup, ping)
   responseService.ts  /response logic (validate, ownership, scores); route stays thin
   audioStorage.ts   AudioStorage interface + disk impl (swap for a bucket later)
-  audioLibrary.ts   upload validation (sniffs mp3/wav), metadata, missing()
+  bundle.ts         load + verify the festival bundle (BundleError lists every problem)
+  festival.ts       the loaded festival in memory (sessions, rubrics, judges, audio); festival()/setFestival()
+  progress.ts       the cursor and deriveStatus (statuses are derived, not stored);  resume.ts  planResume
+  audioLibrary.ts   read-only view of the bundle's audio (metadata from festival.ts), missing()
   adminAuth.ts      admin cookie sessions;  adminOverview.ts  festival tree for /admin;  adminTypes.ts  shared shapes
-  demo.ts           DEMO=1 only: /demo page (4 frames), demo audio, reset
+  demo.ts           DEMO=1 only: /demo page (4 frames), reset
   sha256.ts         sha256 with a pure-JS fallback (no crypto.subtle on plain http)
   audioManifest.ts  frozen per-session file list + digest;  audioAnnouncer.ts  audio_available ticks
   resolveTag.ts     waitForTag/resolveTag rendezvous (takes AbortSignal)
@@ -56,8 +61,11 @@ app/frontend-src/   browser code (TS) + the three HTML pages (dj, jd, sb)
 public/             built bundles dj.js jd.js sb.js (generated, tracked)
 app/tests/          unit/ frontend/ contract/ integration/ + auth-utils.ts test-utils.ts
 node-tests/         Playwright (Node only): e2e/pages.spec.ts, playwright.config.ts
-docker/             docker-compose.yml, postgres/db-init/{01_schema,02_seed}.sql
-scripts/            build_artifacts.ts, issue-links.ts (operator CLI)
+shared/festival-bundle/  the bundle format, shared with the portal: types, validator,
+                    canonical serialiser, digest, rubric resolution (+ its tests); std lib only
+fixtures/bundles/   e2e/ (committed) and demo/ (generated, gitignored) festival bundles
+docker/             docker-compose.yml, postgres/db-init/01_schema.sql
+scripts/            build_artifacts.ts, issue-links.ts (operator CLI), fixtures.ts (e2e + demo bundles)
 tools/              e2e.sh, run-e2e.sh, run-tests.sh
 .github/workflows/ci.yml   static / tests / e2e jobs
 ```
@@ -71,11 +79,33 @@ admin-issued links, never from the URL. `GET /join/<secret>` sets an HttpOnly
 `GET /session` to learn who they are. Revocation is immediate (server-side lookup).
 Admin = `Authorization: Bearer $ADMIN_TOKEN`.
 
-**Sessions.** `POST /sessions/:id/start` (admin) loads competitions from the DB and
-runs `Session.runSession` in the background. **One running session per track**
-(DJ and scoreboard are the track's permanent clients). A judge is **held by a
-session until it ends** (`claimedClients`); a second start that needs a held judge
-or a busy track gets 409. Multiple tracks run concurrently.
+**The festival bundle** (redesign Phase 1; `redesign.md`, `portal.md` section 5). The
+structure (tracks, sessions, competitions, rubrics, judges, competitors, audio) comes from
+a static bundle made by the portal: `BUNDLE_DIR/manifest.json`, `BUNDLE_DIR/data.json`
+(nested tree; rubrics listed once under the festival, competitions name theirs by
+`rubric_id`) and `AUDIO_DIR/<sha256>.<ext>`. At boot (`loadFestival` in `main.ts`)
+`bundle.ts` verifies everything (shape, strict `order_number` at every level, references,
+`data_sha256`, `digest`, every audio file's size and sha256) and the server exits with
+the list of problems if anything is wrong. `pairBundle` (`db.ts`) records the bundle's
+digest and exact `data.json` text in `festival_bundle` on first use; a different bundle
+is refused once anything has run (scores, session_runs, skips, missing scores, an open
+track). The festival is held in memory (`festival()` in `festival.ts`) and never
+written; the structure tables are gone from the schema (an old database keeps them,
+unread). `shared/festival-bundle/` is the format, shared with the portal (types,
+`validateData`/`validateManifest`, `canonicalData`, `makeManifest`, `bundleDigest`,
+`resolveSession`). Test and demo festivals are defined in `scripts/fixtures.ts`.
+Issuing a credential returns 404 if the judge/track is not in the bundle. The bundle
+carries no emails, so the admin page's judges have none.
+
+**Sessions.** `POST /sessions/:id/start` (admin) loads the session's competitions from the
+festival and runs `Session.runSession` in the background. **One open session per track**,
+enforced in the database: the track's `track_progress` row is the lock (`openSession`),
+taken at start and given back when the session finishes (or is stopped before anything
+ran). A second session on a held track gets 409 "Track N has session M open", also
+after a restart. A finished session cannot be started again (409). DJ and scoreboard
+are the track's permanent clients. A judge is **held by a session until it ends**
+(`claimedClients`, memory); a start that needs a held judge gets 409. Multiple tracks
+run concurrently.
 
 **The DJ paces the session** (`djGates`, on unless `DJ_GATES=0`). Before every competition the
 server sends `competition_ready {competition_id, name}` to all clients and waits for the DJ's
@@ -84,7 +114,8 @@ begin" over the dimmed last scores (gone at `competition_start`), and the DJ pag
 **Start competition: <name>** button (`#begin`). The wait runs while the judges connect, so an
 early press is not lost. After the last competition the session does not end: it sends
 `session_finished {session_id, next_session_name, next_session_start}` (the track's next
-`upcoming` session by start time, `getFollowingSession`; null = none), the scoreboard says
+session by start time then order_number that has not finished, `followingSession`; null =
+none), the scoreboard says
 "Session ended. The next session begins at <time>" (it stays after `session_end`) and the DJ
 button becomes **End session** (`close:<sessionId>`). Only then are the judges released
 (`session_end`). Both gates replay on reconnect, show as `dj-start` / `dj-close` in
@@ -95,7 +126,7 @@ answer `begin:`/`close:` (403 otherwise). The DJ page is dark-themed like the ot
 **Flow per competitor:** `performance_start` (all) -> the DJ page plays the announcement,
 then the song waits for the DJ to press **play** (it never autoplays; skip works at any
 point) -> DJ POSTs `perf:<comp>:<position>` (true = done, false = skipped; a skip moves
-on to the next competitor and is recorded as `competition_competitors.status = 'skipped'`) -> `enable_scoring`
+on to the next competitor and is recorded in `skips`) -> `enable_scoring`
 (judges only) -> each judge POSTs `score:<comp>:<competitor>:<judge>` -> server
 validates against the rubric, rounds to 1 decimal, upserts to `scores`, sends
 `score_update` to **scoreboards only**. Judges never see each other's scores.
@@ -109,58 +140,68 @@ scores to show (the server replays only the current competitor's).
 
 **Skipped performances.** `perf:` false (DJ skip, administrator skip, or the DJ not answering
 within `PERFORMANCE_TIMEOUT_MS`) -> no scoring, the session goes on to the next competitor,
-and `competition_competitors.status` becomes `skipped` (`performed` when the DJ finished,
-`upcoming` again when a session starts). The admin page shows skipped competitors in purple
-(`Status` includes `skipped`). The DJ page's cleanup runs before it reports, and only if no
+and a `skips` row is written (`stage` performance, `actor` dj or operator, `reason`; a
+timeout or error counts as the DJ's, with the reason). The admin page shows skipped
+competitors in purple (`Status` includes `skipped`). The DJ page's cleanup runs before it reports, and only if no
 newer performance has taken over: the server starts the next performance the moment it hears
 a skip, and cleaning up afterwards used to wipe the new one's audio listeners.
 A missing or broken **announcement** is not a skip: the DJ page logs it and goes on to the
 song (only a cancel by an administrator, or a broken song, reports `false`).
 
-**Competitor status** (`competition_competitors.status`): `upcoming` -> `performed` (DJ
-finished, scoring under way) -> `finalized` (scoring closed normally: all judges scored, timed
-out, or an administrator closed it; written and awaited right before the next competitor
-starts, and not written if a score could not be saved). `skipped` is the other end state. The
-admin page shows `finalized` as finished.
+**Zero-score rule.** Scoring cannot close with no scores at all (a rubric with judges, and
+none of them scored: all timed out, were closed out or absent). The session then stops at
+that competitor (`phase` `unscored`, `waiting_for` "operator: no scores (skip or reopen)")
+until the operator either skips it (`skip` returns `"unscored"`; a `skips` row with `stage`
+scoring, `actor` operator, reason "no scores") or re-opens scoring (`reopen`: `POST
+/admin/sessions/:id/reopen`, `deno task links reopen <id>`, admin page button; 409 when
+there is nothing to re-open). Only a skip closes a competitor with no scores.
 
-**Start resumes where it left off** (`resume.ts`, `planResume`). `POST /start` reads the
-database (`getResumeRows`) and walks the competitors in running order: leading `finalized`
-and `skipped` ones are finished and never revisited. The first one that is not:
-`performed` -> its scoring is **re-opened** with no new performance (judges whose scores are
-saved keep them and are not asked again; scoreboards get the saved scores replayed; the
-rest are waited for as usual); anything else runs from its performance. Only the competitor
-in play when it stopped is touched. `runSession(competitions, permanent, resumePlan)` takes the
-plan; `session_started` then carries `resume: true`, which keeps the statuses instead of
-resetting them. A `completed` session starts from scratch. The response has
-`already_finished` and `reopened_scoring`. Covers a server restart (the session row stays
-`active`) and an abort followed by a new start. The schema widens the CHECK constraint
-idempotently; rows left `performed` by older code count as "scoring cut off" if they are
-first in line, so in an old database set finished sessions' statuses to `finalized`.
-Missing-score records are still memory only.
+**Missing scores are persisted** (`missing_scores`, append-only): one row per judge per
+competitor per miss, reason `timeout|closed|absent`. A later score from a re-opened judge
+does not remove the row (the audit shows both). Also kept in memory for `sessions`.
+
+**Progress is a cursor** (Phase 2; `track_progress`, one row per track): `open_session`,
+cursor `competition_id`/`competitor_id` (the competitor in play or next to play) and
+`phase` (NULL = not begun, `performing`, `scoring`). Everything before the cursor in running
+order is finished, everything after it upcoming; statuses are derived (`deriveStatus` in
+`progress.ts`), not stored. Each step is one row update (`recordProgress`, best effort, in
+order): competitor started -> cursor here, performing; performed -> scoring; finalized or
+skipped -> cursor moves to the next competitor (`next`, phase NULL; written and awaited
+before the next one starts; a skip also appends to `skips`); no next = cursor empty (every
+competitor done, the session waits to be ended). `session_runs` has the actual times:
+`opened_at`, `started_at` (first competition began), `finished_at`, `cancelled_at` (not
+written yet: Phase 3). A completed session writes `finished_at` and gives the track back.
+An abort or error keeps the track (and cursor) unless nothing ran (`untouched`: no
+performance began, nothing finished), so a session cut off must be resumed and completed
+before the next one on its track. A score that could not be saved no longer holds the
+cursor back (it is logged and kept in `unsavedScores`).
+
+**Start resumes at the cursor** (`resume.ts`, `planResume`). `POST /start` reads the
+session's row (`getResumeRows`): not open -> from the top; open -> everything before the
+cursor is finished; at the cursor `scoring` -> its scoring is **re-opened** with no new
+performance (judges whose scores are saved keep them; scoreboards get them replayed);
+`performing` or not begun -> it runs from its performance; no cursor -> only the end of the
+session is left. A competition already under way (`underway`) does not show the DJ's start
+button again. The response has `already_finished` and `reopened_scoring`.
 
 **Auto-resume at boot** (`resumeActiveSessions` in `main.ts`, runs when the server is started
-directly, not in `DEMO=1`, off with `AUTO_RESUME=0`). Every normal end writes `completed` or
-`upcoming`, so a session still `active` in the database was cut off by a crash. The server
-starts each such session again through the same `startSession` as `POST /start`, from the
-resume plan, without the audio start gate (the DJ's ready report is memory only). It then
-waits for the clients, which reconnect on their own. A SIGTERM shutdown is an abort
-(`upcoming`), so it is not resumed: an administrator presses start.
+directly, not in `DEMO=1`, off with `AUTO_RESUME=0`). Every session still holding its track
+(`getActiveSessionIds` = open sessions) was cut off by a crash, a shutdown or an abort after
+it got under way: the server starts each again through the same `startSession`, from the
+cursor, without the audio start gate (the DJ's ready report is memory only), and waits for
+the clients, which reconnect on their own. (Before Phase 2 a SIGTERM shutdown was not
+resumed; now any open session is.)
 
-**Progress is persisted** (best effort, in order, via `recordProgress` in `db.ts`):
-`sessions.status` (active; completed, or back to `upcoming` if aborted/failed),
-`competitions.status`, `sessions.current_competition/competitor`,
-`tracks.current_session`. Issuing a credential returns 404 if the judge/track
-doesn't exist.
-
-**Audio.** Bytes on disk in `AUDIO_DIR` (content-addressed `<sha256>.<ext>`),
-metadata in `audio_files` (one row per competition/competitor/kind, kind =
-`announce`|`music`). Order of events for a session:
-1. Uploads (`PUT /admin/audio/:competition/:competitor/:kind`, admin, raw mp3/wav;
-   the portal must reuse `audio.add` and this rule) are open until the **cut-off**:
-   `sessions.start_time - AUDIO_CUTOFF_MINUTES`, or the session starting, whichever
-   is first. After that 409, except admin `?force=1` (logged; never during a run).
-2. After the cut-off the set is final. `GET /audio-manifest` (DJ only) returns the
-   next session's files + a `digest` (425 + `available_at` before the cut-off). The
+**Audio.** Bytes on disk in `AUDIO_DIR` (content-addressed `<sha256>.<ext>`, copied with
+the bundle), metadata from the bundle (each entry's `audio.music`/`audio.announce`; kind =
+`announce`|`music`). There are no uploads on this server (the upload route and
+`audio.add` are gone: the bundle is final; normalising and uploads are the portal's job).
+Order of events for a session (the per-session cut-off is still here; Phase 4 makes it
+per track):
+1. Before the **cut-off** (`start_time - AUDIO_CUTOFF_MINUTES`) the DJ is offered nothing.
+2. After it, `GET /audio-manifest` (DJ only) returns the track's next session's files
+   (open session first, else the first not finished) + a `digest` (425 + `available_at`
+   before the cut-off). The
    server announces it with the small SSE event `audio_available` (ticker every
    15 s, once per connection/change; audio itself never travels over SSE).
 3. The DJ page (`audioCache.ts`) downloads each file over HTTP, verifies sha256 +
@@ -180,8 +221,10 @@ cookie (HttpOnly, SameSite=Strict, 12 h, in memory; `/admin/logout`, `/admin/me`
 change must also send `x-admin-request: 1`. `GET /admin/overview` returns the whole
 tree (`adminOverview.ts`: festival > track > session > competition > competitor, with
 statuses, live session state, judges, audio flags, connected devices and active links).
-Statuses map `upcoming|active|completed` -> upcoming|in_progress|finished; a competitor
-is finished when every rubric judge has scored it. The page is vanilla TS: pure
+Statuses are derived from the cursor (`deriveStatus`): before it finished (or skipped, from
+`skips`), on it in progress once begun (finished once every rubric judge has scored),
+after it upcoming. Sessions have Start (disabled once finished), Skip, Re-open scoring
+(enabled while `unscored`) and Abort; audio badges only show what the bundle has. The page is vanilla TS: pure
 functions return HTML strings (every value through `escapeHtml`), native `<details>`
 gives the triangles, QR codes come from the JSR package `@libs/qrcode` (SVG, no dependencies), and
 Copy falls back to select-and-copy because `navigator.clipboard` needs https/localhost.
@@ -194,13 +237,15 @@ Tests: `adminAuth`/`adminOverview`/`credentials` (unit), `adminView` (frontend),
 `node-tests/e2e/admin.spec.ts`.
 
 **Demo (development only).** `DEMO=1` enables `GET /demo?token=<ADMIN_TOKEN>&session=<id>`
-(default session 1000 = `docker/postgres/demo/demo_seed.sql`, ids 1000+, loaded with
-`deno task demo:seed`, deliberately not in `db-init/`). One tab, four iframes
+(default session 1000 of the demo bundle: `deno task demo:bundle` writes it to
+`fixtures/bundles/demo` from `scripts/fixtures.ts`, ids 1000+, generated tones;
+`deno task demo` runs with it). One tab, four iframes
 (scoreboard, DJ, two judges), each a separate device. Cookies are per host, so the
 frames use sibling hosts of `DEMO_DOMAIN` (default `lvh.me` -> 127.0.0.1): own cookie
 each, yet same-site with the page so `SameSite=Strict` still works. The page issues
 fresh credentials (labelled `demo`; old ones are revoked) and has buttons that call
-the admin API plus `POST /demo/audio/:id` (generated tones) and `POST /demo/reset/:id`.
+the admin API plus `POST /demo/reset/:id` (deletes the session's scores, skips, missing
+scores, `session_runs` row and track lock; the browser tests use it too).
 The browser test is `node-tests/e2e/demo.spec.ts` (Chromium maps `*.lvh.me` to
 127.0.0.1, no DNS needed).
 
@@ -232,11 +277,12 @@ the first; stale-stream cleanup only acts if the closing stream still owns the s
 **Operating** (`deno task links ...`, needs `ADMIN_TOKEN`, `--base <url>`):
 `issue --tracks 1,2 --judges 2,3` (links shown once), `list`, `revoke <id>`,
 `sessions` (phase, waiting_for, missing scores), `skip <sessionId>` (stop waiting
-for missing clients / skip performance / close scoring), `abort <sessionId>`.
-Missing judge scores are recorded in memory as `timeout|closed|absent`.
-SIGTERM aborts sessions, notifies clients, closes the DB pool.
+for missing clients / skip performance / close scoring / skip an unscored competitor),
+`reopen <sessionId>` (an unscored competitor: ask the judges again), `abort <sessionId>`.
+SIGTERM aborts sessions (an open session keeps its track and is resumed at the next
+boot), notifies clients, closes the DB pool.
 
-**Durations are SECONDS** (`competition_competitors.duration`); converted in the
+**Durations are SECONDS** (each competitor's `duration` in the bundle); converted in the
 client only.
 
 ## Decisions (and why)
@@ -262,31 +308,38 @@ client only.
 - Chromium's `setOffline` does not break an open EventSource. Browser tests drop a
   connection by `close()` + dispatching `error` on the wrapped EventSource.
 - macOS: `sed -i ''` (not `-i`); `deno fmt` reflows HTML (fmt is scoped to
-  `app/` + `scripts/`, excluding `app/frontend-src/*.html`).
+  `app/` + `scripts/` + `shared/`, excluding `app/frontend-src/*.html`). Bundle files
+  in `fixtures/` are canonical JSON: never reformat them (their sha256 is in the manifest).
 - Browser tests share session id 1 and one DB: run serially, and every test must
   `abort` its session in `finally` (helper `finish()`), or the next test breaks.
-  An abort alone leaves statuses behind and the next start would resume, so
-  `setup()` in `pages.spec.ts` also resets session 1 (`POST /demo/reset/1`, needs `DEMO=1`).
-- After the last judge scores in the one-competitor seed the session ends at once,
+  An abort alone leaves the session holding its track and the next start would
+  resume (a finished one cannot start at all), so `setup()` in `pages.spec.ts` also
+  resets session 1 (`POST /demo/reset/1`, needs `DEMO=1`).
+- After the last judge scores in the one-competitor e2e bundle the session ends at once,
   so a judge's status can read "Session complete", not "Scores submitted".
 - DJ audio needs a click: the DJ presses **Enable audio** once; earlier
   performances wait for it. E2E uses `--autoplay-policy=no-user-gesture-required`.
 - Local scratch Postgres (macOS/Homebrew): `initdb -D d -U postgres --auth=trust`;
   start with `LC_ALL=en_US.UTF-8 pg_ctl -D d -o "-p 54329 -k /tmp/pgs" start`
-  (needs the locale and a short socket dir). Integration DB = schema only (empty
-  tables); browser DB = schema + seed. The binaries are under
+  (needs the locale and a short socket dir; or `-c unix_socket_directories=''` for
+  TCP only). Integration and browser DBs = schema only. A database pairs with the
+  first bundle that runs against it: the browser tests (e2e bundle) and the demo
+  (demo bundle) need separate databases. The binaries are under
   `/opt/homebrew/opt/postgresql@17/bin` (not on PATH). The Deno tests connect over
   TCP, so also start with `-c listen_addresses=127.0.0.1` and use
   `DATABASE_URL=postgres://postgres@127.0.0.1:54329/<db>`; a unix-socket `?host=`
   URL does not work with the driver. Run the whole suite both with and without
   `DATABASE_URL` (CI sets it for every job): `REQUIRE_DB=1 DATABASE_URL=... deno task test`.
-- Contract tests run with `DATABASE_URL` set but an empty schema in CI, so
-  `auth.contract.test.ts` replaces `clientCheck.exists` (the "does this judge/track
-  exist" check on credential issue) with a stub. Do the same in any new contract
-  test that issues credentials for ids the schema doesn't contain.
-- Browser tests: the Playwright server needs `--allow-write` and `AUDIO_DIR` (set in
-  `node-tests/playwright.config.ts`), and `setup()` uploads real silent WAVs with
-  `?force=1` because the seed's session start is already past the audio cut-off.
+- Tests that import `main.ts` get an empty festival (`festival()` until
+  `setFestival`); only `import.meta.main` loads `BUNDLE_DIR`. `auth.contract.test.ts`
+  replaces `clientCheck.exists` (the "is this judge/track in the bundle" check on
+  credential issue) with a stub; integration tests `setFestival(new Festival(data))`
+  and `TRUNCATE` the day's tables (`seed()`/`unseed()`, which also abort leftover
+  sessions). Progress writes are asynchronous: poll the database (`eventually()`).
+- Browser tests: Playwright runs the server with `BUNDLE_DIR`/`AUDIO_DIR` pointing at
+  `fixtures/bundles/e2e` (set in `node-tests/playwright.config.ts`). Its session start
+  is in the past, so the audio cut-off has passed. After changing `scripts/fixtures.ts`
+  run `deno task fixtures` (a unit test checks the committed bundle is current).
   Kill any leftover `app/src/main.ts` server before a run (`reuseExistingServer`).
 - Never log credentials: `/join/<secret>` is redacted in the request log.
 
@@ -300,28 +353,31 @@ static mount). Keep new code within the spirit of those rules; ask before restru
 
 ## Status
 
-Phases 0-7 of the "make it correctly functioning" plan are done and committed.
-Since then (latest: `11af1b6`, then a missing announcement stops being fatal): `/response` extracted to a service, session
-progress persisted, FKs on `rubric_judge_criteria`, credential issue checks the
-judge/track exists, and competitor audio (storage, cut-off, manifest, DJ prefetch,
-start gate), DJ gates (start competition / end session). Suites: 119 unit, 135
-frontend, 34 contract, 14 integration (with a DB), 12 browser tests; all green with exit code 0 against Docker Postgres
-(`tools/run-tests.sh`, `tools/run-e2e.sh`). `start_time` and the other timestamps are
-`TIMESTAMPTZ`: with zone-less columns a non-UTC server and a UTC database put the audio
-cut-off hours off and the DJ start gate never opened.
-`deno task static` only passes once generated `public/*.js` is committed.
+Phases 0-7 of the "make it correctly functioning" plan are done and committed, then
+`/response` as a service, competitor audio (manifest, DJ prefetch, start gate) and DJ
+gates. **Redesign (`redesign.md`) Phases 1 (bundle loader) and 2 (cursor progress,
+skips, missing scores, zero-score rule) are done.** Suites: 163 unit (incl.
+`shared/festival-bundle`), 119 frontend, 34 contract, 17 integration (with a DB), 12
+browser tests; all green with exit code 0, with and without `DATABASE_URL` (scratch
+Postgres 17). `deno task static`
+only passes once generated `public/*.js` is committed.
 
 Working style (owner): analysis only when asked to analyse; commit only when asked.
 
 ## Open items (next session)
 
-1. **Audio, next steps.** Transcode/normalise loudness; the competitor portal (accounts, registration, uploads via
-   `audio.add`, `audio_files.owner_user_id`); the DJ report map is in memory (DJ
-   re-reports on its next sync); `sessions.start_time` must be accurate for the
-   cut-off to mean anything (seed data uses NOW(), i.e. already past).
-2. Missing-judge-score records are in memory only; persist if results/audit need them.
-3. Single-instance assumption: the revocation cache is in process memory.
-4. CI: `ci.yml` is green on GitHub. Pinned to `ubuntu-24.04`, `actions/checkout@v5`,
+1. **Redesign Phases 3-6** (`redesign.md`): sequencer (arm the open session per track,
+   planned-time gate and countdown, delay estimate, judges claimed per competition,
+   hold/release/cancel, remove abort; `session_runs.cancelled_at` is in the schema but not
+   written yet), audio per track (retire the per-session cut-off), cloud push, docs.
+   `POST /sessions/:id/start` is still how sessions start.
+2. **Portal** (`portal.md`): registration, uploads, loudness normalisation, the exporter
+   (uses `shared/festival-bundle`). There is no upload path on this server any more.
+3. Bundle verification hashes every audio file at each boot (fine for hundreds of
+   files; cache by size+mtime if it gets slow). A dry run's database cannot take the
+   final bundle (pairing guard): use a fresh database for the event.
+4. Single-instance assumption: the revocation cache is in process memory.
+5. CI: `ci.yml` is green on GitHub. Pinned to `ubuntu-24.04`, `actions/checkout@v5`,
    `setup-node`/`upload-artifact@v6` (Node 24; all three jobs passed on GitHub, run of
    `570aa84`). Still open: `.vscode/tasks.json` references a missing
    `start-debug-session.sh`.

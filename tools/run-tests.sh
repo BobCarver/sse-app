@@ -1,9 +1,9 @@
 #!/usr/bin/env sh
 # The whole Deno suite (unit, frontend, contract, integration) with Docker
 # providing Postgres. The contract and integration tests need a database with the
-# schema and EMPTY tables, which is not what the compose file's default database
-# holds (the container's entrypoint seeds it for the browser tests). So this makes
-# a second, schema-only database in the same container and points the tests at it.
+# schema and EMPTY tables. The compose file's default database may hold what a
+# browser-test run left behind, so this makes a second, schema-only database in
+# the same container and points the tests at it.
 #
 #   ./tools/run-tests.sh              # tear the database down afterwards
 #   TEARDOWN=0 ./tools/run-tests.sh   # leave it running for debugging

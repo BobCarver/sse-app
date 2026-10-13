@@ -1,0 +1,15 @@
+{
+  "audio": [
+    {
+      "bytes": 2444,
+      "content_type": "audio/wav",
+      "sha256": "0af070e5a8a399297288879d6cf7a8c5b8358bd9d53a6a7dc1f2726caacbd3c8"
+    }
+  ],
+  "bundle_version": 1,
+  "data_sha256": "22221c0806191398e277e56c7be1c75c8c4904c43474f53b0ae8d8c638ec769e",
+  "digest": "15bc02481fe28c47f3acc975a81f2eef114ab95be6b0f9c0d3f5e87d785c052f",
+  "festival_id": 1,
+  "generated_at": "2026-01-01T00:00:00Z",
+  "problems": []
+}

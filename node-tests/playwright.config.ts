@@ -1,9 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 // Browser tests drive the real pages against the real app and a real database.
-// The app is started here; the database must already have the schema and seed
+// The app is started here, with the e2e festival bundle (fixtures/bundles/e2e,
+// made by `deno task fixtures`); the database must already have the schema
 // (tools/e2e.sh / tools/run-e2e.sh / CI take care of that).
 
 const PORT = process.env.E2E_PORT ?? "8000";
@@ -39,7 +38,8 @@ export default defineConfig({
             DATABASE_URL: process.env.DATABASE_URL ??
                 "postgres://postgres:test@localhost:5432/test_db",
             JUDGE_SCORE_TIMEOUT_MS: "60000",
-            AUDIO_DIR: join(tmpdir(), "sse-e2e-audio"),
+            BUNDLE_DIR: "fixtures/bundles/e2e",
+            AUDIO_DIR: "fixtures/bundles/e2e/audio",
             DEMO: "1", // enables /demo (see e2e/demo.spec.ts)
             // The DJ's start/end buttons are off here: the specs run sessions
             // straight through (the gates are covered by the integration tests).

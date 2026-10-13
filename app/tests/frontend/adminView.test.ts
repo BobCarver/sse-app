@@ -189,28 +189,38 @@ Deno.test("admin view: session controls follow whether it is running", () => {
   assertStringIncludes(running, "performing · Jive #2 · waiting for judge31");
   assert(!running.includes('data-action="skip" data-id="10" disabled'));
 
+  // Nobody scored: the operator can re-open scoring (or skip).
+  assertStringIncludes(running, 'data-action="reopen" data-id="10" disabled');
+  const unscored = renderOverview(
+    overview(
+      session({
+        running: true,
+        live: {
+          phase: "unscored",
+          competition_name: "Jive",
+          position: 1,
+          waiting_for: ["operator: no scores (skip or reopen)"],
+        },
+      }),
+    ),
+    state(),
+  );
+  assert(!unscored.includes('data-action="reopen" data-id="10" disabled'));
+
+  // A finished session is not run again.
   const done = renderOverview(
     overview(session({ status: "finished" })),
     state(),
   );
-  assertStringIncludes(done, ">Run again<");
+  assertStringIncludes(done, 'data-action="start" data-id="10" disabled');
 });
 
-Deno.test("admin view: audio status and the upload note", () => {
-  const afterCutoff = Date.parse("2030-01-01T12:00:00Z");
-  const html = renderOverview(overview(), state({}, afterCutoff));
+Deno.test("admin view: audio status comes from the bundle and cannot be uploaded here", () => {
+  const html = renderOverview(overview(), state());
   assertStringIncludes(html, 'class="audio have"');
   assertStringIncludes(html, 'class="audio missing"');
-  assertStringIncludes(
-    html,
-    'data-competition="100" data-competitor="2" data-kind="announce"',
-  );
-  assertStringIncludes(html, "Audio uploads are closed"); // the cut-off has passed
-  const early = renderOverview(
-    overview(),
-    state({}, Date.parse("2029-12-31T00:00:00Z")),
-  );
-  assertStringIncludes(early, "Audio uploads close ");
+  assert(!html.includes('type="file"'), "no upload control");
+  assert(!html.includes("Audio uploads"), "no upload cut-off note");
 });
 
 Deno.test("admin view: devices show connection and links, with new-link and revoke actions", () => {

@@ -277,33 +277,6 @@ export function startAdminPage(doc: Document = document): void {
     void refresh();
   }
 
-  async function upload(input: HTMLInputElement): Promise<void> {
-    const file = input.files?.[0];
-    if (!file) return;
-    const { competition, competitor, kind } = input.dataset;
-    const path = `/admin/audio/${competition}/${competitor}/${kind}`;
-    let res = await api("PUT", path, file);
-    if (res.status === 409) {
-      if (
-        !confirm(
-          "Uploads are closed for this session. Replace the audio anyway?",
-        )
-      ) {
-        input.value = "";
-        return;
-      }
-      res = await api("PUT", `${path}?force=1`, file);
-    }
-    const body = await res.json().catch(() => ({}));
-    input.value = "";
-    if (!res.ok) {
-      return toast(`Upload failed: ${body.error ?? res.status}`, true);
-    }
-    toast(`Uploaded ${kind} audio`);
-    last = "";
-    void refresh();
-  }
-
   app.addEventListener("click", (e) => {
     const el = (e.target as HTMLElement).closest<HTMLElement>("[data-action]");
     if (!el || el.tagName === "INPUT") return;
@@ -317,6 +290,8 @@ export function startAdminPage(doc: Document = document): void {
       void act("POST", `/sessions/${id}/start`, "Start");
     } else if (action === "skip") {
       void act("POST", `/admin/sessions/${id}/skip`, "Skip");
+    } else if (action === "reopen") {
+      void act("POST", `/admin/sessions/${id}/reopen`, "Re-open scoring");
     } else if (action === "abort") {
       if (confirm("Abort this session now?")) {
         void act("POST", `/admin/sessions/${id}/abort`, "Abort");
@@ -324,10 +299,6 @@ export function startAdminPage(doc: Document = document): void {
     }
     // Buttons inside a <summary> must not also toggle the section.
     if (el.closest("summary")) e.preventDefault();
-  });
-  app.addEventListener("change", (e) => {
-    const t = e.target as HTMLInputElement;
-    if (t.dataset?.action === "upload") void upload(t);
   });
 
   // Start: signed in already (cookie) or show the form.

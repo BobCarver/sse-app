@@ -31,4 +31,7 @@ build/
 # Archives / artifacts
 *.zip
 *.tar.gz
-audio/
+/audio/
+
+# Demo festival bundle (deno task demo:bundle)
+fixtures/bundles/demo/

@@ -1,7 +1,7 @@
-// "start" resumes where a session left off: finalized/skipped competitors are not
-// run again, and the one that was being scored gets its scoring re-opened.
-import { assertEquals } from "@std/assert";
-import { planResume, type ResumeRows } from "../../src/resume.ts";
+// "start" resumes at the cursor: competitors before it are not run again, and
+// the one that was being scored gets its scoring re-opened.
+import { assertEquals, assertThrows } from "@std/assert";
+import { nextInOrder, planResume, type ResumeRows } from "../../src/resume.ts";
 import { Session, type SessionDependencies } from "../../src/session.ts";
 import { clearAllResolvers, resolveTag } from "../../src/resolveTag.ts";
 import { perfTag, scoreTag } from "../../src/contract.ts";
@@ -25,48 +25,50 @@ const comp = (id: number, ...competitorIds: number[]): Competition => ({
   },
 });
 
-const rows = (
-  statuses: Record<string, string>,
-  performedScores: ResumeRows["performedScores"] = [],
-  sessionStatus = "active",
+const cursorAt = (
+  competitionId: number,
+  competitorId: number,
+  phase: "performing" | "scoring" | null,
+  cursorScores: ResumeRows["cursorScores"] = [],
 ): ResumeRows => ({
-  sessionStatus,
-  competitors: Object.entries(statuses).map(([k, status]) => {
-    const [competition_id, competitor_id] = k.split(":").map(Number);
-    return { competition_id, competitor_id, status };
-  }),
-  performedScores,
+  finished: false,
+  open: true,
+  cursor: { competitionId, competitorId, phase },
+  cursorScores,
 });
 
-Deno.test("planResume: finalized and skipped competitors at the front are finished", () => {
+Deno.test("planResume: everything before the cursor is finished; not begun runs from its performance", () => {
   const plan = planResume(
     [comp(10, 100, 101, 102, 103)],
-    rows({
-      "10:100": "finalized",
-      "10:101": "skipped",
-      "10:102": "upcoming",
-      "10:103": "upcoming",
-    }),
+    cursorAt(10, 102, null),
   );
   assertEquals([...plan.finished], ["10:100", "10:101"]);
   assertEquals(plan.reopen, undefined); // 102 is run from its performance
+  assertEquals(plan.underway, undefined); // its competition had not begun
 });
 
-Deno.test("planResume: a performed competitor gets scoring re-opened with its saved scores", () => {
+Deno.test("planResume: cut off mid-performance runs it again; its competition is under way", () => {
+  const plan = planResume(
+    [comp(10, 100), comp(11, 110, 111)],
+    cursorAt(11, 110, "performing"),
+  );
+  assertEquals([...plan.finished], ["10:100"]);
+  assertEquals(plan.reopen, undefined);
+  assertEquals(plan.underway, 11);
+});
+
+Deno.test("planResume: cut off mid-scoring re-opens scoring with its saved scores", () => {
   const plan = planResume(
     [comp(10, 100, 101), comp(11, 110)],
-    rows(
-      { "10:100": "finalized", "10:101": "performed", "11:110": "upcoming" },
-      [
-        {
-          competition_id: 10,
-          competitor_id: 101,
-          judge_id: 2,
-          criteria_id: 1,
-          score: 7,
-        },
-      ],
-    ),
+    cursorAt(10, 101, "scoring", [
+      {
+        competition_id: 10,
+        competitor_id: 101,
+        judge_id: 2,
+        criteria_id: 1,
+        score: 7,
+      },
+    ]),
   );
   assertEquals([...plan.finished], ["10:100"]);
   assertEquals(plan.reopen, {
@@ -81,25 +83,49 @@ Deno.test("planResume: a performed competitor gets scoring re-opened with its sa
   });
 });
 
-Deno.test("planResume: a performed competitor with no saved scores still re-opens scoring", () => {
-  const plan = planResume([comp(10, 100)], rows({ "10:100": "performed" }));
+Deno.test("planResume: scoring with no saved scores still re-opens scoring", () => {
+  const plan = planResume([comp(10, 100)], cursorAt(10, 100, "scoring"));
   assertEquals(plan.reopen?.scores, []);
 });
 
-Deno.test("planResume: earlier competitors are never revisited, even if not finalized", () => {
-  // Only what is in play when it stopped matters; 100 was left 'performed' by
-  // an older run, 101 is the one in play.
-  const plan = planResume(
-    [comp(10, 100, 101)],
-    rows({ "10:100": "finalized", "10:101": "upcoming" }),
-  );
-  assertEquals([...plan.finished], ["10:100"]);
+Deno.test("planResume: an open session with no cursor has every competitor done", () => {
+  const plan = planResume([comp(10, 100), comp(11, 110)], {
+    finished: false,
+    open: true,
+    cursor: null,
+    cursorScores: [],
+  });
+  assertEquals([...plan.finished], ["10:100", "11:110"]);
 });
 
-Deno.test("planResume: a completed session starts from scratch", () => {
-  const completed = rows({ "10:100": "finalized" }, [], "completed");
-  assertEquals(planResume([comp(10, 100)], completed).finished.size, 0);
+Deno.test("planResume: a session that is not open starts from the top", () => {
   assertEquals(planResume([comp(10, 100)], undefined).finished.size, 0);
+  assertEquals(
+    planResume([comp(10, 100)], {
+      finished: false,
+      open: false,
+      cursor: null,
+      cursorScores: [],
+    }).finished.size,
+    0,
+  );
+});
+
+Deno.test("planResume: a cursor outside the session is an error, not a guess", () => {
+  assertThrows(() => planResume([comp(10, 100)], cursorAt(99, 1, null)));
+});
+
+Deno.test("nextInOrder: the following competitor, across competitions", () => {
+  const order = [comp(10, 100, 101), comp(11, 110)];
+  assertEquals(nextInOrder(order, 10, 0), {
+    competitionId: 10,
+    competitorId: 101,
+  });
+  assertEquals(nextInOrder(order, 10, 1), {
+    competitionId: 11,
+    competitorId: 110,
+  });
+  assertEquals(nextInOrder(order, 11, 0), null);
 });
 
 function setup() {
@@ -151,6 +177,7 @@ Deno.test("runSession: finished competitors are not run again, positions are kep
     kind: "competitor_finalized",
     competitionId: 10,
     competitorId: 101,
+    next: { competitionId: 11, competitorId: 110 }, // the cursor moves on
   }]);
 });
 

@@ -19,8 +19,10 @@ app/frontend-src/   browser code (TS) and the three HTML pages (dj, jd, sb)
 app/tests/          unit/ frontend/ contract/ integration/ (Deno)
 public/             built bundles dj.js jd.js sb.js (generated, tracked in git)
 node-tests/         Playwright (Node)
-docker/             docker-compose.yml, postgres/db-init/01_schema.sql, 02_seed.sql
-scripts/            build_artifacts.ts, issue-links.ts
+shared/             festival-bundle/: the bundle format shared with the portal (std lib only)
+fixtures/           bundles/e2e (committed), bundles/demo (generated)
+docker/             docker-compose.yml, postgres/db-init/01_schema.sql
+scripts/            build_artifacts.ts, issue-links.ts, fixtures.ts
 tools/              e2e.sh, run-e2e.sh
 ```
 

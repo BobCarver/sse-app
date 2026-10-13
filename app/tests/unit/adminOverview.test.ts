@@ -1,93 +1,94 @@
 import { assertEquals } from "@std/assert";
-import {
-  buildOverview,
-  type OverviewRows,
-  statusOf,
-} from "../../src/adminOverview.ts";
+import type { FestivalData } from "../../../shared/festival-bundle/mod.ts";
+import { buildOverview, type ProgressRows } from "../../src/adminOverview.ts";
 import type { AudioRecord } from "../../src/audioLibrary.ts";
 import type { Credential } from "../../src/credentials.ts";
 
 const T = new Date("2030-01-01T12:00:00Z");
-const rows = (): OverviewRows => ({
-  festivals: [{ id: 1, name: "Fest" }],
-  tracks: [{ id: 7, festival_id: 1, name: "Main", location: "Hall" }],
-  sessions: [
-    {
-      id: 20,
-      track_id: 7,
-      name: "Later",
-      status: "upcoming",
-      start_time: new Date(T.getTime() + 3600_000),
-      current_competition: null,
-      current_competitor: null,
-    },
-    {
-      id: 10,
-      track_id: 7,
-      name: "Morning",
-      status: "active",
-      start_time: T,
-      current_competition: 100,
-      current_competitor: 2,
-    },
-  ],
-  competitions: [
-    {
-      id: 101,
-      session_id: 10,
-      order_number: 2,
-      name: "Waltz",
-      status: "upcoming",
-      rubric_id: 5,
-    },
-    {
-      id: 100,
-      session_id: 10,
-      order_number: 1,
-      name: "Jive",
-      status: "active",
-      rubric_id: 5,
-    },
-  ],
-  competitors: [
-    {
-      competition_id: 100,
-      id: 3,
-      name: "Cy",
-      type: "individual",
-      duration: 15,
-      order_number: 3,
-      status: "upcoming",
-    },
-    {
-      competition_id: 100,
-      id: 1,
-      name: "Al",
-      type: "individual",
-      duration: 15,
-      order_number: 1,
-      status: "performed",
-    },
-    {
-      competition_id: 100,
-      id: 2,
-      name: null,
-      type: "couple",
-      duration: null,
-      order_number: 2,
-      status: "upcoming",
-    },
-  ],
-  rubricJudges: [
-    { rubric_id: 5, judge_id: 31, name: "Ada", email: "ada@x.test" },
-    { rubric_id: 5, judge_id: 32, name: "Ben", email: null },
-  ],
-  judges: [
-    { id: 31, name: "Ada", email: "ada@x.test" },
-    { id: 32, name: "Ben", email: null },
-    { id: 33, name: "Cat", email: null },
-  ],
+const entry = (id: number, name: string, order: number) => ({
+  id,
+  name,
+  type: "individual" as const,
+  order_number: order,
+  duration: 15,
+  audio: {},
+});
+
+/** Festival > track 7 > "Later" (20) and "Morning" (10) > Jive (100), Waltz (101). */
+const festival = (): FestivalData => ({
+  festival: {
+    id: 1,
+    name: "Fest",
+    rubrics: [{
+      id: 5,
+      name: "R",
+      criteria: [{ id: 1, name: "T", weight: 1 }],
+      judges: [
+        { id: 31, name: "Ada", criteria: [1] },
+        { id: 32, name: "Ben", criteria: [1] },
+      ],
+    }],
+    tracks: [{
+      id: 7,
+      name: "Main",
+      location: "Hall",
+      sessions: [
+        {
+          id: 20,
+          name: "Later",
+          start_time: new Date(T.getTime() + 3600_000).toISOString(),
+          order_number: 2,
+          competitions: [],
+        },
+        {
+          id: 10,
+          name: "Morning",
+          start_time: T.toISOString(),
+          order_number: 1,
+          competitions: [
+            {
+              id: 101,
+              name: "Waltz",
+              order_number: 2,
+              rubric_id: 5,
+              competitors: [entry(4, "Di", 1)],
+            },
+            {
+              id: 100,
+              name: "Jive",
+              order_number: 1,
+              rubric_id: 5,
+              competitors: [
+                entry(3, "Cy", 3),
+                entry(1, "Al", 1),
+                entry(2, "Bo", 2),
+              ],
+            },
+          ],
+        },
+      ],
+    }],
+  },
+});
+
+/** Session 10 open, the cursor on Bo (competitor 2) performing; Al fully scored. */
+const progress = (over: Partial<ProgressRows> = {}): ProgressRows => ({
+  runs: [{
+    session_id: 10,
+    started_at: T,
+    finished_at: null,
+    cancelled_at: null,
+  }],
+  cursors: [{
+    track_id: 7,
+    open_session: 10,
+    competition_id: 100,
+    competitor_id: 2,
+    phase: "performing",
+  }],
+  skips: [],
   scores: [{ competition_id: 100, competitor_id: 1, judges: 2 }],
+  ...over,
 });
 
 const cred = (id: number, clientId: string, revoked = false): Credential => ({
@@ -111,69 +112,98 @@ const audio = (
   sha256: "s",
 });
 
-const build = (over: Partial<Parameters<typeof buildOverview>[1]> = {}) =>
-  buildOverview(rows(), {
-    audio: [],
-    credentials: [],
-    connected: new Set(),
-    live: () => null,
-    cutoffMinutes: 30,
-    ...over,
-  });
-
-Deno.test("overview: database statuses map to upcoming / in_progress / finished", () => {
-  assertEquals(
-    ["upcoming", "active", "completed", "weird"].map(statusOf),
-    ["upcoming", "in_progress", "finished", "upcoming"],
-  );
+const ctx = (over: Partial<Parameters<typeof buildOverview>[2]> = {}) => ({
+  audio: [],
+  credentials: [],
+  connected: new Set<string>(),
+  live: () => null,
+  cutoffMinutes: 30,
+  ...over,
 });
+const build = (rows = progress(), over = {}) =>
+  buildOverview(festival(), rows, ctx(over));
+const morning = (rows = progress()) =>
+  build(rows).festivals[0].tracks[0].sessions[0];
 
 Deno.test("overview: the tree is ordered (sessions by start, competitions and competitors by order)", () => {
   const track = build().festivals[0].tracks[0];
   assertEquals(track.sessions.map((s) => s.name), ["Morning", "Later"]);
-  const morning = track.sessions[0];
-  assertEquals(morning.competitions.map((c) => c.name), ["Jive", "Waltz"]);
-  assertEquals(morning.competitions[0].competitors.map((c) => c.id), [1, 2, 3]);
-  assertEquals(morning.competitions[0].judges.map((j) => j.name), [
-    "Ada",
-    "Ben",
-  ]);
+  const s = track.sessions[0];
+  assertEquals(s.competitions.map((c) => c.name), ["Jive", "Waltz"]);
+  assertEquals(s.competitions[0].competitors.map((c) => c.id), [1, 2, 3]);
+  assertEquals(s.competitions[0].judges.map((j) => j.name), ["Ada", "Ben"]);
   assertEquals(
-    morning.audio_cutoff,
+    s.audio_cutoff,
     new Date(T.getTime() - 30 * 60_000).toISOString(),
   );
 });
 
-Deno.test("overview: competitor status - finished once all judges scored, in progress while performing, else upcoming", () => {
-  const [al, second, cy] =
-    build().festivals[0].tracks[0].sessions[0].competitions[0].competitors;
-  assertEquals([al.status, al.scored_by], ["finished", 2]);
-  assertEquals(second.status, "in_progress"); // session.current_competitor = 2
-  assertEquals(cy.status, "upcoming");
-  assertEquals(second.name, "Competitor 2"); // unnamed competitors still get a label
+Deno.test("overview: statuses come from the cursor - before it finished, on it in progress, after it upcoming", () => {
+  const s = morning();
+  assertEquals(s.status, "in_progress");
+  const [jive, waltz] = s.competitions;
+  assertEquals([jive.status, waltz.status], ["in_progress", "upcoming"]);
+  assertEquals(
+    jive.competitors.map((c) => [c.name, c.status, c.scored_by]),
+    [["Al", "finished", 2], ["Bo", "in_progress", 0], ["Cy", "upcoming", 0]],
+  );
+  // The later session has not started.
+  assertEquals(build().festivals[0].tracks[0].sessions[1].status, "upcoming");
 });
 
-Deno.test("overview: a finished competition makes everyone in it finished", () => {
-  const r = rows();
-  r.competitions[1].status = "completed";
-  r.competitions[1].id = 100; // make the first one 'completed' instead
-  r.competitions[0].status = "upcoming";
-  const o = buildOverview(
-    { ...r, competitions: [{ ...r.competitions[1], status: "completed" }] },
-    { audio: [], credentials: [], connected: new Set(), live: () => null },
-  );
-  const comp =
-    o.festivals[0].tracks[0].sessions.find((s) => s.id === 10)!.competitions[0];
-  assertEquals(comp.status, "finished");
-  assertEquals(comp.competitors.map((c) => c.status), [
+Deno.test("overview: the next competitor waiting to begin is upcoming, not on now", () => {
+  const rows = progress();
+  rows.cursors[0] = {
+    ...rows.cursors[0],
+    competition_id: 101,
+    competitor_id: 4,
+    phase: null,
+  };
+  const [jive, waltz] = morning(rows).competitions;
+  assertEquals(jive.status, "finished");
+  assertEquals(waltz.status, "upcoming");
+  assertEquals(waltz.competitors[0].status, "upcoming");
+});
+
+Deno.test("overview: a finished session is finished throughout; skips stay skipped", () => {
+  const rows = progress({
+    runs: [{
+      session_id: 10,
+      started_at: T,
+      finished_at: T,
+      cancelled_at: null,
+    }],
+    cursors: [{
+      track_id: 7,
+      open_session: null,
+      competition_id: null,
+      competitor_id: null,
+      phase: null,
+    }],
+    skips: [{ session_id: 10, competition_id: 100, competitor_id: 3 }],
+  });
+  const s = morning(rows);
+  assertEquals(s.status, "finished");
+  assertEquals(s.competitions.map((c) => c.status), ["finished", "finished"]);
+  assertEquals(s.competitions[0].competitors.map((c) => c.status), [
     "finished",
     "finished",
-    "finished",
+    "skipped",
   ]);
 });
 
+Deno.test("overview: a skipped competitor before the cursor shows as skipped", () => {
+  const rows = progress({
+    skips: [{ session_id: 10, competition_id: 100, competitor_id: 1 }],
+  });
+  assertEquals(
+    morning(rows).competitions[0].competitors.map((c) => [c.id, c.status]),
+    [[1, "skipped"], [2, "in_progress"], [3, "upcoming"]],
+  );
+});
+
 Deno.test("overview: audio flags, links (revoked ones hidden), connection and live state", () => {
-  const o = build({
+  const o = build(progress(), {
     audio: [
       audio(100, 1, "music"),
       audio(100, 1, "announce"),
@@ -181,7 +211,7 @@ Deno.test("overview: audio flags, links (revoked ones hidden), connection and li
     ],
     credentials: [cred(1, "dj7"), cred(2, "dj7", true), cred(3, "judge31")],
     connected: new Set(["dj7", "judge32"]),
-    live: (id) =>
+    live: (id: number) =>
       id === 10
         ? {
           phase: "performing",
@@ -192,9 +222,9 @@ Deno.test("overview: audio flags, links (revoked ones hidden), connection and li
         : null,
   });
   const track = o.festivals[0].tracks[0];
-  const [al, second] = track.sessions[0].competitions[0].competitors;
+  const [al, bo] = track.sessions[0].competitions[0].competitors;
   assertEquals(al.audio, { announce: true, music: true });
-  assertEquals(second.audio, { announce: false, music: true });
+  assertEquals(bo.audio, { announce: false, music: true });
 
   const [dj, sb] = track.devices;
   assertEquals([dj.client_id, dj.connected, dj.links.map((l) => l.id)], [
@@ -208,62 +238,20 @@ Deno.test("overview: audio flags, links (revoked ones hidden), connection and li
   assertEquals(track.sessions[0].live?.phase, "performing");
   assertEquals(track.sessions[1].running, false);
 
-  const judges = o.judges;
+  // Judges come from the rubrics; the bundle carries no emails.
   assertEquals(
-    judges.map((j) => [j.id, j.device.connected, j.device.links.length]),
-    [[31, false, 1], [32, true, 0], [33, false, 0]],
+    o.judges.map((j) => [j.id, j.device.connected, j.device.links.length]),
+    [[31, false, 1], [32, true, 0]],
   );
-  assertEquals(judges[0].competitions.map((c) => c.name).sort(), [
-    "Jive",
-    "Waltz",
-  ]);
-  assertEquals(judges[2].competitions, []); // judge 33 judges nothing yet
-  assertEquals(judges[0].email, "ada@x.test");
+  assertEquals(o.judges[0].competitions.map((c) => c.name), ["Jive", "Waltz"]);
+  assertEquals(o.judges[0].email, null);
 });
 
-Deno.test("overview: an empty database gives an empty tree", () => {
+Deno.test("overview: no festival loaded gives an empty tree", () => {
   const o = buildOverview(
-    {
-      festivals: [],
-      tracks: [],
-      sessions: [],
-      competitions: [],
-      competitors: [],
-      rubricJudges: [],
-      judges: [],
-      scores: [],
-    },
-    { audio: [], credentials: [], connected: new Set(), live: () => null },
+    { festival: { id: 0, name: "", rubrics: [], tracks: [] } },
+    { runs: [], cursors: [], skips: [], scores: [] },
+    ctx(),
   );
   assertEquals(o, { festivals: [], judges: [] });
-});
-
-Deno.test("overview: a skipped competitor is skipped, whatever the competition is doing", () => {
-  const r = rows();
-  r.competitors.find((c) => c.id === 3)!.status = "skipped";
-  const comp = buildOverview(r, {
-    audio: [],
-    credentials: [],
-    connected: new Set(),
-    live: () => null,
-  }).festivals[0].tracks[0].sessions[0].competitions[0];
-  assertEquals(comp.competitors.map((c) => [c.id, c.status]), [
-    [1, "finished"],
-    [2, "in_progress"],
-    [3, "skipped"],
-  ]);
-
-  // Even once the competition is finished, the skipped one stays skipped.
-  r.competitions.find((c) => c.id === 100)!.status = "completed";
-  const done = buildOverview(r, {
-    audio: [],
-    credentials: [],
-    connected: new Set(),
-    live: () => null,
-  }).festivals[0].tracks[0].sessions[0].competitions[0];
-  assertEquals(done.competitors.map((c) => c.status), [
-    "finished",
-    "finished",
-    "skipped",
-  ]);
 });

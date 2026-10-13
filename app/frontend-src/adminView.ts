@@ -14,7 +14,7 @@ import type {
 export interface ViewState {
   /** Is the section with this key expanded? `dflt` applies until the user toggles it. */
   isOpen(key: string, dflt: boolean): boolean;
-  /** Current time in ms (for "uploads closed"). */
+  /** Current time in ms. */
   now: number;
 }
 
@@ -87,17 +87,14 @@ function liveText(s: OverviewSession): string {
   return `<span class="live">${esc(s.live.phase)}${where}${wait}</span>`;
 }
 
-function audioButton(
-  comp: OverviewCompetition,
-  c: OverviewCompetitor,
-  kind: "announce" | "music",
-): string {
+/** Whether the festival bundle has this audio (it cannot be changed here). */
+function audioBadge(c: OverviewCompetitor, kind: "announce" | "music"): string {
   const has = c.audio[kind];
-  return `<label class="audio ${has ? "have" : "missing"}" title="${
-    has ? "Replace" : "Upload"
-  } ${kind} audio">${kind} ${
-    has ? "✓" : "✗"
-  }<input type="file" accept="audio/*" hidden data-action="upload" data-competition="${comp.id}" data-competitor="${c.id}" data-kind="${kind}"></label>`;
+  return `<span class="audio ${
+    has ? "have" : "missing"
+  }" title="${kind} audio ${
+    has ? "is in the festival bundle" : "is not in the festival bundle"
+  }">${kind} ${has ? "✓" : "✗"}</span>`;
 }
 
 function renderCompetitor(
@@ -116,8 +113,8 @@ function renderCompetitor(
       ? `<span class="muted">not performed</span>`
       : `<span class="muted" title="judges who have scored this competitor">scored ${c.scored_by}/${comp.judges.length}</span>`
   }
-    <span class="audios">${audioButton(comp, c, "announce")} ${
-    audioButton(comp, c, "music")
+    <span class="audios">${audioBadge(c, "announce")} ${
+    audioBadge(c, "music")
   }</span>
   </li>`;
 }
@@ -155,14 +152,17 @@ function renderCompetition(
 }
 
 function renderSession(s: OverviewSession, state: ViewState): string {
-  const closed = state.now >= new Date(s.audio_cutoff).getTime() || s.running;
+  // A finished session is not run again.
   const controls = `<span class="controls">
     <button type="button" class="small primary" data-action="start" data-id="${s.id}" ${
-    s.running ? "disabled" : ""
-  }>${s.status === "finished" ? "Run again" : "Start"}</button>
+    s.running || s.status === "finished" ? "disabled" : ""
+  }>Start</button>
     <button type="button" class="small" data-action="skip" data-id="${s.id}" ${
     s.running ? "" : "disabled"
   } title="Stop waiting for whatever the session is stuck on">Skip</button>
+    <button type="button" class="small" data-action="reopen" data-id="${s.id}" ${
+    s.live?.phase === "unscored" ? "" : "disabled"
+  } title="Nobody scored this competitor: ask the judges again (Skip skips the competitor instead)">Re-open scoring</button>
     <button type="button" class="small danger" data-action="abort" data-id="${s.id}" ${
     s.running ? "" : "disabled"
   }>Abort</button>
@@ -172,15 +172,9 @@ function renderSession(s: OverviewSession, state: ViewState): string {
   } <span class="muted">starts ${esc(fmtTime(s.start_time))}</span> ${
     liveText(s)
   } ${controls}`;
-  const note = `<p class="muted audio-note">Audio uploads ${
-    closed ? "are closed" : "close"
-  } ${closed ? "" : esc(fmtTime(s.audio_cutoff))}${
-    closed ? " (uploading replaces the file after a confirmation)" : ""
-  }.</p>`;
-  const body = note +
-    (s.competitions.length
-      ? s.competitions.map((c) => renderCompetition(c, state)).join("")
-      : `<p class="muted">No competitions in this session.</p>`);
+  const body = s.competitions.length
+    ? s.competitions.map((c) => renderCompetition(c, state)).join("")
+    : `<p class="muted">No competitions in this session.</p>`;
   return section(
     `s${s.id}`,
     s.status !== "finished",
