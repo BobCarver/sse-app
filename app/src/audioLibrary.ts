@@ -26,20 +26,6 @@ export interface AudioMetadataStore {
   listForCompetitions(competitionIds: number[]): Promise<AudioRecord[]>;
 }
 
-/** Minutes before a session's start_time after which uploads are closed. */
-export function cutoffMinutes(): number {
-  const n = Number(Deno.env.get("AUDIO_CUTOFF_MINUTES"));
-  return Number.isFinite(n) && n >= 0 && Deno.env.get("AUDIO_CUTOFF_MINUTES")
-    ? n
-    : DEFAULT_CUTOFF_MINUTES;
-}
-export const DEFAULT_CUTOFF_MINUTES = 30;
-
-/** When uploads close for a session starting at `startTime`. */
-export function uploadCutoff(startTime: Date, minutes = cutoffMinutes()): Date {
-  return new Date(startTime.getTime() - minutes * 60_000);
-}
-
 /** Records held in memory (unit tests). */
 export class MemoryAudioMetadata implements AudioMetadataStore {
   private rows = new Map<string, AudioRecord>();

@@ -131,6 +131,13 @@ export class Festival {
     }));
   }
 
+  /** The competitions of all of a track's sessions, in running order. */
+  trackCompetitions(trackId: number): Competition[] {
+    return this.trackSessions(trackId).flatMap((s) =>
+      this.sessionCompetitions(s.id)
+    );
+  }
+
   session(sessionId: number): SessionInfo | undefined {
     return this.sessions.get(sessionId);
   }

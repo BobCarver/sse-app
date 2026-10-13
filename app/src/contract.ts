@@ -53,12 +53,9 @@ export interface AudioManifestFile {
   bytes: number;
 }
 
-/** What a DJ should hold before a session: the frozen audio set of its next session. */
+/** What a DJ should hold for the day: the frozen audio set of all its track's sessions. */
 export interface AudioManifest {
-  session_id: number | null;
-  /** False until the upload cut-off has passed (the set may still change). */
-  available: boolean;
-  available_at: string | null;
+  track_id: number;
   /** Identifies exactly this set of files; "" when there are none. */
   digest: string;
   files: AudioManifestFile[];

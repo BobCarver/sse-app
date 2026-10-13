@@ -49,13 +49,13 @@ Connection:
   "performance_start" (play) and "performance_recovery" (the page reconnected or
   reloaded mid-performance: resume without repeating the announcement),
   "performance_skipped" (an operator skipped it: stop), and "audio_available"
-  (the session's audio set is final: download it).
+  (the track's audio set is there: download it).
 
 Audio:
-  Files are fetched over HTTP ahead of the session by AudioPrefetcher
+  Files are fetched over HTTP ahead of time (the whole track) by AudioPrefetcher
   (audioCache.ts), verified and cached in the browser; playback uses the local copy
   and falls back to the network URL. The page tells the server when it holds the
-  whole set (POST /audio-ready), which releases the session's start.
+  whole set (POST /audio-ready), which releases the sessions' start gate.
   Playback uses one HTMLAudioElement with start/pause and skip controls. Browsers
   block audio until a click, so the DJ presses "Enable audio" once.
 
@@ -162,7 +162,7 @@ export class DjClient extends sseClient {
     // Sent when this DJ (re)connects mid-performance. If this page is already
     // handling that performance (a network blip) do nothing; if the page was
     // reloaded, resume without repeating the announcement or auto-playing.
-    // The upload cut-off passed (or the set changed): fetch what is missing.
+    // The track's audio is there to fetch (sent on connect): get what is missing.
     this.sse.addEventListener("audio_available", ({ data }) => {
       const msg = JSON.parse(data) as AudioAvailableMessage;
       assert(typeof msg.digest === "string");
@@ -237,8 +237,8 @@ export class DjClient extends sseClient {
   }
 
   /**
-   * Download the next session's audio (if it is final), show progress, and tell
-   * the server once everything is held and verified. Safe to call any time;
+   * Download the track's audio (all its sessions), show progress, and tell the
+   * server once everything is held and verified. Safe to call any time;
    * retries itself while files are still missing.
    */
   async syncAudio(): Promise<void> {
@@ -246,10 +246,6 @@ export class DjClient extends sseClient {
     clearTimeout(this.audioRetry);
     try {
       const r = await this.prefetcher.sync();
-      if (!r.available) {
-        this.setAudioStatus("");
-        return;
-      }
       this.setAudioStatus(
         r.total === 0
           ? ""

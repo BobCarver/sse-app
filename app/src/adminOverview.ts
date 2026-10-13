@@ -5,7 +5,6 @@ import {
   sessionsInOrder,
 } from "../../shared/festival-bundle/mod.ts";
 import type { AudioRecord } from "./audioLibrary.ts";
-import { uploadCutoff } from "./audioLibrary.ts";
 import {
   type Allowances,
   estimateStarts,
@@ -64,7 +63,6 @@ export interface OverviewContext {
   live(sessionId: number): OverviewLive | null;
   now?: Date;
   allowances?: Allowances;
-  cutoffMinutes?: number;
 }
 
 /** Where each session is, from the progress rows. */
@@ -195,7 +193,6 @@ export function buildOverview(
       name: s.name,
       status: derived.session,
       start_time: startTime.toISOString(),
-      audio_cutoff: uploadCutoff(startTime, ctx.cutoffMinutes).toISOString(),
       estimated_start: estimate && isLate(estimate, startTime)
         ? estimate.toISOString()
         : null,

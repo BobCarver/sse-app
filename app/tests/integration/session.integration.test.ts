@@ -896,7 +896,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "Audio: from the bundle, DJ-only playback with ranges, manifest after the cut-off, start gate",
+    "Audio: from the bundle, DJ-only playback with ranges, track manifest, start gate",
   ignore: !sql,
   fn: async () => {
     const db = sql!;
@@ -911,8 +911,8 @@ Deno.test({
     }
     const inMinutes = (m: number) =>
       new Date(Date.now() + m * 60_000).toISOString().replace(/\.\d+Z$/, "Z");
-    // Session 1 starts in 2 h: the set is not offered yet (cut-off 30 min before).
-    await seed(db, seedFestival(inMinutes(120), { 100: music }));
+    // Session 1 starts in 10 min; the set is offered regardless of the time.
+    await seed(db, seedFestival(inMinutes(10), { 100: music }));
     const streams: SSEStream[] = [];
     try {
       const get = async (who: string, headers: HeadersInit = {}) => {
@@ -972,35 +972,21 @@ Deno.test({
       assertEquals(none.status, 404);
       await none.body?.cancel();
 
-      // Before the cut-off the DJ is offered nothing, but is told when.
-      const early = await manifest("dj1");
-      assertEquals(early.status, 425);
-      assertEquals(early.json.available, false);
-      assert(early.json.available_at, "says when the set becomes available");
-      assertEquals(early.json.files, []);
+      // The track's DJ is offered the set from the start (there is no cut-off:
+      // the bundle is final), nobody else.
       assertEquals((await manifest("judge2")).status, 403);
-
-      // The cut-off passes (start in 10 min, cut-off is 30 min before start).
-      setFestival(
-        new Festival(seedFestival(inMinutes(10), { 100: music }), "test"),
-      );
       const m1 = await manifest("dj1");
       assertEquals(m1.status, 200);
-      assertEquals(m1.json.available, true);
-      assertEquals(m1.json.session_id, 1);
+      assertEquals(m1.json.track_id, 1);
       assertEquals(m1.json.files.length, 1);
       assertEquals(m1.json.files[0].url, "/audio/10/100/music");
       assertEquals(m1.json.files[0].bytes, 1000);
       assert(/^[0-9a-f]{64}$/.test(m1.json.digest));
 
-      // The DJ is told (once) that the set is final.
+      // The DJ is told (once) that the set is there.
       const source = {
-        nextSession: (trackId: number) => {
-          const s = festival().nextSession(trackId, new Set());
-          return Promise.resolve(s && { id: s.id, startTime: s.startTime });
-        },
-        competitions: (id: number) =>
-          Promise.resolve(festival().sessionCompetitions(id)),
+        competitions: (trackId: number) =>
+          festival().trackCompetitions(trackId),
       };
       const mock = createMockClient("dj1");
       const deps = { audio, source, connectedClients: () => [mock] };

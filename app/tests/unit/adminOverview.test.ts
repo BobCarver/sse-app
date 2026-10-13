@@ -117,7 +117,6 @@ const ctx = (over: Partial<Parameters<typeof buildOverview>[2]> = {}) => ({
   credentials: [],
   connected: new Set<string>(),
   live: () => null,
-  cutoffMinutes: 30,
   ...over,
 });
 const build = (rows = progress(), over = {}) =>
@@ -132,10 +131,6 @@ Deno.test("overview: the tree is ordered (sessions by start, competitions and co
   assertEquals(s.competitions.map((c) => c.name), ["Jive", "Waltz"]);
   assertEquals(s.competitions[0].competitors.map((c) => c.id), [1, 2, 3]);
   assertEquals(s.competitions[0].judges.map((j) => j.name), ["Ada", "Ben"]);
-  assertEquals(
-    s.audio_cutoff,
-    new Date(T.getTime() - 30 * 60_000).toISOString(),
-  );
 });
 
 Deno.test("overview: statuses come from the cursor - before it finished, on it in progress, after it upcoming", () => {

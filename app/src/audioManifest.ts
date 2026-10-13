@@ -1,5 +1,4 @@
 import type { AudioLibrary, AudioRecord } from "./audioLibrary.ts";
-import { uploadCutoff } from "./audioLibrary.ts";
 import {
   AUDIO_KINDS,
   type AudioManifest,
@@ -10,10 +9,8 @@ import {
 import type { Competition } from "./types.ts";
 
 export interface ManifestSource {
-  nextSession(
-    trackId: number,
-  ): Promise<{ id: number; startTime: Date } | undefined>;
-  competitions(sessionId: number): Promise<Competition[]>;
+  /** The competitions of all the track's sessions, in running order. */
+  competitions(trackId: number): Competition[];
 }
 
 const toFile = (r: AudioRecord): AudioManifestFile => ({
@@ -46,8 +43,8 @@ export async function filesFor(
   return out;
 }
 
-/** Digest of everything a session needs ("" if it has no audio). */
-export async function sessionAudioDigest(
+/** Digest of everything a track's DJ needs ("" if it has no audio). */
+export async function trackAudioDigest(
   audio: AudioLibrary,
   competitions: Competition[],
 ): Promise<string> {
@@ -55,41 +52,15 @@ export async function sessionAudioDigest(
 }
 
 /**
- * What the DJ of `trackId` should download: the next session's audio. Until the
- * upload cut-off has passed the set can still change, so nothing is offered.
+ * What the DJ of `trackId` should download: the audio of all the track's
+ * sessions, in running order. The bundle is final, so the set never changes
+ * during the festival and is offered from the start.
  */
 export async function buildManifest(
   audio: AudioLibrary,
   source: ManifestSource,
   trackId: number,
-  now = new Date(),
 ): Promise<AudioManifest> {
-  const session = await source.nextSession(trackId);
-  if (!session) {
-    return {
-      session_id: null,
-      available: false,
-      available_at: null,
-      digest: "",
-      files: [],
-    };
-  }
-  const availableAt = uploadCutoff(session.startTime);
-  if (now < availableAt) {
-    return {
-      session_id: session.id,
-      available: false,
-      available_at: availableAt.toISOString(),
-      digest: "",
-      files: [],
-    };
-  }
-  const files = await filesFor(audio, await source.competitions(session.id));
-  return {
-    session_id: session.id,
-    available: true,
-    available_at: availableAt.toISOString(),
-    digest: await manifestDigest(files),
-    files,
-  };
+  const files = await filesFor(audio, source.competitions(trackId));
+  return { track_id: trackId, digest: await manifestDigest(files), files };
 }

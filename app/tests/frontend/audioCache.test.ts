@@ -57,9 +57,7 @@ function server(
     requests.push(url);
     if (url === "/audio-manifest") {
       const m = await manifest();
-      return new Response(JSON.stringify(m), {
-        status: m.session_id !== null && !m.available ? 425 : 200,
-      });
+      return new Response(JSON.stringify(m));
     }
     const body = bodies.get(url);
     return body
@@ -74,9 +72,7 @@ const B = new Uint8Array(120).fill(2);
 
 async function manifestOf(...fs: AudioManifestFile[]): Promise<AudioManifest> {
   return {
-    session_id: 1,
-    available: true,
-    available_at: null,
+    track_id: 1,
     digest: await manifestDigest(fs),
     files: fs,
   };
@@ -102,28 +98,6 @@ Deno.test("prefetch: downloads everything, verifies it, and reports the server's
   assertEquals(r.digest, m.digest);
   assertEquals(progress.at(-1), "2/2");
   assertEquals(cache.store.size, 2);
-});
-
-Deno.test("prefetch: before the cut-off nothing is downloaded", async () => {
-  const { fetchFn, requests } = server(
-    () =>
-      Promise.resolve({
-        session_id: 1,
-        available: false,
-        available_at: "2030-01-01T00:00:00Z",
-        digest: "",
-        files: [],
-      }),
-    new Map(),
-  );
-  const p = new AudioPrefetcher({
-    fetch: fetchFn,
-    openCache: () => Promise.resolve(new FakeCache()),
-    retryDelaysMs: [],
-  });
-  const r = await p.sync();
-  assertEquals([r.available, r.complete, r.total], [false, false, 0]);
-  assertEquals(requests, ["/audio-manifest"]);
 });
 
 Deno.test("prefetch: a corrupted download is refused and the set is incomplete", async () => {

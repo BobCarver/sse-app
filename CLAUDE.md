@@ -29,7 +29,7 @@ Always check **exit codes**, not just "N passed" (see Gotchas). Environment:
 `DATABASE_URL`, `ADMIN_TOKEN` (admin routes return 503 without it), `PORT`
 (3000), `PUBLIC_URL` (base for issued links), `JUDGE_SCORE_TIMEOUT_MS` (60000),
 `PERFORMANCE_TIMEOUT_MS` (0 = none), `BUNDLE_DIR` (./bundle: manifest.json + data.json),
-`AUDIO_DIR` (./audio, gitignored: the bundle's audio files), `AUDIO_CUTOFF_MINUTES` (30), `DJ_GATES` (0 = no DJ start/end buttons; tests and e2e set it), `ARMING` (0 = sessions do not arm themselves; also off with `DEMO=1`), `ALLOWANCE_ANNOUNCE_S` / `ALLOWANCE_SCORING_S` / `ALLOWANCE_CHANGEOVER_S` (20/30/45, per-competitor seconds for the delay estimate), `REQUIRE_DB=1` (integration tests fail
+`AUDIO_DIR` (./audio, gitignored: the bundle's audio files), `DJ_GATES` (0 = no DJ start/end buttons; tests and e2e set it), `ARMING` (0 = sessions do not arm themselves; also off with `DEMO=1`), `ALLOWANCE_ANNOUNCE_S` / `ALLOWANCE_SCORING_S` / `ALLOWANCE_CHANGEOVER_S` (20/30/45, per-competitor seconds for the delay estimate), `REQUIRE_DB=1` (integration tests fail
 instead of skipping), `E2E_PORT` (8000), `DEBUG=1`.
 
 ## Layout
@@ -51,7 +51,7 @@ app/src/            server
   adminAuth.ts      admin cookie sessions;  adminOverview.ts  festival tree for /admin;  adminTypes.ts  shared shapes
   demo.ts           DEMO=1 only: /demo page (4 frames), reset
   sha256.ts         sha256 with a pure-JS fallback (no crypto.subtle on plain http)
-  audioManifest.ts  frozen per-session file list + digest;  audioAnnouncer.ts  audio_available ticks
+  audioManifest.ts  the track's file list + digest;  audioAnnouncer.ts  audio_available ticks
   resolveTag.ts     waitForTag/resolveTag rendezvous (takes AbortSignal)
   contract.ts       tag builders + payload validation, shared with the browser
   credentials.ts    admin-issued credentials (hashes only), in-memory cache
@@ -223,21 +223,22 @@ button again. The response has `already_finished` and `reopened_scoring`.
 the bundle), metadata from the bundle (each entry's `audio.music`/`audio.announce`; kind =
 `announce`|`music`). There are no uploads on this server (the upload route and
 `audio.add` are gone: the bundle is final; normalising and uploads are the portal's job).
-Order of events for a session (the per-session cut-off is still here; Phase 4 makes it
-per track):
-1. Before the **cut-off** (`start_time - AUDIO_CUTOFF_MINUTES`) the DJ is offered nothing.
-2. After it, `GET /audio-manifest` (DJ only) returns the track's next session's files
-   (open session first, else the first not finished) + a `digest` (425 + `available_at`
-   before the cut-off). The
-   server announces it with the small SSE event `audio_available` (ticker every
-   15 s, once per connection/change; audio itself never travels over SSE).
-3. The DJ page (`audioCache.ts`) downloads each file over HTTP, verifies sha256 +
-   size, stores it in Cache Storage under its hash (a replaced song = new key, old
-   one evicted), shows "Audio: N/M ready", plays from the local copy (network URL
+Audio is per **track**: the bundle is final, so there is no cut-off and the set never changes.
+Order of events:
+1. `GET /audio-manifest` (DJ only, any time) returns the files of **all the track's
+   sessions** in running order (`Festival.trackCompetitions`) + a `digest` of the set
+   (`{track_id, digest, files}`). The server announces it with the small SSE event
+   `audio_available` (ticker every 15 s, once per connection; audio itself never travels
+   over SSE).
+2. The DJ page (`audioCache.ts`) downloads each file over HTTP, verifies sha256 +
+   size, stores it in Cache Storage under its hash (a file no longer in the set is
+   evicted), shows "Audio: N/M ready", plays from the local copy (network URL
    as fallback), and POSTs `/audio-ready {digest}` when it holds everything.
-4. `runSession` waits (as `audio:dj<N>` in `waiting_for`; operator `skip` releases
-   it) until that DJ's reported digest equals the expected one. Sessions with no
-   audio are not gated.
+3. The audio gate is checked once per day per DJ: the first session to arm waits (as
+   `audio:dj<N>` in `waiting_for`; operator `skip` releases it) until that DJ's reported
+   digest equals the track's digest. The report is kept in memory, so later sessions on
+   the track pass at once (after a restart the page re-reports on reconnect; a resumed
+   session is not gated). A track with no audio is not gated.
 `GET /audio/:competition/:competitor/:kind` serves files (Range supported) to the
 DJ of that track only. `/start` lists `missing_audio` but does not block.
 
@@ -368,7 +369,7 @@ client only.
   sessions). Progress writes are asynchronous: poll the database (`eventually()`).
 - Browser tests: Playwright runs the server with `BUNDLE_DIR`/`AUDIO_DIR` pointing at
   `fixtures/bundles/e2e` (set in `node-tests/playwright.config.ts`). Its session start
-  is in the past, so the audio cut-off has passed. After changing `scripts/fixtures.ts`
+  is in the past. After changing `scripts/fixtures.ts`
   run `deno task fixtures` (a unit test checks the committed bundle is current).
   Kill any leftover `app/src/main.ts` server before a run (`reuseExistingServer`).
 - Never log credentials: `/join/<secret>` is redacted in the request log.
@@ -386,10 +387,11 @@ static mount). Keep new code within the spirit of those rules; ask before restru
 Phases 0-7 of the "make it correctly functioning" plan are done and committed, then
 `/response` as a service, competitor audio (manifest, DJ prefetch, start gate) and DJ
 gates (latest commit `88c3a10`: redesign spec). **Redesign (`redesign.md`) Phases 1
-(bundle loader), 2 (cursor progress, skips, missing scores, zero-score rule) and 3
+(bundle loader), 2 (cursor progress, skips, missing scores, zero-score rule), 3
 (sequencer, planned start, delay estimate, per-competition judge claims, hold/release/
-cancel, no abort) are implemented, not yet committed.** Suites: 184 unit (incl.
-`shared/festival-bundle`), 124 frontend, 35 contract, 21 integration (with a DB), 12
+cancel, no abort) are committed; Phase 4 (audio per track: track manifest and gate, no
+cut-off) is implemented, not yet committed.** Suites: 188 unit (incl.
+`shared/festival-bundle`), 123 frontend, 35 contract, 21 integration (with a DB), 12
 browser tests; all green with exit code 0, with and without `DATABASE_URL` (scratch
 Postgres 17). `deno task static`
 only passes once generated `public/*.js` is committed.
@@ -398,9 +400,7 @@ Working style (owner): analysis only when asked to analyse; commit only when ask
 
 ## Open items (next session)
 
-1. **Redesign Phases 4-6** (`redesign.md`): audio per track (retire the per-session
-   cut-off; the audio gate is still per session and is skipped for a resumed session),
-   cloud push, docs. Not done in Phase 3: learning the allowances from the day's times;
+1. **Redesign Phases 5-6** (`redesign.md`): cloud push, docs. Not done in Phase 3: learning the allowances from the day's times;
    browser tests for the countdown and the delay message (covered by frontend tests: the
    e2e server runs with `DJ_GATES=0`).
 2. **Portal** (`portal.md`): registration, uploads, loudness normalisation, the exporter

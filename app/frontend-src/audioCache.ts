@@ -15,10 +15,6 @@ export interface CacheLike {
 }
 
 export interface SyncResult {
-  /** The session the manifest is for, or null if the DJ has none. */
-  sessionId: number | null;
-  /** False until the upload cut-off has passed. */
-  available: boolean;
   total: number;
   ready: number;
   /** Digest of the files now held and verified (only meaningful if complete). */
@@ -39,7 +35,7 @@ export interface PrefetcherDeps {
 }
 
 const CACHE_NAME = "dj-audio-v1";
-// Files are stored under their hash, so a replaced song is simply a new key.
+// Files are stored under their hash, so a different song is simply a new key.
 const keyFor = (sha256: string) => `https://audio.cache/${sha256}`;
 /**
  * Cache Storage only exists on secure origins (https, localhost). Elsewhere (a
@@ -83,7 +79,7 @@ export function openDefaultCache(
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Downloads the DJ's audio ahead of the session and keeps it in Cache Storage.
+ * Downloads the DJ's audio for the whole track once and keeps it in Cache Storage.
  * Files are fetched over plain HTTP (never SSE), verified against the
  * manifest's hash and size, and played later from local memory.
  */
@@ -113,24 +109,14 @@ export class AudioPrefetcher {
 
   private async doSync(): Promise<SyncResult> {
     const res = await this.fetchFn("/audio-manifest", { cache: "no-store" });
-    // 425 = cut-off not reached yet: the body still says when.
-    if (!res.ok && res.status !== 425) {
-      throw new Error(`manifest failed: ${res.status}`);
-    }
+    if (!res.ok) throw new Error(`manifest failed: ${res.status}`);
     const manifest = await res.json() as AudioManifest;
-    const base = {
-      sessionId: manifest.session_id,
-      available: manifest.available,
-    };
-    if (!manifest.available) {
-      return { ...base, total: 0, ready: 0, digest: "", complete: false };
-    }
 
     const cache = await this.getCache();
     this.bySlot.clear();
     for (const f of manifest.files) this.bySlot.set(f.url, f.sha256);
 
-    // Drop files no longer in the set (a song that was replaced).
+    // Drop files no longer in the set (an earlier festival's songs).
     const wanted = new Set(manifest.files.map((f) => keyFor(f.sha256)));
     for (const k of await cache.keys()) {
       if (!wanted.has(k.url)) await cache.delete(k.url);
@@ -174,7 +160,6 @@ export class AudioPrefetcher {
 
     const complete = ready === total;
     return {
-      ...base,
       total,
       ready,
       // The digest of what is held: equals the server's only if nothing is missing.

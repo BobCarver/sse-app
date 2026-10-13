@@ -23,7 +23,6 @@ const session = (over: Partial<OverviewSession> = {}): OverviewSession => ({
   name: "Morning",
   status: "in_progress",
   start_time: "2030-01-01T12:00:00Z",
-  audio_cutoff: "2030-01-01T11:30:00Z",
   estimated_start: null,
   held: false,
   cancelled: false,

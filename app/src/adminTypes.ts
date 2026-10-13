@@ -61,8 +61,6 @@ export interface OverviewSession {
   name: string;
   status: Status;
   start_time: string;
-  /** DJs are offered the session's audio from this time. */
-  audio_cutoff: string;
   /** When it is expected to start, if later than planned (the track runs late). */
   estimated_start: string | null;
   /** An operator hold is on (kept across restarts). */

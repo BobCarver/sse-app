@@ -142,11 +142,11 @@ export interface SupersededMessage extends BaseMessage {
   event: "superseded";
 }
 
-// SERVER -> DJ: the upload cut-off has passed, so this session's audio set is
-// final. The DJ page should fetch /audio-manifest and download what it lacks.
+// SERVER -> DJ: the track's audio set (final: it comes with the bundle) is there
+// to download. The DJ page should fetch /audio-manifest and download what it lacks.
 export interface AudioAvailableMessage extends BaseMessage {
   event: "audio_available";
-  session_id: number;
+  track_id: number;
   digest: string;
   count: number;
 }

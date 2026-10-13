@@ -14,7 +14,7 @@ import { DiskAudioStorage } from "./audioStorage.ts";
 import {
   buildManifest,
   type ManifestSource,
-  sessionAudioDigest,
+  trackAudioDigest,
 } from "./audioManifest.ts";
 import { type AnnouncerDeps, startAudioAnnouncer } from "./audioAnnouncer.ts";
 import { AUDIO_KINDS, type AudioKind } from "./contract.ts";
@@ -132,17 +132,6 @@ export const audio = new AudioLibrary(
 /** What each DJ last reported holding (see POST /audio-ready). */
 const audioReports = new Map<string, string>();
 
-/** The next session a track will run: its open one, else the first not done. */
-async function nextSessionForTrack(trackId: number) {
-  const marks = await getSessionMarks();
-  const s = festival().nextSession(
-    trackId,
-    marks.done,
-    marks.openByTrack.get(trackId),
-  );
-  return s && { id: s.id, startTime: s.startTime };
-}
-
 /**
  * When the track's sessions that have not run are expected to start: delays
  * cascade from the open session's remaining entries (see estimate.ts).
@@ -194,9 +183,7 @@ async function followingSession(sessionId: number) {
 }
 
 const manifestSource: ManifestSource = {
-  nextSession: nextSessionForTrack,
-  competitions: (sessionId) =>
-    Promise.resolve(festival().sessionCompetitions(sessionId)),
+  competitions: (trackId) => festival().trackCompetitions(trackId),
 };
 /** Whether the judge/track behind a client id is in the festival bundle. */
 export const clientCheck = {
@@ -754,10 +741,12 @@ async function startSession(
       },
       recordProgress: (event: ProgressEvent) =>
         recordProgress(sessionId, event),
-      // After a crash the audio was in place before: don't wait for the DJ
-      // page to report it again.
+      // The DJ holds the whole track's audio, reported once for the day (the
+      // report outlives the session). After a crash the audio was in place
+      // before: don't wait for the DJ page to report it again.
       audioGate: resumed ? undefined : {
-        expectedDigest: () => sessionAudioDigest(audio, competitions),
+        expectedDigest: () =>
+          trackAudioDigest(audio, festival().trackCompetitions(trackId)),
         reported: (djId: string) => audioReports.get(djId),
       },
     });
@@ -849,18 +838,14 @@ function parseAudioParams(c: Ctx) {
   return { competitionId, competitorId, kind };
 }
 
-// What a DJ should download before its next session. Nothing is offered until
-// the upload cut-off has passed: 425 with the time it will be available.
+// What a DJ should download for the day: the audio of all its track's sessions.
 app.get("/audio-manifest", requireClient, async (c: Ctx) => {
   const who = parseClientId(c.get("client").sub);
   if (who?.kind !== "dj") return c.json({ error: "DJs only" }, 403);
   try {
     const manifest = await buildManifest(audio, manifestSource, who.num);
     c.header("cache-control", "no-store");
-    return c.json(
-      manifest,
-      manifest.session_id !== null && !manifest.available ? 425 : 200,
-    );
+    return c.json(manifest);
   } catch (err) {
     console.error("audio manifest failed:", err);
     return c.json({ error: "could not build manifest" }, 500);
@@ -868,7 +853,7 @@ app.get("/audio-manifest", requireClient, async (c: Ctx) => {
 });
 
 // The DJ page reports the digest of the audio set it holds and has verified.
-// Releases the session's start gate if that is the expected set.
+// Releases the start gate if that is the expected set (the track's whole set).
 app.post("/audio-ready", requireClient, async (c: Ctx) => {
   const sender = c.get("client").sub;
   if (parseClientId(sender)?.kind !== "dj") {
@@ -982,7 +967,7 @@ app.post(
     return c.json({ success: true });
   },
 );
-/** Who is told when a session's audio set is final (see audioAnnouncer.ts). */
+/** Who is told that their track's audio set is there (see audioAnnouncer.ts). */
 const announcerDeps: AnnouncerDeps = {
   audio,
   source: manifestSource,

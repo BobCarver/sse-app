@@ -630,8 +630,8 @@ var DjClient = class extends sseClient {
     this.gateButton.onclick = null;
   }
   /**
-   * Download the next session's audio (if it is final), show progress, and tell
-   * the server once everything is held and verified. Safe to call any time;
+   * Download the track's audio (all its sessions), show progress, and tell the
+   * server once everything is held and verified. Safe to call any time;
    * retries itself while files are still missing.
    */
   async syncAudio() {
@@ -639,10 +639,6 @@ var DjClient = class extends sseClient {
     clearTimeout(this.audioRetry);
     try {
       const r = await this.prefetcher.sync();
-      if (!r.available) {
-        this.setAudioStatus("");
-        return;
-      }
       this.setAudioStatus(r.total === 0 ? "" : r.complete ? `Audio ready (${r.ready}/${r.total})` : `Audio: ${r.ready}/${r.total} ready`);
       if (r.complete && r.total > 0) {
         if (!await this.reportReady(r.digest)) this.scheduleAudioRetry();
@@ -902,23 +898,8 @@ var AudioPrefetcher = class {
     const res = await this.fetchFn("/audio-manifest", {
       cache: "no-store"
     });
-    if (!res.ok && res.status !== 425) {
-      throw new Error(`manifest failed: ${res.status}`);
-    }
+    if (!res.ok) throw new Error(`manifest failed: ${res.status}`);
     const manifest = await res.json();
-    const base = {
-      sessionId: manifest.session_id,
-      available: manifest.available
-    };
-    if (!manifest.available) {
-      return {
-        ...base,
-        total: 0,
-        ready: 0,
-        digest: "",
-        complete: false
-      };
-    }
     const cache = await this.getCache();
     this.bySlot.clear();
     for (const f of manifest.files) this.bySlot.set(f.url, f.sha256);
@@ -960,7 +941,6 @@ var AudioPrefetcher = class {
     }, worker));
     const complete = ready === total;
     return {
-      ...base,
       total,
       ready,
       // The digest of what is held: equals the server's only if nothing is missing.

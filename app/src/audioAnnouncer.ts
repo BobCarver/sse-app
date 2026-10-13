@@ -15,23 +15,20 @@ export interface AnnouncerDeps {
 const announced = new WeakMap<SSEClient, string>();
 
 /**
- * Tell connected DJs when their next session's audio set is final (or changed).
+ * Tell connected DJs that their track's audio set is there to download.
  * Runs periodically; cheap when nothing is new.
  */
-export async function announceAudio(
-  deps: AnnouncerDeps,
-  now = new Date(),
-): Promise<void> {
+export async function announceAudio(deps: AnnouncerDeps): Promise<void> {
   for (const client of deps.connectedClients()) {
     const id = parseClientId(client.id);
     if (id?.kind !== "dj") continue;
     try {
-      const m = await buildManifest(deps.audio, deps.source, id.num, now);
-      if (!m.available || !m.digest || m.session_id === null) continue;
+      const m = await buildManifest(deps.audio, deps.source, id.num);
+      if (!m.digest) continue;
       if (announced.get(client) === m.digest) continue;
       announced.set(client, m.digest);
       const data = JSON.stringify({
-        session_id: m.session_id,
+        track_id: m.track_id,
         digest: m.digest,
         count: m.files.length,
       });
