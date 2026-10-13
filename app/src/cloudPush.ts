@@ -91,10 +91,8 @@ export function cloudConfig(
   }
   const token = get("CLOUD_TOKEN");
   if (!token) return { error: "CLOUD_TOKEN is not set" };
-  const s = Number(get("CLOUD_PUSH_INTERVAL_S"));
-  const seconds = Number.isFinite(s) && s >= 1 && get("CLOUD_PUSH_INTERVAL_S")
-    ? s
-    : 300;
+  const every = get("CLOUD_PUSH_INTERVAL_S");
+  const seconds = every && Number(every) >= 1 ? Number(every) : 300;
   return { url: url.toString(), token, intervalMs: seconds * 1000 };
 }
 

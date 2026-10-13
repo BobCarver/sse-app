@@ -10,23 +10,24 @@ export interface AnnouncerDeps {
   connectedClients(): SSEClient[];
 }
 
-// What each connection has already been told. Keyed by the connection itself, so
-// a DJ that reconnects is told again (it may have missed a change while away).
-const announced = new WeakMap<SSEClient, string>();
+// Connections already told. Keyed by the connection itself, so a DJ that
+// reconnects (e.g. after a server restart, which forgets its audio report) is
+// told again and re-reports. The set never changes while the server runs: the
+// bundle is final.
+const announced = new WeakSet<SSEClient>();
 
 /**
- * Tell connected DJs that their track's audio set is there to download.
- * Runs periodically; cheap when nothing is new.
+ * Tell connected DJs that their track's audio set is there to download. Runs
+ * periodically; cheap when nothing is new (it only looks at new connections).
  */
 export async function announceAudio(deps: AnnouncerDeps): Promise<void> {
   for (const client of deps.connectedClients()) {
     const id = parseClientId(client.id);
-    if (id?.kind !== "dj") continue;
+    if (id?.kind !== "dj" || announced.has(client)) continue;
     try {
       const m = await buildManifest(deps.audio, deps.source, id.num);
+      announced.add(client);
       if (!m.digest) continue;
-      if (announced.get(client) === m.digest) continue;
-      announced.set(client, m.digest);
       const data = JSON.stringify({
         track_id: m.track_id,
         digest: m.digest,

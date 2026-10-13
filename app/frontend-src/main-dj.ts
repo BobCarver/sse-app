@@ -8,6 +8,6 @@ await bootstrap("dj", (_num, sse) => {
     revokeObjectURL: (url) => URL.revokeObjectURL(url),
   });
   const client = new DjClient({ sse, prefetcher });
-  void client.syncAudio(); // the page may load after the cut-off
+  void client.syncAudio(); // download the track's audio and report it
   return client;
 });

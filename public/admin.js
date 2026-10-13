@@ -1768,6 +1768,7 @@ function startAdminPage(doc = document) {
     now: Date.now()
   };
   let last = "";
+  let overview;
   let timer;
   let toastTimer;
   const toast = (text, bad = false) => {
@@ -1807,14 +1808,16 @@ function startAdminPage(doc = document) {
       const res = await api("GET", "/admin/overview");
       if (res.ok) {
         const text = await res.text();
-        const o = JSON.parse(text);
         state.now = Date.now();
-        $("cloud").textContent = cloudText(o.cloud, state.now);
-        $("cloud").classList.toggle("bad", !!o.cloud.offline_since);
         if (text !== last) {
           last = text;
-          tree.innerHTML = renderOverview(o, state);
-          judges.innerHTML = renderJudges(o);
+          overview = JSON.parse(text);
+          tree.innerHTML = renderOverview(overview, state);
+          judges.innerHTML = renderJudges(overview);
+        }
+        if (overview) {
+          $("cloud").textContent = cloudText(overview.cloud, state.now);
+          $("cloud").classList.toggle("bad", !!overview.cloud.offline_since);
         }
         $("conn").textContent = "";
       } else if (res.status !== 401) {

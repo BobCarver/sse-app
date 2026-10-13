@@ -42,7 +42,7 @@ const base =
 const tracks = opt("tracks")?.split(",").filter(Boolean) ?? [];
 const judges = opt("judges")?.split(",").filter(Boolean) ?? [];
 const label = opt("label");
-const final_ = args.includes("--final");
+const final = args.includes("--final");
 const [command, arg] = args.filter((a) => a !== "--final");
 
 async function call(path: string, init: RequestInit = {}) {
@@ -152,7 +152,6 @@ switch (command) {
     break;
   }
   case "push": {
-    const final = final_;
     const r = await call("/admin/cloud/push", {
       method: "POST",
       body: JSON.stringify({ final }),
