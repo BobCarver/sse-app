@@ -24,7 +24,15 @@ import { buildOverview } from "./adminOverview.ts";
 import { planResume } from "./resume.ts";
 import { handleResponse } from "./responseService.ts";
 import { handleSSEConnection } from "./sse.ts";
-import { SessionManager } from "./sessionManager.ts";
+import { judgeClaims, SessionManager } from "./sessionManager.ts";
+import { Sequencer } from "./sequencer.ts";
+import {
+  allowances,
+  estimateStarts,
+  isLate,
+  planFromBundle,
+} from "./estimate.ts";
+import { sessionsInOrder } from "../../shared/festival-bundle/mod.ts";
 import {
   Credentials,
   hashSecret,
@@ -32,8 +40,8 @@ import {
   parseClientId,
 } from "./credentials.ts";
 import {
+  cancelSession,
   credentialStore,
-  getActiveSessionIds,
   getProgressRows,
   getResumeRows,
   getSessionMarks,
@@ -43,6 +51,7 @@ import {
   releaseSession,
   resetSession,
   saveScore,
+  setHeld,
   sql,
 } from "./db.ts";
 
@@ -134,13 +143,54 @@ async function nextSessionForTrack(trackId: number) {
   return s && { id: s.id, startTime: s.startTime };
 }
 
-/** The session after this one on its track that has not run yet, if any. */
+/**
+ * When the track's sessions that have not run are expected to start: delays
+ * cascade from the open session's remaining entries (see estimate.ts).
+ */
+async function trackEstimates(trackId: number): Promise<Map<number, Date>> {
+  const track = festival().tracks.find((t) => t.id === trackId);
+  if (!track) return new Map();
+  const [marks, rows] = await Promise.all([
+    getSessionMarks(),
+    getProgressRows(),
+  ]);
+  const open = marks.openByTrack.get(trackId);
+  const c = rows.cursors.find((x) => x.track_id === trackId);
+  return estimateStarts(
+    sessionsInOrder(track).filter((s) => !marks.done.has(s.id)).map(
+      planFromBundle,
+    ),
+    open === undefined ? undefined : {
+      sessionId: open,
+      cursor: c && c.competition_id !== null && c.competitor_id !== null
+        ? {
+          competitionId: c.competition_id,
+          competitorId: c.competitor_id,
+          phase: c.phase,
+        }
+        : null,
+    },
+    new Date(),
+    allowances(),
+  );
+}
+
+/**
+ * The session after this one on its track that has not run yet, if any, with
+ * an estimate of its start when the track runs late.
+ */
 async function followingSession(sessionId: number) {
   const s = festival().followingSession(
     sessionId,
     (await getSessionMarks()).done,
   );
-  return s && { name: s.name, startTime: s.startTime };
+  if (!s) return undefined;
+  const estimate = (await trackEstimates(s.trackId)).get(s.id);
+  return {
+    name: s.name,
+    startTime: s.startTime,
+    estimate: estimate && isLate(estimate, s.startTime) ? estimate : undefined,
+  };
 }
 
 const manifestSource: ManifestSource = {
@@ -326,6 +376,7 @@ app.get("/admin/overview", requireAdmin, async (c: Ctx) => {
         if (!sess?.isRunning()) return null;
         const st = sess.status();
         return {
+          held: st.held,
           phase: st.phase,
           competition_name: st.competition_name,
           position: st.position,
@@ -435,24 +486,78 @@ app.post("/admin/sessions/:id/reopen", requireAdmin, (c: Ctx) => {
   return c.json({ success: true });
 });
 
-/**
- * End a session now (stuck, or started by mistake) and free its judges. A
- * session that got under way keeps its track: it is resumed by the next start.
- */
-app.post("/admin/sessions/:id/abort", requireAdmin, (c: Ctx) => {
+/** The running session the route names, if any. */
+function runningSession(c: Ctx) {
+  const s = SessionManager.getSession(Number(c.req.param("id")));
+  return s?.isRunning() ? s : undefined;
+}
+
+/** A session of the festival that is not running (404 if unknown). */
+function idleTarget(c: Ctx) {
   const id = Number(c.req.param("id"));
-  const session = SessionManager.getSession(id);
-  if (!session) return c.json({ error: "no such session" }, 404);
-  if (!session.isRunning()) {
-    // Left over from an earlier failure: just forget it.
-    SessionManager.deleteSession(id);
-    return c.json({
-      success: true,
-      message: "removed a session that was not running",
-    });
+  const trackId = Number.isInteger(id)
+    ? festival().sessionTrackId(id)
+    : undefined;
+  return trackId === undefined ? undefined : { id, trackId };
+}
+
+/** Is the session finished or cancelled (nothing left to hold or cancel)? */
+async function isDone(id: number): Promise<boolean> {
+  return (await getSessionMarks()).done.has(id);
+}
+
+/**
+ * Hold a session: nothing new starts (competition, performance, scoring, end)
+ * until it is released. Kept across restarts; a session not running yet starts
+ * held.
+ */
+app.post("/admin/sessions/:id/hold", requireAdmin, async (c: Ctx) => {
+  const session = runningSession(c);
+  if (session) {
+    if (!session.hold()) return c.json({ error: "already held" }, 409);
+    return c.json({ success: true });
   }
-  session.abort("aborted by administrator");
-  return c.json({ success: true });
+  const t = idleTarget(c);
+  if (!t) return c.json({ error: "no such session" }, 404);
+  if (await isDone(t.id)) {
+    return c.json({ error: "the session is finished or cancelled" }, 409);
+  }
+  await setHeld(t.id, t.trackId, true);
+  return c.json({ success: true, message: "held (not running yet)" });
+});
+
+app.post("/admin/sessions/:id/release", requireAdmin, async (c: Ctx) => {
+  const session = runningSession(c);
+  if (session) {
+    if (!session.release()) return c.json({ error: "not held" }, 409);
+    return c.json({ success: true });
+  }
+  const t = idleTarget(c);
+  if (!t) return c.json({ error: "no such session" }, 404);
+  await setHeld(t.id, t.trackId, false);
+  return c.json({ success: true, message: "released (not running)" });
+});
+
+/**
+ * Drop a session for good: it stops now if running (every page is told),
+ * is marked cancelled, is never run, and its track moves on to the next one.
+ */
+app.post("/admin/sessions/:id/cancel", requireAdmin, async (c: Ctx) => {
+  const session = runningSession(c);
+  if (session) {
+    session.cancel(); // its end writes the marker; the track is re-armed then
+    return c.json({ success: true });
+  }
+  const leftover = SessionManager.getSession(Number(c.req.param("id")));
+  if (leftover) SessionManager.deleteSession(leftover.id);
+  const t = idleTarget(c);
+  if (!t) return c.json({ error: "no such session" }, 404);
+  if (await isDone(t.id)) {
+    return c.json({ error: "the session is finished or cancelled" }, 409);
+  }
+  await cancelSession(t.id, t.trackId);
+  void sequencer.armTrack(t.trackId);
+  return c.json({ success: true, message: "cancelled (was not running)" });
 });
 
 // ============================================================================
@@ -530,13 +635,13 @@ const reply = (
 ): StartResult => ({ status, body });
 
 /**
- * Load a session from the bundle and run it from wherever it stopped.
- * `afterCrash`: the server is restarting a session it lost, not an administrator
- * starting one (the audio start gate is skipped).
+ * Load a session from the bundle and run (arm) it from wherever it stopped.
+ * `resumed`: it had begun before (a restart), so the audio start gate is
+ * skipped (the DJ's ready report is memory only).
  */
 async function startSession(
   sessionId: number,
-  afterCrash = false,
+  resumed = false,
 ): Promise<StartResult> {
   // Idempotent start: already running is success.
   const existing = SessionManager.getSession(sessionId);
@@ -560,11 +665,16 @@ async function startSession(
   }
 
   let resume: ReturnType<typeof planResume>;
+  let held = false;
   try {
     const rows = await getResumeRows(sessionId);
     if (rows?.finished) {
       return reply({ error: `Session ${sessionId} has already finished` }, 409);
     }
+    if (rows?.cancelled) {
+      return reply({ error: `Session ${sessionId} was cancelled` }, 409);
+    }
+    held = !!rows?.held;
     // Start where the session left off (after a stop or a server restart).
     resume = planResume(competitions, rows);
   } catch (err) {
@@ -591,11 +701,7 @@ async function startSession(
     }),
   );
 
-  let conflict = SessionManager.findConflict(
-    sessionId,
-    trackId,
-    judgeClients,
-  );
+  let conflict = SessionManager.findConflict(sessionId, trackId);
   if (conflict) return reply({ error: conflict }, 409);
 
   // The track's lock in the database: survives a restart, unlike the check
@@ -621,7 +727,7 @@ async function startSession(
   }
 
   // No await between this check and createSession: the claim is atomic.
-  conflict = SessionManager.findConflict(sessionId, trackId, judgeClients);
+  conflict = SessionManager.findConflict(sessionId, trackId);
   if (conflict) {
     if (lock.fresh) await releaseSession(sessionId);
     return reply({ error: conflict }, 409);
@@ -637,7 +743,9 @@ async function startSession(
     session = SessionManager.createSession(sessionId, {
       unassignedClients,
       trackId,
-      claimedClients: judgeClients,
+      claims: judgeClaims,
+      plannedStart: festival().session(sessionId)?.startTime,
+      held,
       djGates: Deno.env.get("DJ_GATES") !== "0",
       followingSession: () => followingSession(sessionId),
       saveScore: (scoreData: ScoreSubmission) => {
@@ -648,7 +756,7 @@ async function startSession(
         recordProgress(sessionId, event),
       // After a crash the audio was in place before: don't wait for the DJ
       // page to report it again.
-      audioGate: afterCrash ? undefined : {
+      audioGate: resumed ? undefined : {
         expectedDigest: () => sessionAudioDigest(audio, competitions),
         reported: (djId: string) => audioReports.get(djId),
       },
@@ -667,7 +775,9 @@ async function startSession(
       if (SessionManager.getSession(sessionId) === session) {
         SessionManager.deleteSession(sessionId);
       }
-      console.log(`Session ${sessionId} completed`);
+      console.log(`Session ${sessionId} ended (${session.endReason})`);
+      // The track moves on to its next session (when the sequencer runs).
+      sequencer.sessionEnded(trackId, session.endReason);
     });
 
   if (missingAudio.length > 0) {
@@ -702,22 +812,29 @@ app.post(
 );
 
 /**
- * At boot, run again the sessions that are still open: a crash or a shutdown
- * cut them off (a session that ends normally gives its track back). They
- * resume at their cursor and wait for their clients, which reconnect on their
- * own. AUTO_RESUME=0 turns this off.
+ * Arms each track's open session (see sequencer.ts): at boot (which resumes a
+ * session a crash or a shutdown cut off, at its cursor), after a session ends
+ * and after a cancel. Enabled at boot unless ARMING=0 or DEMO=1.
  */
-export async function resumeActiveSessions(): Promise<void> {
-  if (Deno.env.get("AUTO_RESUME") === "0") return;
-  try {
-    for (const id of await getActiveSessionIds()) {
-      const r = await startSession(id, true);
-      console.log(`Auto-resume: session ${id} -> ${r.status}`, r.body);
-    }
-  } catch (err) {
-    console.error("Auto-resume failed:", err);
-  }
-}
+export const sequencer = new Sequencer({
+  tracks: () => festival().tracks.map((t) => t.id),
+  async nextFor(trackId) {
+    const marks = await getSessionMarks();
+    const s = festival().nextSession(
+      trackId,
+      marks.done,
+      marks.openByTrack.get(trackId),
+    );
+    if (!s) return undefined;
+    return {
+      sessionId: s.id,
+      started: !!(await getResumeRows(s.id))?.started,
+    };
+  },
+  busy: (trackId) =>
+    SessionManager.getRunningSessions().some((s) => s.trackId === trackId),
+  start: (sessionId, resumed) => startSession(sessionId, resumed),
+});
 
 // --- audio -------------------------------------------------------------------
 
@@ -969,7 +1086,10 @@ if (import.meta.main) {
     Deno.exit(1);
   }
   startAudioAnnouncer(announcerDeps);
-  if (Deno.env.get("DEMO") !== "1") resumeActiveSessions();
+  if (Deno.env.get("DEMO") !== "1" && Deno.env.get("ARMING") !== "0") {
+    sequencer.enabled = true;
+    await sequencer.armAll();
+  }
   (async () => {
     console.log(`Server running on http://localhost:${port}`);
     await Deno.serve({ port }, app.fetch);

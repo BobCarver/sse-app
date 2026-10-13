@@ -84,25 +84,19 @@ export class SessionManager {
   }
 
   /**
-   * Check whether a new session can start without stealing another session's
-   * track or clients. Returns a human-readable reason, or undefined if clear.
-   * Rules: one running session per track; a judge stays in their session until
-   * it completes; DJ/scoreboard ids are per-track so they cannot overlap.
+   * Check whether a new session can start without taking another running
+   * session's track. Returns a human-readable reason, or undefined if clear.
+   * (Judges are not checked here: they are claimed per competition, see
+   * JudgeClaims, and a judge held elsewhere is waited for.)
    */
   static findConflict(
     sessionId: number,
     trackId: number,
-    requiredClients: string[],
   ): string | undefined {
     for (const s of sessions.values()) {
       if (s.id === sessionId || !s.isRunning()) continue;
       if (s.trackId === trackId) {
         return `Track ${trackId} already has running session ${s.id}`;
-      }
-      const claimed = s.claimedClients;
-      const taken = requiredClients.filter((id) => claimed.has(id));
-      if (taken.length > 0) {
-        return `${taken.join(", ")} already in running session ${s.id}`;
       }
     }
     return undefined;
@@ -124,3 +118,68 @@ export class SessionManager {
     return Array.from(sessions.values()).filter((s) => s.isRunning());
   }
 }
+
+/** Who holds a judge: a session (and its track) running one of their competitions. */
+export interface ClaimHolder {
+  sessionId: number;
+  trackId: number | undefined;
+}
+
+/**
+ * Judges are claimed per competition: a session claims its competition's
+ * judges when that competition's start gate opens and gives them back when the
+ * competition ends. A judge claimed by another session is waited for (the
+ * session shows `judge<N> (held by track <T>)`), not refused.
+ */
+export class JudgeClaims {
+  private holders = new Map<string, ClaimHolder>();
+  private listeners = new Set<() => void>();
+
+  /** Claim every free judge in `ids` for `owner`; returns those held by others. */
+  claim(ids: string[], owner: ClaimHolder): string[] {
+    const blocked: string[] = [];
+    for (const id of ids) {
+      const h = this.holders.get(id);
+      if (h && h.sessionId !== owner.sessionId) blocked.push(id);
+      else this.holders.set(id, owner);
+    }
+    return blocked;
+  }
+
+  /** Give back what `sessionId` holds (all of it, or just `ids`). */
+  release(sessionId: number, ids?: string[]): void {
+    let changed = false;
+    for (const [id, h] of this.holders) {
+      if (h.sessionId === sessionId && (!ids || ids.includes(id))) {
+        this.holders.delete(id);
+        changed = true;
+      }
+    }
+    if (changed) { for (const notify of [...this.listeners]) notify(); }
+  }
+
+  holder(id: string): ClaimHolder | undefined {
+    return this.holders.get(id);
+  }
+
+  /** Resolves at the next release (or when `signal` aborts). */
+  changed(signal: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      const done = () => {
+        this.listeners.delete(done);
+        signal.removeEventListener("abort", done);
+        resolve();
+      };
+      if (signal.aborted) return resolve();
+      this.listeners.add(done);
+      signal.addEventListener("abort", done, { once: true });
+    });
+  }
+
+  clear(): void {
+    this.holders.clear();
+  }
+}
+
+/** The server's one registry of judge claims. */
+export const judgeClaims = new JudgeClaims();

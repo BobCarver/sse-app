@@ -20,8 +20,10 @@ export interface Cursor {
 export interface SessionProgress {
   finished: boolean;
   cancelled: boolean;
-  /** The session holds its track (started, not finished). */
+  /** The session holds its track (armed or started, not finished). */
   open: boolean;
+  /** Its first competition has begun (an armed session may not have). */
+  started?: boolean;
   /** Only for an open session; null = every competitor is done. */
   cursor: Cursor | null;
 }
@@ -127,10 +129,13 @@ export function deriveStatus(
     );
   }
 
+  // An armed session that has not begun is still upcoming.
+  const begun = progress.started || progress.cursor === null ||
+    progress.cursor.phase !== null;
   return {
     session: progress.finished || progress.cancelled
       ? "finished"
-      : progress.open
+      : progress.open && begun
       ? "in_progress"
       : "upcoming",
     competitions,

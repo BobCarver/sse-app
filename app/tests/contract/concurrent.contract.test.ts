@@ -1,5 +1,5 @@
 // Two tracks run sessions at the same time: DJ/scoreboard are per track,
-// messages never cross tracks, and judge/track conflicts are detected.
+// messages never cross tracks, and track conflicts are detected.
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { app } from "../../src/main.ts";
 import { secretFor } from "../auth-utils.ts";
@@ -47,18 +47,17 @@ Deno.test("two tracks run concurrently without crossing messages", async () => {
   sessions.clear();
   const unassigned = new Map();
   const saved: number[] = [];
-  const mk = (id: number, trackId: number, judge: number) =>
+  const mk = (id: number, trackId: number) =>
     new Session(id, {
       unassignedClients: unassigned,
       trackId,
-      claimedClients: [`judge${judge}`],
       saveScore: (s) => {
         saved.push(s.competition_id);
         return Promise.resolve();
       },
     });
-  const s1 = mk(1, 1, 5);
-  const s2 = mk(2, 2, 6);
+  const s1 = mk(1, 1);
+  const s2 = mk(2, 2);
   sessions.set(1, s1);
   sessions.set(2, s2);
   const clients = {
@@ -114,36 +113,27 @@ Deno.test("two tracks run concurrently without crossing messages", async () => {
   assertEquals(msgs(clients.sb1).includes("event: score_update"), true);
 });
 
-Deno.test("findConflict: one running session per track; judges held until session ends", async () => {
+Deno.test("findConflict: one running session per track (judges are claimed per competition instead)", async () => {
   clearAllResolvers();
   sessions.clear();
   const unassigned = new Map();
   const s1 = SessionManager.createSession(1, {
     unassignedClients: unassigned,
     trackId: 1,
-    claimedClients: ["judge5", "judge6"],
     saveScore: () => Promise.resolve(),
   });
   const running = s1.runSession([comp(10, 100, 5)], ["dj1"]); // waits for dj1
   await delay(10);
 
   // same track
-  assertStringIncludes(
-    SessionManager.findConflict(2, 1, ["judge9"])!,
-    "Track 1",
-  );
-  // other track, judge already in session 1 (even though not in current competition)
-  assertStringIncludes(
-    SessionManager.findConflict(2, 2, ["judge6", "judge9"])!,
-    "judge6",
-  );
-  // other track, free judges
-  assertEquals(SessionManager.findConflict(2, 2, ["judge9"]), undefined);
+  assertStringIncludes(SessionManager.findConflict(2, 1)!, "Track 1");
+  // another track is free
+  assertEquals(SessionManager.findConflict(2, 2), undefined);
   // the session itself is not a conflict with itself (idempotent restart)
-  assertEquals(SessionManager.findConflict(1, 1, ["judge5"]), undefined);
+  assertEquals(SessionManager.findConflict(1, 1), undefined);
 
-  // Session ends -> judges released. Everyone the competition needs connects,
-  // then the DJ skips the only performance so nothing is scored.
+  // Everyone the competition needs connects, then the DJ skips the only
+  // performance so nothing is scored; the session ends and frees the track.
   for (const id of ["dj1", "judge5"]) {
     unassigned.set(id, createMockClient(id));
     s1.connectClient(unassigned.get(id));
@@ -152,5 +142,5 @@ Deno.test("findConflict: one running session per track; judges held until sessio
   assertEquals(await postStatus("dj1", perfTag(10, 0)), 200);
   await running;
   SessionManager.deleteSession(1);
-  assertEquals(SessionManager.findConflict(2, 1, ["judge5"]), undefined);
+  assertEquals(SessionManager.findConflict(2, 1), undefined);
 });

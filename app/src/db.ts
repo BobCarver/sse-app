@@ -118,12 +118,15 @@ export async function pairBundle(
     >`SELECT festival_id, digest, loaded_at FROM festival_bundle`;
     if (row?.digest === b.digest) return undefined;
     if (row) {
+      // An armed session that never began does not count: arming happens at
+      // every boot, before anyone could notice a wrong bundle.
       const [{ used }] = await tx<{ used: boolean }[]>`
         SELECT EXISTS (SELECT 1 FROM scores)
-          OR EXISTS (SELECT 1 FROM session_runs)
+          OR EXISTS (SELECT 1 FROM session_runs WHERE started_at IS NOT NULL
+            OR cancelled_at IS NOT NULL OR held_at IS NOT NULL)
           OR EXISTS (SELECT 1 FROM skips)
           OR EXISTS (SELECT 1 FROM missing_scores)
-          OR EXISTS (SELECT 1 FROM track_progress WHERE open_session IS NOT NULL)
+          OR EXISTS (SELECT 1 FROM track_progress WHERE phase IS NOT NULL)
           AS used`;
       if (used) {
         return `this database belongs to festival ${row.festival_id}, bundle ${
@@ -139,6 +142,9 @@ export async function pairBundle(
           b.digest.slice(0, 12)
         } (nothing has run yet)`,
       );
+      // Sessions armed from the old bundle are forgotten.
+      await tx`DELETE FROM track_progress`;
+      await tx`DELETE FROM session_runs`;
     }
     await tx`
       INSERT INTO festival_bundle (singleton, festival_id, digest, data_json)
@@ -201,9 +207,45 @@ export async function openSession(
         return { ok: false as const, heldBy: row?.open_session ?? -1 };
       }
     }
-    await tx`INSERT INTO session_runs (session_id, track_id)
-      VALUES (${sessionId}, ${trackId}) ON CONFLICT (session_id) DO NOTHING`;
+    await tx`INSERT INTO session_runs (session_id, track_id, opened_at)
+      VALUES (${sessionId}, ${trackId}, NOW())
+      ON CONFLICT (session_id) DO UPDATE
+        SET opened_at = COALESCE(session_runs.opened_at, NOW())`;
     return { ok: true as const, fresh: taken.length > 0 };
+  });
+}
+
+/** Put an operator hold on a session or lift it (kept across restarts). */
+export async function setHeld(
+  sessionId: number,
+  trackId: number,
+  held: boolean,
+): Promise<void> {
+  if (!sql) return;
+  await sql`INSERT INTO session_runs (session_id, track_id, held_at)
+    VALUES (${sessionId}, ${trackId}, ${held ? new Date() : null})
+    ON CONFLICT (session_id) DO UPDATE SET held_at = EXCLUDED.held_at`;
+}
+
+/**
+ * Drop a session for good: marked cancelled (never run again) and, if it held
+ * its track, the track is given back so it moves on to its next session.
+ */
+export async function cancelSession(
+  sessionId: number,
+  trackId: number,
+): Promise<void> {
+  if (!sql) return;
+  await sql.begin(async (tx: typeof sql) => {
+    await tx`INSERT INTO session_runs (session_id, track_id, cancelled_at)
+      VALUES (${sessionId}, ${trackId}, NOW())
+      ON CONFLICT (session_id) DO UPDATE
+        SET cancelled_at = COALESCE(session_runs.cancelled_at, NOW()),
+            held_at = NULL`;
+    await tx`UPDATE track_progress SET open_session = NULL,
+        competition_id = NULL, competitor_id = NULL, phase = NULL,
+        updated_at = NOW()
+      WHERE open_session = ${sessionId}`;
   });
 }
 
@@ -265,6 +307,11 @@ export async function recordProgress(
     case "competitor_finalized":
       await moveTo(sql, event.next);
       break;
+    case "held":
+      await sql`UPDATE session_runs
+        SET held_at = ${event.held ? new Date() : null}
+        WHERE session_id = ${sessionId}`;
+      break;
     case "score_missing":
       await sql`INSERT INTO missing_scores
           (session_id, competition_id, competitor_id, judge_id, reason)
@@ -272,7 +319,11 @@ export async function recordProgress(
           ${event.judgeId}, ${event.reason})`;
       break;
     case "session_ended":
-      if (event.reason === "completed") {
+      if (event.reason === "cancelled") {
+        const [row] = await sql<{ track_id: number }[]>`
+          SELECT track_id FROM session_runs WHERE session_id = ${sessionId}`;
+        if (row) await cancelSession(sessionId, row.track_id);
+      } else if (event.reason === "completed") {
         await sql.begin(async (tx: typeof sql) => {
           await tx`UPDATE session_runs SET finished_at = NOW()
             WHERE session_id = ${sessionId}`;
@@ -295,8 +346,16 @@ export async function getResumeRows(
   sessionId: number,
 ): Promise<ResumeRows | undefined> {
   if (!sql) return undefined;
-  const [run] = await sql<{ finished_at: Date | null }[]>`
-    SELECT finished_at FROM session_runs WHERE session_id = ${sessionId}`;
+  const [run] = await sql<
+    {
+      finished_at: Date | null;
+      cancelled_at: Date | null;
+      started_at: Date | null;
+      held_at: Date | null;
+    }[]
+  >`
+    SELECT finished_at, cancelled_at, started_at, held_at
+    FROM session_runs WHERE session_id = ${sessionId}`;
   const [row] = await sql<CursorRow[]>`
     SELECT * FROM track_progress WHERE open_session = ${sessionId}`;
   const cursor = cursorOf(row);
@@ -311,6 +370,9 @@ export async function getResumeRows(
     : [];
   return {
     finished: !!run?.finished_at,
+    cancelled: !!run?.cancelled_at,
+    started: !!run?.started_at,
+    held: !!run?.held_at,
     open: !!row,
     cursor,
     cursorScores: [...cursorScores],
@@ -325,18 +387,6 @@ export async function getTrackHolder(
   const [row] = await sql<{ open_session: number | null }[]>`
     SELECT open_session FROM track_progress WHERE track_id = ${trackId}`;
   return row?.open_session ?? undefined;
-}
-
-/**
- * Open sessions (each holds its track). At boot these are the sessions a crash
- * or a shutdown cut off: they are resumed and must be completed first.
- */
-export async function getActiveSessionIds(): Promise<number[]> {
-  if (!sql) return [];
-  const rows = await sql<{ open_session: number }[]>`
-    SELECT open_session FROM track_progress
-    WHERE open_session IS NOT NULL ORDER BY open_session`;
-  return rows.map((r: { open_session: number }) => r.open_session);
 }
 
 /** Sessions that ran to the end or were cancelled, and who holds each track. */
@@ -365,7 +415,7 @@ export async function getSessionMarks(): Promise<
 export async function getProgressRows(): Promise<ProgressRows> {
   if (!sql) return { runs: [], cursors: [], skips: [], scores: [] };
   const [runs, cursors, skips, scores] = await Promise.all([
-    sql`SELECT session_id, started_at, finished_at, cancelled_at
+    sql`SELECT session_id, started_at, finished_at, cancelled_at, held_at
         FROM session_runs`,
     sql`SELECT * FROM track_progress`,
     sql`SELECT session_id, competition_id, competitor_id FROM skips`,

@@ -58,15 +58,18 @@ CREATE TABLE IF NOT EXISTS track_progress (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- What actually happened to each session: opened (first start), started (its
--- first competition began), finished (ended normally) or cancelled.
+-- What actually happened to each session: opened (first armed or started),
+-- started (its first competition began), finished (ended normally), cancelled
+-- (dropped for good by the operator), and held_at while an operator hold is on
+-- (it survives a restart).
 CREATE TABLE IF NOT EXISTS session_runs (
     session_id INT PRIMARY KEY,
     track_id INT NOT NULL,
-    opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    opened_at TIMESTAMPTZ,
     started_at TIMESTAMPTZ,
     finished_at TIMESTAMPTZ,
-    cancelled_at TIMESTAMPTZ
+    cancelled_at TIMESTAMPTZ,
+    held_at TIMESTAMPTZ
 );
 
 -- A competitor skipped by an explicit action (append-only). stage: the

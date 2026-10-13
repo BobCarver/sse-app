@@ -98,7 +98,8 @@ Deno.test("judge: session_end shows the outcome and disables submit", () => {
   for (
     const [reason, expected] of [
       ["completed", "Session complete"],
-      ["aborted", "Session stopped by an administrator"],
+      ["aborted", "Session stopped"],
+      ["cancelled", "Session cancelled by an administrator"],
       ["error", "Session ended unexpectedly"],
     ]
   ) {
@@ -215,7 +216,7 @@ Deno.test("dj: session_end during a performance stops it and keeps the 'session 
     await tick();
     await tick();
     assertEquals(audio.paused, true);
-    assertEquals(text(doc, "status"), "Session stopped by an administrator");
+    assertEquals(text(doc, "status"), "Session stopped");
   } finally {
     f.restore();
     client.destroy();

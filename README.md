@@ -57,15 +57,21 @@ Nothing on the server trusts a device until it opens an admin-issued link.
   - Scoring cannot close with no scores at all: if nobody scored a competitor,
     the session stops and waits. `skip <sessionId>` then skips that competitor
     (recorded as a skip), or `reopen <sessionId>` asks the judges again.
-  - `abort <sessionId>` ends it now and frees the judges; every page is told.
-    A session that got under way keeps its track: no other session on that
-    track can start until it is started again (it resumes where it stopped) and
-    completed. A finished session cannot be started again.
+  - `hold <sessionId>` pauses it: what is under way finishes, nothing new starts
+    until `release <sessionId>`. A hold survives a restart.
+  - `cancel <sessionId>` drops a session for good (running or not yet run):
+    every page is told, it is never run, and the track moves on to its next
+    session. There is no abort.
   - Judges have `JUDGE_SCORE_TIMEOUT_MS` (default 60000) to score; set
     `PERFORMANCE_TIMEOUT_MS` to cap a performance (default: no limit).
   - The DJ presses **Enable audio** once after opening the page; browsers block
     playback until then. A performance that starts earlier waits for the click.
-- Start a session: `POST /sessions/<id>/start` with `Authorization: Bearer $ADMIN_TOKEN`.
+- Sessions run themselves: each track arms its next session (at start-up, after
+  the DJ ends a session, after a cancel). A session cannot begin before its
+  planned time: the DJ's **Start competition** button counts down to it, and when
+  the track runs late the scoreboard shows the expected time ("about 14:25,
+  planned 14:00"). `ARMING=0` turns this off; then start a session by hand with
+  `POST /sessions/<id>/start` and `Authorization: Bearer $ADMIN_TOKEN`.
 - Serve over HTTPS in production (cookies are marked `Secure` behind
   `X-Forwarded-Proto: https`), and set `PUBLIC_URL` if the server is behind a proxy
   so issued links use the public address.
@@ -142,9 +148,10 @@ using the bearer token.
   level: festival, track, session, competition, competitor. Upcoming, in progress and
   finished are shown in grey, amber and green (and as text, not colour alone).
   Everything refreshes every three seconds; which triangles are open is remembered.
-- **Sessions** have Start, Skip, Re-open scoring and Abort (Skip stops waiting for
-  whatever the session is stuck on; Re-open scoring is for a competitor nobody
-  scored), what the running session is doing, and who it is waiting for.
+- **Sessions** have Start (by hand), Skip, Re-open scoring, Hold/Release and Cancel
+  (Skip stops waiting for whatever the session is stuck on; Re-open scoring is for a
+  competitor nobody scored), what the running session is doing, who it is waiting
+  for, and the expected start when the track runs late.
 - **Competitors** show how many judges have scored them and whether the bundle has
   their announcement and music audio.
 - **Links**: every track's DJ and scoreboard, and every judge (Judges tab), has a
@@ -159,7 +166,7 @@ using the bearer token.
 ## Demo: see the whole system in one tab
 
 A development page shows a scoreboard, a DJ and two judges side by side, each
-signed in as its own device, with buttons to start, skip, abort and reset the
+signed in as its own device, with buttons to start, skip, cancel and reset the
 session. It is off unless `DEMO=1` (it hands out sign-in links to whoever holds
 the admin token), so never enable it in production.
 

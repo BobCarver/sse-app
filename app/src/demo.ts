@@ -1,7 +1,7 @@
 /**
  * Demo page (development only, enabled by DEMO=1): one browser tab showing a
  * scoreboard, a DJ and two judges side by side, each signed in as its own
- * device, with buttons to start, skip, abort and reset the session. The data
+ * device, with buttons to start, skip, cancel and reset the session. The data
  * and the audio come from the demo festival bundle (deno task demo:bundle).
  *
  * Why the frames live on different hostnames: a device is identified by one
@@ -91,7 +91,7 @@ function renderPage(
   <strong>Session ${opts.sessionId}</strong>
   <button id="start">Start session</button>
   <button id="skip" title="Stop waiting for whatever the session is stuck on">Skip</button>
-  <button id="abort">Abort</button>
+  <button id="cancel" title="Drop the session (marked cancelled); Reset makes it runnable again">Cancel</button>
   <button id="reset" title="Clear scores, skips and progress to run it again">Reset</button>
   <button id="reload" title="New links for every frame">Reload frames</button>
   <span id="state">...</span>
@@ -122,7 +122,7 @@ async function call(method, path, label) {
 }
 document.getElementById("start").onclick = () => call("POST", "/sessions/" + sid + "/start", "Starting");
 document.getElementById("skip").onclick = () => call("POST", "/admin/sessions/" + sid + "/skip", "Skipping");
-document.getElementById("abort").onclick = () => call("POST", "/admin/sessions/" + sid + "/abort", "Aborting");
+document.getElementById("cancel").onclick = () => call("POST", "/admin/sessions/" + sid + "/cancel", "Cancelling");
 document.getElementById("reset").onclick = () => call("POST", "/demo/reset/" + sid, "Resetting");
 document.getElementById("reload").onclick = () => location.reload();
 async function poll() {

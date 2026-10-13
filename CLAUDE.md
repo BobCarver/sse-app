@@ -29,7 +29,7 @@ Always check **exit codes**, not just "N passed" (see Gotchas). Environment:
 `DATABASE_URL`, `ADMIN_TOKEN` (admin routes return 503 without it), `PORT`
 (3000), `PUBLIC_URL` (base for issued links), `JUDGE_SCORE_TIMEOUT_MS` (60000),
 `PERFORMANCE_TIMEOUT_MS` (0 = none), `BUNDLE_DIR` (./bundle: manifest.json + data.json),
-`AUDIO_DIR` (./audio, gitignored: the bundle's audio files), `AUDIO_CUTOFF_MINUTES` (30), `DJ_GATES` (0 = no DJ start/end buttons; tests and e2e set it), `AUTO_RESUME` (0 turns off resuming open sessions at boot), `REQUIRE_DB=1` (integration tests fail
+`AUDIO_DIR` (./audio, gitignored: the bundle's audio files), `AUDIO_CUTOFF_MINUTES` (30), `DJ_GATES` (0 = no DJ start/end buttons; tests and e2e set it), `ARMING` (0 = sessions do not arm themselves; also off with `DEMO=1`), `ALLOWANCE_ANNOUNCE_S` / `ALLOWANCE_SCORING_S` / `ALLOWANCE_CHANGEOVER_S` (20/30/45, per-competitor seconds for the delay estimate), `REQUIRE_DB=1` (integration tests fail
 instead of skipping), `E2E_PORT` (8000), `DEBUG=1`.
 
 ## Layout
@@ -37,8 +37,10 @@ instead of skipping), `E2E_PORT` (8000), `DEBUG=1`.
 ```
 app/src/            server
   main.ts           routes, auth middleware, admin API, /response, shutdown
-  session.ts        Session: phases, waits, replay-on-connect, abort/skip, status
-  sessionManager.ts sessions map; findConflict (one session per track, judges held)
+  session.ts        Session: phases, waits, replay-on-connect, skip/hold/release/cancel, status
+  sessionManager.ts sessions map; findConflict (one session per track); JudgeClaims (per competition)
+  sequencer.ts      arms each track's open session (boot, after End session, after cancel)
+  estimate.ts       delay estimate: cascading expected starts (allowances per competitor)
   sse.ts            per-connection lifecycle (identity-guarded cleanup, ping)
   responseService.ts  /response logic (validate, ownership, scores); route stays thin
   audioStorage.ts   AudioStorage interface + disk impl (swap for a bucket later)
@@ -97,15 +99,48 @@ unread). `shared/festival-bundle/` is the format, shared with the portal (types,
 Issuing a credential returns 404 if the judge/track is not in the bundle. The bundle
 carries no emails, so the admin page's judges have none.
 
-**Sessions.** `POST /sessions/:id/start` (admin) loads the session's competitions from the
-festival and runs `Session.runSession` in the background. **One open session per track**,
-enforced in the database: the track's `track_progress` row is the lock (`openSession`),
-taken at start and given back when the session finishes (or is stopped before anything
-ran). A second session on a held track gets 409 "Track N has session M open", also
-after a restart. A finished session cannot be started again (409). DJ and scoreboard
-are the track's permanent clients. A judge is **held by a session until it ends**
-(`claimedClients`, memory); a start that needs a held judge gets 409. Multiple tracks
-run concurrently.
+**Sessions run themselves** (redesign Phase 3; `sequencer.ts`). Each track always has its
+**open session armed**: the one holding the track, else the first in running order (planned
+start, then `order_number`) not finished or cancelled. Arming = `startSession` in `main.ts`
+(load from the festival, take the track, register DJ and scoreboard, wait for clients, audio
+gate, planned-time gate, the DJ's begin gate). The sequencer arms at boot (which also resumes
+a session a crash or shutdown cut off: no audio gate when it had started), after a session
+ends normally (End session) and after a cancel; an error or shutdown is not re-armed (no
+restart loop). It is on when the server is started directly, off with `ARMING=0` or
+`DEMO=1`. `POST /sessions/:id/start` (admin) still starts one by hand (tests, demo).
+**One open session per track**, enforced in the database: the track's `track_progress` row
+is the lock (`openSession`), taken when armed and given back when the session finishes, is
+cancelled, or is stopped before anything ran. A second session on a held track gets 409
+"Track N has session M open", also after a restart. A finished or cancelled session is not
+started again (409). DJ and scoreboard are the track's permanent clients. **Judges are
+claimed per competition** (`JudgeClaims` in `sessionManager.ts`): when its start gate opens
+(after the planned start) and given back (into the unassigned pool) when it ends. A judge
+another track holds is waited for, shown as `judge<N> (held by track <T>)` in `waiting_for`;
+`skip` goes on without them (excused: recorded `absent`). The session tells every judge who
+took part when it ends (`session_end`). Multiple tracks run concurrently.
+
+**Planned start.** A session's first competition cannot begin before its planned
+`start_time` (not a trigger: the DJ still presses Start). `competition_ready` carries
+`starts_at` (null when already past) and `server_time`; the DJ page's button stays disabled
+with a countdown by the server's clock (`countdown()` in `dj.ts`), the scoreboard says
+"Competition “X” begins at HH:MM", the session waits (`planned start <iso>` in
+`waiting_for`, not skippable) and `/response` answers 425 to an early `begin:`. A session
+that had begun before a restart is not held back again. Long waits are slept in steps
+(`setTimeout` fires at once beyond ~24.8 days).
+
+**Delays cascade** (`estimate.ts`): a session starts at the later of its planned time and the
+end of the one before it; the open session's remaining entries count their duration plus the
+allowances. `session_finished.next_session_estimate` (null when on time; late = more than a
+minute after planned) gives "about 14:25 (planned 14:00)" on the scoreboard and DJ page; the
+admin overview has `estimated_start` per session.
+
+**Operator exceptions**: `skip` (as before), **hold** (`POST /admin/sessions/:id/hold`:
+whatever is under way finishes, but no competition, performance, scoring or end starts until
+**release**; `waiting_for` starts with `held by operator`; `session_runs.held_at`, so a
+restart keeps it, and a session not running yet starts held) and **cancel** (drops it for
+good: stops it if running, `session_end` reason `cancelled`, `cancelled_at` written, track
+given back, the sequencer arms the next). There is **no abort** (the route is gone);
+`Session.abort()` remains for the server shutdown.
 
 **The DJ paces the session** (`djGates`, on unless `DJ_GATES=0`). Before every competition the
 server sends `competition_ready {competition_id, name}` to all clients and waits for the DJ's
@@ -117,8 +152,8 @@ early press is not lost. After the last competition the session does not end: it
 session by start time then order_number that has not finished, `followingSession`; null =
 none), the scoreboard says
 "Session ended. The next session begins at <time>" (it stays after `session_end`) and the DJ
-button becomes **End session** (`close:<sessionId>`). Only then are the judges released
-(`session_end`). Both gates replay on reconnect, show as `dj-start` / `dj-close` in
+button becomes **End session** (`close:<sessionId>`); then the session ends (`session_end`)
+and the track moves on. Both gates replay on reconnect, show as `dj-start` / `dj-close` in
 `waiting_for`, and an operator `skip` releases them (returns `"gate"`). A competition that was
 already under way before a restart is not held again (resume plan). Only the session's DJ may
 answer `begin:`/`close:` (403 otherwise). The DJ page is dark-themed like the other two.
@@ -169,11 +204,11 @@ order): competitor started -> cursor here, performing; performed -> scoring; fin
 skipped -> cursor moves to the next competitor (`next`, phase NULL; written and awaited
 before the next one starts; a skip also appends to `skips`); no next = cursor empty (every
 competitor done, the session waits to be ended). `session_runs` has the actual times:
-`opened_at`, `started_at` (first competition began), `finished_at`, `cancelled_at` (not
-written yet: Phase 3). A completed session writes `finished_at` and gives the track back.
-An abort or error keeps the track (and cursor) unless nothing ran (`untouched`: no
-performance began, nothing finished), so a session cut off must be resumed and completed
-before the next one on its track. A score that could not be saved no longer holds the
+`opened_at` (armed), `started_at` (first competition began), `finished_at`, `cancelled_at`,
+`held_at`. A completed session writes `finished_at` and gives the track back. A shutdown or
+error keeps the track (and cursor) unless nothing ran (`untouched`: no performance began,
+nothing finished), so a session cut off is resumed and completed before the next one on its
+track. The admin overview shows an armed session that has not begun as upcoming. A score that could not be saved no longer holds the
 cursor back (it is logged and kept in `unsavedScores`).
 
 **Start resumes at the cursor** (`resume.ts`, `planResume`). `POST /start` reads the
@@ -183,14 +218,6 @@ performance (judges whose scores are saved keep them; scoreboards get them repla
 `performing` or not begun -> it runs from its performance; no cursor -> only the end of the
 session is left. A competition already under way (`underway`) does not show the DJ's start
 button again. The response has `already_finished` and `reopened_scoring`.
-
-**Auto-resume at boot** (`resumeActiveSessions` in `main.ts`, runs when the server is started
-directly, not in `DEMO=1`, off with `AUTO_RESUME=0`). Every session still holding its track
-(`getActiveSessionIds` = open sessions) was cut off by a crash, a shutdown or an abort after
-it got under way: the server starts each again through the same `startSession`, from the
-cursor, without the audio start gate (the DJ's ready report is memory only), and waits for
-the clients, which reconnect on their own. (Before Phase 2 a SIGTERM shutdown was not
-resumed; now any open session is.)
 
 **Audio.** Bytes on disk in `AUDIO_DIR` (content-addressed `<sha256>.<ext>`, copied with
 the bundle), metadata from the bundle (each entry's `audio.music`/`audio.announce`; kind =
@@ -223,8 +250,9 @@ tree (`adminOverview.ts`: festival > track > session > competition > competitor,
 statuses, live session state, judges, audio flags, connected devices and active links).
 Statuses are derived from the cursor (`deriveStatus`): before it finished (or skipped, from
 `skips`), on it in progress once begun (finished once every rubric judge has scored),
-after it upcoming. Sessions have Start (disabled once finished), Skip, Re-open scoring
-(enabled while `unscored`) and Abort; audio badges only show what the bundle has. The page is vanilla TS: pure
+after it upcoming. Sessions show "about HH:MM" when late and Held / Cancelled badges, and
+have Start (by hand; disabled once finished or cancelled), Skip, Re-open scoring (enabled
+while `unscored`), Hold/Release and Cancel; audio badges only show what the bundle has. The page is vanilla TS: pure
 functions return HTML strings (every value through `escapeHtml`), native `<details>`
 gives the triangles, QR codes come from the JSR package `@libs/qrcode` (SVG, no dependencies), and
 Copy falls back to select-and-copy because `navigator.clipboard` needs https/localhost.
@@ -278,9 +306,9 @@ the first; stale-stream cleanup only acts if the closing stream still owns the s
 `issue --tracks 1,2 --judges 2,3` (links shown once), `list`, `revoke <id>`,
 `sessions` (phase, waiting_for, missing scores), `skip <sessionId>` (stop waiting
 for missing clients / skip performance / close scoring / skip an unscored competitor),
-`reopen <sessionId>` (an unscored competitor: ask the judges again), `abort <sessionId>`.
-SIGTERM aborts sessions (an open session keeps its track and is resumed at the next
-boot), notifies clients, closes the DB pool.
+`reopen <sessionId>` (an unscored competitor: ask the judges again), `hold` / `release` /
+`cancel <sessionId>`. SIGTERM stops sessions (an open session keeps its track and is resumed
+at the next boot), notifies clients, closes the DB pool.
 
 **Durations are SECONDS** (each competitor's `duration` in the bundle); converted in the
 client only.
@@ -311,10 +339,12 @@ client only.
   `app/` + `scripts/` + `shared/`, excluding `app/frontend-src/*.html`). Bundle files
   in `fixtures/` are canonical JSON: never reformat them (their sha256 is in the manifest).
 - Browser tests share session id 1 and one DB: run serially, and every test must
-  `abort` its session in `finally` (helper `finish()`), or the next test breaks.
-  An abort alone leaves the session holding its track and the next start would
-  resume (a finished one cannot start at all), so `setup()` in `pages.spec.ts` also
-  resets session 1 (`POST /demo/reset/1`, needs `DEMO=1`).
+  cancel its session in `finally` (helper `finish()`), or the next test breaks. A
+  cancelled or finished session cannot start again, so `setup()` in `pages.spec.ts`
+  also resets session 1 (`POST /demo/reset/1`, needs `DEMO=1`). `DEMO=1` also keeps
+  the sequencer off, so nothing arms itself during the browser tests.
+- Integration tests that turn the sequencer on (`sequencer.enabled = true`) get the
+  next session armed after one ends; `unseed()` turns it off and clears `judgeClaims`.
 - After the last judge scores in the one-competitor e2e bundle the session ends at once,
   so a judge's status can read "Session complete", not "Scores submitted".
 - DJ audio needs a click: the DJ presses **Enable audio** once; earlier
@@ -355,9 +385,11 @@ static mount). Keep new code within the spirit of those rules; ask before restru
 
 Phases 0-7 of the "make it correctly functioning" plan are done and committed, then
 `/response` as a service, competitor audio (manifest, DJ prefetch, start gate) and DJ
-gates. **Redesign (`redesign.md`) Phases 1 (bundle loader) and 2 (cursor progress,
-skips, missing scores, zero-score rule) are done.** Suites: 163 unit (incl.
-`shared/festival-bundle`), 119 frontend, 34 contract, 17 integration (with a DB), 12
+gates (latest commit `88c3a10`: redesign spec). **Redesign (`redesign.md`) Phases 1
+(bundle loader), 2 (cursor progress, skips, missing scores, zero-score rule) and 3
+(sequencer, planned start, delay estimate, per-competition judge claims, hold/release/
+cancel, no abort) are implemented, not yet committed.** Suites: 184 unit (incl.
+`shared/festival-bundle`), 124 frontend, 35 contract, 21 integration (with a DB), 12
 browser tests; all green with exit code 0, with and without `DATABASE_URL` (scratch
 Postgres 17). `deno task static`
 only passes once generated `public/*.js` is committed.
@@ -366,11 +398,11 @@ Working style (owner): analysis only when asked to analyse; commit only when ask
 
 ## Open items (next session)
 
-1. **Redesign Phases 3-6** (`redesign.md`): sequencer (arm the open session per track,
-   planned-time gate and countdown, delay estimate, judges claimed per competition,
-   hold/release/cancel, remove abort; `session_runs.cancelled_at` is in the schema but not
-   written yet), audio per track (retire the per-session cut-off), cloud push, docs.
-   `POST /sessions/:id/start` is still how sessions start.
+1. **Redesign Phases 4-6** (`redesign.md`): audio per track (retire the per-session
+   cut-off; the audio gate is still per session and is skipped for a resumed session),
+   cloud push, docs. Not done in Phase 3: learning the allowances from the day's times;
+   browser tests for the countdown and the delay message (covered by frontend tests: the
+   e2e server runs with `DJ_GATES=0`).
 2. **Portal** (`portal.md`): registration, uploads, loudness normalisation, the exporter
    (uses `shared/festival-bundle`). There is no upload path on this server any more.
 3. Bundle verification hashes every audio file at each boot (fine for hundreds of

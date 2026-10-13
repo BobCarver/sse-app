@@ -49,6 +49,10 @@ function setup(
   return { session: new Session(1, deps), clients };
 }
 
+/** competition_ready messages without the server's clock reading. */
+const ready = (c: { __messages: string[] }) =>
+  sent(c, "competition_ready").map(({ server_time: _t, ...rest }) => rest);
+
 Deno.test("gates: a competition waits for the DJ, and the session for the DJ to end it", async () => {
   const next = { name: "Evening", startTime: new Date("2026-10-03T19:30:00Z") };
   const { session, clients } = setup({
@@ -58,8 +62,8 @@ Deno.test("gates: a competition waits for the DJ, and the session for the DJ to 
   await delay(30);
 
   // The scoreboard is told what is about to begin; nothing has started.
-  assertEquals(sent(clients.sb1, "competition_ready"), [
-    { competition_id: 10, name: "Juniors" },
+  assertEquals(ready(clients.sb1), [
+    { competition_id: 10, name: "Juniors", starts_at: null },
   ]);
   assertEquals(sent(clients.sb1, "competition_start"), []);
   assertEquals(session.status().waiting_for, ["dj-start"]);
@@ -80,6 +84,7 @@ Deno.test("gates: a competition waits for the DJ, and the session for the DJ to 
     session_id: 1,
     next_session_name: "Evening",
     next_session_start: "2026-10-03T19:30:00.000Z",
+    next_session_estimate: null,
   }]);
   assertEquals(sent(clients.judge2, "session_end"), []); // judge still held
   assertEquals(session.status().waiting_for, ["dj-close"]);
@@ -102,6 +107,7 @@ Deno.test("gates: with no following session the message says so", async () => {
     session_id: 1,
     next_session_name: null,
     next_session_start: null,
+    next_session_estimate: null,
   }]);
   resolveTag(closeTag(1), true);
   await done;
@@ -155,8 +161,8 @@ Deno.test("gates: a DJ that reconnects during the break is asked again", async (
   const again = createMockClient("dj1");
   session.connectClient(again);
   await delay(20);
-  assertEquals(sent(again, "competition_ready"), [
-    { competition_id: 10, name: "Juniors" },
+  assertEquals(ready(again), [
+    { competition_id: 10, name: "Juniors", starts_at: null },
   ]);
   session.abort();
   await done;

@@ -51,16 +51,29 @@ export class ScoreboardClient extends sseClient {
     // the last one, that the session is over and when the next one starts). The
     // last scores stay on the board, dimmed.
     this.sse.addEventListener("competition_ready", ({ data }) => {
-      const { name } = JSON.parse(data) as CompetitionReadyMessage;
-      this.showBanner(`Competition “${name}” is about to begin`);
+      const msg = JSON.parse(data) as CompetitionReadyMessage;
+      // Still before the planned start (by the server's clock): say when.
+      const ahead = msg.starts_at && msg.server_time &&
+        Date.parse(msg.starts_at) > Date.parse(msg.server_time);
+      this.showBanner(
+        ahead
+          ? `Competition “${msg.name}” begins at ${formatWhen(msg.starts_at!)}`
+          : `Competition “${msg.name}” is about to begin`,
+      );
     });
     this.sse.addEventListener("session_finished", ({ data }) => {
       const msg = JSON.parse(data) as SessionFinishedMessage;
+      const when = msg.next_session_start &&
+        (msg.next_session_estimate
+          ? `about ${formatWhen(msg.next_session_estimate)} (planned ${
+            formatWhen(msg.next_session_start)
+          })`
+          : formatWhen(msg.next_session_start));
       this.showBanner(
-        msg.next_session_start
+        when
           ? `Session ended. The next session${
             msg.next_session_name ? ` (${msg.next_session_name})` : ""
-          } begins at ${formatWhen(msg.next_session_start)}`
+          } begins at ${when}`
           : "Session ended. No further sessions are scheduled on this track.",
       );
     });

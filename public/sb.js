@@ -269,7 +269,8 @@ var sseClient = class {
       const { reason } = JSON.parse(data);
       this.setStatus({
         completed: "Session complete",
-        aborted: "Session stopped by an administrator",
+        aborted: "Session stopped",
+        cancelled: "Session cancelled by an administrator",
         error: "Session ended unexpectedly"
       }[reason] ?? "Session ended");
       this.onSessionEnd();
@@ -346,12 +347,14 @@ var ScoreboardClient = class extends sseClient {
       this.showLabel();
     });
     this.sse.addEventListener("competition_ready", ({ data }) => {
-      const { name } = JSON.parse(data);
-      this.showBanner(`Competition \u201C${name}\u201D is about to begin`);
+      const msg = JSON.parse(data);
+      const ahead = msg.starts_at && msg.server_time && Date.parse(msg.starts_at) > Date.parse(msg.server_time);
+      this.showBanner(ahead ? `Competition \u201C${msg.name}\u201D begins at ${formatWhen(msg.starts_at)}` : `Competition \u201C${msg.name}\u201D is about to begin`);
     });
     this.sse.addEventListener("session_finished", ({ data }) => {
       const msg = JSON.parse(data);
-      this.showBanner(msg.next_session_start ? `Session ended. The next session${msg.next_session_name ? ` (${msg.next_session_name})` : ""} begins at ${formatWhen(msg.next_session_start)}` : "Session ended. No further sessions are scheduled on this track.");
+      const when = msg.next_session_start && (msg.next_session_estimate ? `about ${formatWhen(msg.next_session_estimate)} (planned ${formatWhen(msg.next_session_start)})` : formatWhen(msg.next_session_start));
+      this.showBanner(when ? `Session ended. The next session${msg.next_session_name ? ` (${msg.next_session_name})` : ""} begins at ${when}` : "Session ended. No further sessions are scheduled on this track.");
     });
     this.sse.addEventListener("performance_start", () => this.showLabel());
     this.sse.addEventListener("score_update", ({ data }) => {

@@ -292,9 +292,17 @@ export function startAdminPage(doc: Document = document): void {
       void act("POST", `/admin/sessions/${id}/skip`, "Skip");
     } else if (action === "reopen") {
       void act("POST", `/admin/sessions/${id}/reopen`, "Re-open scoring");
-    } else if (action === "abort") {
-      if (confirm("Abort this session now?")) {
-        void act("POST", `/admin/sessions/${id}/abort`, "Abort");
+    } else if (action === "hold") {
+      void act("POST", `/admin/sessions/${id}/hold`, "Hold");
+    } else if (action === "release") {
+      void act("POST", `/admin/sessions/${id}/release`, "Release");
+    } else if (action === "cancel") {
+      if (
+        confirm(
+          "Cancel this session for good? It stops now (if running) and is never run; the track moves on to its next session.",
+        )
+      ) {
+        void act("POST", `/admin/sessions/${id}/cancel`, "Cancel");
       }
     }
     // Buttons inside a <summary> must not also toggle the section.

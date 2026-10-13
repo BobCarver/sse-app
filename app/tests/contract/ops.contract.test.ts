@@ -1,4 +1,4 @@
-// Admin session controls over HTTP: status, skip, reopen, abort.
+// Admin session controls over HTTP: status, skip, reopen, hold, release, cancel.
 import { assert, assertEquals } from "@std/assert";
 import { app } from "../../src/main.ts";
 import { Session } from "../../src/session.ts";
@@ -47,7 +47,9 @@ Deno.test("ops: session controls require the admin token", async () => {
         "/admin/sessions/1/skip",
       ],
       ["POST", "/admin/sessions/1/reopen"],
-      ["POST", "/admin/sessions/1/abort"],
+      ["POST", "/admin/sessions/1/hold"],
+      ["POST", "/admin/sessions/1/release"],
+      ["POST", "/admin/sessions/1/cancel"],
     ]
   ) {
     assertEquals((await call(m, p, false)).status, 401, `${m} ${p}`);
@@ -58,6 +60,14 @@ Deno.test("ops: unknown sessions are 404", async () => {
   sessions.clear();
   assertEquals((await call("POST", "/admin/sessions/99/skip")).status, 404);
   assertEquals((await call("POST", "/admin/sessions/99/reopen")).status, 404);
+  for (const action of ["hold", "release", "cancel"]) {
+    assertEquals(
+      (await call("POST", `/admin/sessions/99/${action}`)).status,
+      404,
+      action,
+    );
+  }
+  // There is no abort any more: cancel (for good) or hold (pause).
   assertEquals((await call("POST", "/admin/sessions/99/abort")).status, 404);
   assertEquals(await (await call("GET", "/admin/sessions")).json(), []);
 });
@@ -98,13 +108,13 @@ Deno.test("ops: 409 when there is nothing to skip", async () => {
   // a running session that is neither waiting, performing nor scoring
   const res = await call("POST", "/admin/sessions/1/skip");
   assert([200, 409].includes(res.status));
-  await call("POST", "/admin/sessions/1/abort");
+  await call("POST", "/admin/sessions/1/cancel");
   await done;
   sessions.clear();
 });
 
-Deno.test("ops: abort ends the session, releases its waits, and frees it to start again", async () => {
-  const { done } = live(["dj1", "judge2"]);
+Deno.test("ops: cancel ends the session for good, releases its waits and tells every page", async () => {
+  const { session, done } = live(["dj1", "judge2"]);
   await delay(30);
   // a DJ can answer while it runs
   const dj = await secretFor("dj1");
@@ -118,16 +128,32 @@ Deno.test("ops: abort ends the session, releases its waits, and frees it to star
       body: JSON.stringify({ tag: perfTag(10, 0), payload: true }),
     });
 
-  const res = await call("POST", "/admin/sessions/1/abort");
+  const res = await call("POST", "/admin/sessions/1/cancel");
   assertEquals([res.status, (await res.json()).success], [200, true]);
   await done;
+  assertEquals(session.endReason, "cancelled");
   assertEquals(getPendingTags(), []);
   assertEquals((await respond()).status, 404); // nothing is waiting any more
   assertEquals(sessions.get(1)?.isRunning() ?? false, false);
   sessions.clear();
 });
 
-Deno.test("ops: aborting a leftover session that is not running just removes it", async () => {
+Deno.test("ops: hold pauses before the next step; release lets it carry on", async () => {
+  const { session, done } = live(["dj1", "judge2"]);
+  await delay(30); // performing competitor 100
+  assertEquals((await call("POST", "/admin/sessions/1/hold")).status, 200);
+  assertEquals((await call("POST", "/admin/sessions/1/hold")).status, 409); // already
+  const st = (await (await call("GET", "/admin/sessions")).json())[0];
+  assertEquals([st.held, st.waiting_for[0]], [true, "held by operator"]);
+  assertEquals((await call("POST", "/admin/sessions/1/release")).status, 200);
+  assertEquals((await call("POST", "/admin/sessions/1/release")).status, 409);
+  assertEquals(session.held, false);
+  await call("POST", "/admin/sessions/1/cancel");
+  await done;
+  sessions.clear();
+});
+
+Deno.test("ops: cancelling a leftover session that is not running removes it", async () => {
   sessions.clear();
   sessions.set(
     5,
@@ -136,7 +162,8 @@ Deno.test("ops: aborting a leftover session that is not running just removes it"
       saveScore: () => Promise.resolve(),
     }),
   );
-  const res = await call("POST", "/admin/sessions/5/abort");
-  assertEquals(res.status, 200);
+  // Not in the festival (none is loaded here): removed, then 404.
+  const res = await call("POST", "/admin/sessions/5/cancel");
+  assertEquals(res.status, 404);
   assertEquals(sessions.has(5), false);
 });

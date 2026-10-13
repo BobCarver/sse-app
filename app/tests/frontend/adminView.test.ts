@@ -24,6 +24,9 @@ const session = (over: Partial<OverviewSession> = {}): OverviewSession => ({
   status: "in_progress",
   start_time: "2030-01-01T12:00:00Z",
   audio_cutoff: "2030-01-01T11:30:00Z",
+  estimated_start: null,
+  held: false,
+  cancelled: false,
   running: false,
   live: null,
   competitions: [{
@@ -167,9 +170,29 @@ Deno.test("admin view: open/closed follows the saved state, with sensible defaul
 
 Deno.test("admin view: session controls follow whether it is running", () => {
   const idle = renderOverview(overview(), state());
-  assertStringIncludes(idle, 'data-action="start" data-id="10" >');
+  assert(!idle.includes('data-action="start" data-id="10" disabled'));
   assertStringIncludes(idle, 'data-action="skip" data-id="10" disabled');
-  assertStringIncludes(idle, 'data-action="abort" data-id="10" disabled');
+  assert(!idle.includes('data-action="abort"'), "no abort any more");
+  // Hold and cancel are there for exceptions, also before a session runs.
+  assert(!idle.includes('data-action="hold" data-id="10" disabled'));
+  assert(!idle.includes('data-action="cancel" data-id="10" disabled'));
+  const held = renderOverview(overview(session({ held: true })), state());
+  assertStringIncludes(held, 'data-action="release" data-id="10"');
+  assertStringIncludes(held, '<span class="badge held">Held</span>');
+  const late = renderOverview(
+    overview(session({ estimated_start: "2030-01-01T12:25:00Z" })),
+    state(),
+  );
+  assertStringIncludes(late, "<b>about ");
+  const cancelled = renderOverview(
+    overview(session({ status: "finished", cancelled: true })),
+    state(),
+  );
+  assertStringIncludes(
+    cancelled,
+    '<span class="badge cancelled">Cancelled</span>',
+  );
+  assertStringIncludes(cancelled, 'data-action="cancel" data-id="10" disabled');
 
   const running = renderOverview(
     overview(

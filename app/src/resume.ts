@@ -14,6 +14,12 @@ export type SavedScore = {
 export type ResumeRows = {
   /** The session ended normally (it is not run again). */
   finished: boolean;
+  /** Cancelled by the operator (never run again). */
+  cancelled?: boolean;
+  /** Its first competition began at some point. */
+  started?: boolean;
+  /** An operator hold is on. */
+  held?: boolean;
   /** The session holds its track: it was started and has not finished. */
   open: boolean;
   /** Where it is (open sessions only); null = every competitor is done. */

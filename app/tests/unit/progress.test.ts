@@ -49,6 +49,15 @@ Deno.test("deriveStatus: before the cursor finished, on it in progress, after it
   );
 });
 
+Deno.test("deriveStatus: an armed session that has not begun is upcoming", () => {
+  const armed = open(at(10, 100, null));
+  assertEquals(flat(deriveStatus(ORDER, armed, new Set())).session, "upcoming");
+  assertEquals(
+    flat(deriveStatus(ORDER, { ...armed, started: true }, new Set())).session,
+    "in_progress",
+  );
+});
+
 Deno.test("deriveStatus: the next competitor waiting to begin is upcoming", () => {
   const d = flat(deriveStatus(ORDER, open(at(11, 110, null)), new Set()));
   assertEquals(d.competitions, ["finished", "upcoming"]);

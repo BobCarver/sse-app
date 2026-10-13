@@ -52,11 +52,10 @@ async function openLink(browser: Browser, link: string) {
 
 async function setup(browser: Browser, request: APIRequestContext) {
     pageErrors.length = 0;
-    // Every test starts session 1 from scratch. Without this, a test that aborts
-    // mid-performance leaves the session holding its track with the cursor on
-    // that competitor, and the next start resumes there (a finished session
-    // cannot be started at all). The server drops an aborted session a moment
-    // after the abort, and reset answers 409 until then.
+    // Every test starts session 1 from scratch. Without this, the previous
+    // test's session would be cancelled or finished (neither can be started
+    // again). The server drops a cancelled session a moment after the cancel,
+    // and reset answers 409 until then.
     await expect.poll(
         async () => (await request.post("/demo/reset/1", { headers: ADMIN })).status(),
         { timeout: 10_000 },
@@ -81,9 +80,9 @@ async function setup(browser: Browser, request: APIRequestContext) {
     return { links, dj, j2, j3, sb, all: [dj, j2, j3, sb] };
 }
 
-/** Leave nothing running for the next test: end the session, close the pages. */
+/** Leave nothing running for the next test: cancel the session, close the pages. */
 async function finish(request: APIRequestContext, all: { context: { close(): Promise<void> } }[]) {
-    await request.post("/admin/sessions/1/abort", { headers: ADMIN });
+    await request.post("/admin/sessions/1/cancel", { headers: ADMIN });
     await Promise.all(all.map((c) => c.context.close()));
 }
 
@@ -264,26 +263,32 @@ test("operator: closing scoring tells the judge who didn't submit; the others' s
     }
 });
 
-test("operator: aborting a stuck session tells every page and lets it be started again", async ({ browser, request }) => {
+test("operator: cancelling a stuck session tells every page; it is not run again", async ({ browser, request }) => {
     const { dj, j2, j3, sb, all } = await setup(browser, request); // the song waits for play: the DJ stays mid-performance
     try {
         await startSession(request);
         await expect(dj.page.locator("#skip")).toBeEnabled({ timeout: 20_000 }); // DJ is mid-performance
 
-        const abort = await request.post("/admin/sessions/1/abort", { headers: ADMIN });
-        expect(abort.status()).toBe(200);
+        // There is no abort any more: cancel drops the session for good.
+        expect((await request.post("/admin/sessions/1/abort", { headers: ADMIN })).status()).toBe(404);
+        const cancel = await request.post("/admin/sessions/1/cancel", { headers: ADMIN });
+        expect(cancel.status()).toBe(200);
         for (const c of all) {
-            await expect(c.page.locator("#status")).toHaveText("Session stopped by an administrator");
+            await expect(c.page.locator("#status")).toHaveText("Session cancelled by an administrator");
         }
         await expect(dj.page.locator("#skip")).toBeDisabled(); // playback stopped
         await expect(j2.page.locator("#submit")).toBeDisabled();
 
-        // Nothing is left running, and the same pages can run it again.
+        // Nothing is left running, and a cancelled session is not run again.
         // (the server drops the session a moment after the pages hear about it)
         await expect.poll(
             async () => (await (await request.get("/admin/sessions", { headers: ADMIN })).json()).length,
             { timeout: 10_000 },
         ).toBe(0);
+        expect((await request.post("/sessions/1/start", { headers: ADMIN })).status()).toBe(409);
+
+        // The demo reset clears the record; the same pages can run it again.
+        expect((await request.post("/demo/reset/1", { headers: ADMIN })).status()).toBe(200);
         await startSession(request);
         await expect(j3.page.locator("#sliders label")).toHaveText("Technique");
         await expect(dj.page.locator("#skip")).toBeEnabled({ timeout: 20_000 });

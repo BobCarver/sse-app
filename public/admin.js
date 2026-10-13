@@ -1671,13 +1671,16 @@ function renderCompetition(c, state) {
   return section(`c${c.id}`, c.status === "in_progress", state, `competition ${c.status}`, summary, body);
 }
 function renderSession(s, state) {
+  const over = s.status === "finished";
   const controls = `<span class="controls">
-    <button type="button" class="small primary" data-action="start" data-id="${s.id}" ${s.running || s.status === "finished" ? "disabled" : ""}>Start</button>
+    <button type="button" class="small primary" data-action="start" data-id="${s.id}" ${s.running || over ? "disabled" : ""} title="Start by hand (normally the track arms its next session itself)">Start</button>
     <button type="button" class="small" data-action="skip" data-id="${s.id}" ${s.running ? "" : "disabled"} title="Stop waiting for whatever the session is stuck on">Skip</button>
     <button type="button" class="small" data-action="reopen" data-id="${s.id}" ${s.live?.phase === "unscored" ? "" : "disabled"} title="Nobody scored this competitor: ask the judges again (Skip skips the competitor instead)">Re-open scoring</button>
-    <button type="button" class="small danger" data-action="abort" data-id="${s.id}" ${s.running ? "" : "disabled"}>Abort</button>
+    <button type="button" class="small" data-action="${s.held ? "release" : "hold"}" data-id="${s.id}" ${over ? "disabled" : ""} title="${s.held ? "Let the session carry on" : "Pause the session: nothing new starts until it is released"}">${s.held ? "Release" : "Hold"}</button>
+    <button type="button" class="small danger" data-action="cancel" data-id="${s.id}" ${over ? "disabled" : ""} title="Drop the session for good; the track moves on to its next session">Cancel</button>
   </span>`;
-  const summary = `<span class="name">${escapeHtml(s.name)}</span> ${badge(s.status)} <span class="muted">starts ${escapeHtml(fmtTime(s.start_time))}</span> ${liveText(s)} ${controls}`;
+  const when = s.estimated_start ? `starts ${escapeHtml(fmtTime(s.start_time))} \xB7 <b>about ${escapeHtml(fmtTime(s.estimated_start))}</b>` : `starts ${escapeHtml(fmtTime(s.start_time))}`;
+  const summary = `<span class="name">${escapeHtml(s.name)}</span> ${s.cancelled ? `<span class="badge cancelled">Cancelled</span>` : badge(s.status)}${s.held ? ` <span class="badge held">Held</span>` : ""} <span class="muted">${when}</span> ${liveText(s)} ${controls}`;
   const body = s.competitions.length ? s.competitions.map((c) => renderCompetition(c, state)).join("") : `<p class="muted">No competitions in this session.</p>`;
   return section(`s${s.id}`, s.status !== "finished", state, `session ${s.status}`, summary, body);
 }
@@ -1936,9 +1939,13 @@ function startAdminPage(doc = document) {
       void act("POST", `/admin/sessions/${id}/skip`, "Skip");
     } else if (action === "reopen") {
       void act("POST", `/admin/sessions/${id}/reopen`, "Re-open scoring");
-    } else if (action === "abort") {
-      if (confirm("Abort this session now?")) {
-        void act("POST", `/admin/sessions/${id}/abort`, "Abort");
+    } else if (action === "hold") {
+      void act("POST", `/admin/sessions/${id}/hold`, "Hold");
+    } else if (action === "release") {
+      void act("POST", `/admin/sessions/${id}/release`, "Release");
+    } else if (action === "cancel") {
+      if (confirm("Cancel this session for good? It stops now (if running) and is never run; the track moves on to its next session.")) {
+        void act("POST", `/admin/sessions/${id}/cancel`, "Cancel");
       }
     }
     if (el.closest("summary")) e.preventDefault();

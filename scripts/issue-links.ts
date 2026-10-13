@@ -8,7 +8,11 @@
 //   ADMIN_TOKEN=... deno task links skip 1          stop waiting for whatever session 1 is stuck on
 //                                                   (a competitor nobody scored: skip it)
 //   ADMIN_TOKEN=... deno task links reopen 1        nobody scored the competitor: ask the judges again
-//   ADMIN_TOKEN=... deno task links abort 1         end session 1 now and free its judges
+//   ADMIN_TOKEN=... deno task links hold 1          pause session 1: nothing new starts until release
+//   ADMIN_TOKEN=... deno task links release 1       let session 1 carry on
+//   ADMIN_TOKEN=... deno task links cancel 1        drop session 1 for good; its track moves on
+//
+// Sessions run themselves: each track arms its next session (see sequencer.ts).
 //
 // Options: --base <url>   server address (default $BASE_URL or http://localhost:3000)
 //          --tracks 1,2   issue a DJ (dj<N>) and a scoreboard (sb<N>) link per track
@@ -124,7 +128,9 @@ switch (command) {
   }
   case "skip":
   case "reopen":
-  case "abort": {
+  case "hold":
+  case "release":
+  case "cancel": {
     if (!arg) {
       console.error(`Usage: ${command} <sessionId>`);
       Deno.exit(2);
@@ -137,13 +143,13 @@ switch (command) {
         ? `skipped: ${r.skipped}`
         : command === "reopen"
         ? "scoring re-opened"
-        : r.message ?? "aborted",
+        : r.message ?? `${command}: done`,
     );
     break;
   }
   default:
     console.error(
-      "Usage: issue | list | revoke <id> | sessions | skip <sessionId> | reopen <sessionId> | abort <sessionId>",
+      "Usage: issue | list | revoke <id> | sessions | skip <sessionId> | reopen | hold | release | cancel <sessionId>",
     );
     Deno.exit(2);
 }

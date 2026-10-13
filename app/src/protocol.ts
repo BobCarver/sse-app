@@ -45,6 +45,13 @@ export interface CompetitionReadyMessage extends BaseMessage {
   event: "competition_ready";
   competition_id: number;
   name: string;
+  /**
+   * The planned start (ISO) when it is still ahead: the DJ cannot start before
+   * it (the button counts down; the server answers 425 to an early press).
+   */
+  starts_at?: string | null;
+  /** The server's clock when sent, so a device can correct its own. */
+  server_time?: string;
 }
 
 // SERVER -> ALL CLIENTS: every competition is done; the DJ ends the session
@@ -55,6 +62,8 @@ export interface SessionFinishedMessage extends BaseMessage {
   session_id: number;
   next_session_name: string | null;
   next_session_start: string | null;
+  /** When the track runs late: the expected start (ISO); null = on time. */
+  next_session_estimate?: string | null;
 }
 
 // ============================================================================
@@ -107,7 +116,7 @@ export interface PingMessage {
 // number of judge scores that were never received.
 export interface SessionEndMessage extends BaseMessage {
   event: "session_end";
-  reason: "completed" | "aborted" | "error";
+  reason: "completed" | "aborted" | "cancelled" | "error";
   incomplete: number;
 }
 

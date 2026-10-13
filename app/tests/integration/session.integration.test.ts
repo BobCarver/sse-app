@@ -21,11 +21,11 @@ import {
   audio,
   credentials,
   loadFestival,
-  resumeActiveSessions,
+  sequencer,
 } from "../../src/main.ts";
 import { registerDemoRoutes } from "../../src/demo.ts";
 import { announceAudio } from "../../src/audioAnnouncer.ts";
-import { SessionManager } from "../../src/sessionManager.ts";
+import { judgeClaims, SessionManager } from "../../src/sessionManager.ts";
 import { clearAllResolvers } from "../../src/resolveTag.ts";
 import { beginTag, closeTag, perfTag, scoreTag } from "../../src/contract.ts";
 import { createMockClient, delay } from "../test-utils.ts";
@@ -123,11 +123,13 @@ async function seed(
 
 async function unseed(db: NonNullable<typeof sql>) {
   // A failed test must not leave a session running into the next one.
+  sequencer.enabled = false;
   const left = SessionManager.getAllSessions();
   for (const s of left) s.abort("test over");
   if (left.length > 0) await delay(100);
   for (const s of left) SessionManager.deleteSession(s.id);
   clearAllResolvers();
+  judgeClaims.clear();
   await db`TRUNCATE scores, track_progress, session_runs, skips,
     missing_scores, festival_bundle, client_credentials`;
   setFestival(Festival.empty());
@@ -399,9 +401,8 @@ Deno.test({
       assertEquals(score, 6.5);
 
       // Track and judges are free again in memory...
-      assert(
-        SessionManager.findConflict(2, 1, ["judge2", "judge3"]) === undefined,
-      );
+      assert(SessionManager.findConflict(2, 1) === undefined);
+      assertEquals(judgeClaims.holder("judge2"), undefined);
       // ...and in the database: the track is given back, the session is
       // marked finished with its actual start and end, nothing was skipped.
       const { track, run } = await progressOf(db);
@@ -639,7 +640,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "Operator: abort mid-performance tells every page; the session keeps its track and resumes at the cursor",
+    "Shutdown mid-performance: every page is told; the session keeps its track and resumes at the cursor",
   ignore: !sql,
   fn: async () => {
     const db = sql!;
@@ -651,9 +652,11 @@ Deno.test({
       assertEquals((await admin("POST", "/sessions/1/start")).status, 200);
       await dj.next("performance_start"); // stuck: the DJ never answers
 
-      const abort = await admin("POST", "/admin/sessions/1/abort");
-      assertEquals(abort.status, 200);
-      await abort.body?.cancel();
+      // There is no operator abort; a server shutdown stops it like this.
+      const gone404 = await admin("POST", "/admin/sessions/1/abort");
+      assertEquals(gone404.status, 404);
+      await gone404.body?.cancel();
+      SessionManager.getSession(1)!.abort("server shutting down");
       for (const s of [dj, j2, j3, sb]) {
         assertEquals(await s.next("session_end"), {
           reason: "aborted",
@@ -692,9 +695,7 @@ Deno.test({
         assertEquals((await s.next("competition_start")).competition.id, 10);
       }
       assertEquals((await dj.next("performance_start")).position, 0);
-      await admin("POST", "/admin/sessions/1/abort").then((r) =>
-        r.body?.cancel()
-      );
+      SessionManager.getSession(1)?.abort("test over");
       await gone();
     } finally {
       await Promise.all(open.map((s) => s.close()));
@@ -725,9 +726,7 @@ Deno.test({
       await blocked.body?.cancel();
 
       // ...until 1 is stopped having done nothing.
-      await admin("POST", "/admin/sessions/1/abort").then((r) =>
-        r.body?.cancel()
-      );
+      SessionManager.getSession(1)?.abort("test over");
       await gone();
       await delay(50);
       assertEquals((await progressOf(db)).track.open_session, null);
@@ -736,9 +735,7 @@ Deno.test({
       await next.body?.cancel();
       await delay(50);
       assertEquals((await progressOf(db, 2)).track.open_session, 2);
-      await admin("POST", "/admin/sessions/2/abort").then((r) =>
-        r.body?.cancel()
-      );
+      SessionManager.getSession(2)?.abort("test over");
       await gone(2);
     } finally {
       await Promise.all(open.map((s) => s.close()));
@@ -806,9 +803,7 @@ Deno.test({
       const nothing = await admin("POST", "/admin/sessions/1/reopen");
       assertEquals(nothing.status, 409);
       await nothing.body?.cancel();
-      await admin("POST", "/admin/sessions/1/abort").then((r) =>
-        r.body?.cancel()
-      );
+      SessionManager.getSession(1)?.abort("test over");
       await gone();
     } finally {
       Deno.env.delete("JUDGE_SCORE_TIMEOUT_MS");
@@ -884,7 +879,8 @@ Deno.test({
       assertEquals([f.id, festival().id], [1000, 1000]);
       const [stored] = await db`SELECT digest, data_json FROM festival_bundle`;
       assertEquals(stored.data_json, files.dataText); // the exact text
-      await db`INSERT INTO session_runs (session_id, track_id) VALUES (1000, 1000)`;
+      await db`INSERT INTO session_runs (session_id, track_id, started_at)
+        VALUES (1000, 1000, NOW())`;
       const other = await buildBundle(seedFestival(), new AudioSet());
       await writeBundle(dir, other);
       const err = await loadFestival(dir, `${dir}/audio`).catch((e) => e);
@@ -1056,11 +1052,15 @@ Deno.test({
         ["audio:dj1"],
       );
       assertEquals(await ready("dj1", m1.json.digest), 200);
-      await dj.next("competition_start");
-
-      await admin("POST", "/admin/sessions/1/abort").then((r) =>
-        r.body?.cancel()
+      // The audio is in place; now the planned start (10 min ahead) holds it.
+      await delay(100);
+      assert(
+        SessionManager.getSession(1)!.status().waiting_for[0].startsWith(
+          "planned start ",
+        ),
       );
+
+      SessionManager.getSession(1)?.abort("test over");
       await delay(100);
     } finally {
       await Promise.all(streams.map((s) => s.close()));
@@ -1416,7 +1416,8 @@ Deno.test({
         [2, 7],
       ]);
 
-      await resumeActiveSessions();
+      sequencer.enabled = true; // as at boot
+      await sequencer.armAll();
       const session = SessionManager.getSession(1);
       assert(session?.isRunning(), "the session is running again");
 
@@ -1438,9 +1439,13 @@ Deno.test({
       );
       assertEquals((await dj.next("session_end")).reason, "completed");
       await delay(100);
-      const { track, run } = await progressOf(db);
-      assertEquals(track.open_session, null);
+      const { run } = await progressOf(db);
       assert(run.finished_at, "finished");
+      // The track moved on: the sequencer armed session 2.
+      await eventually(
+        async () => (await progressOf(db, 2)).track.open_session,
+        2,
+      );
     } finally {
       SessionManager.getSession(1)?.abort("test over");
       await Promise.all(streams.map((s) => s.close()));
@@ -1465,7 +1470,8 @@ Deno.test({
       await db`INSERT INTO track_progress
           (track_id, open_session, competition_id, competitor_id, phase)
         VALUES (1, 1, 10, 101, 'performing')`;
-      await resumeActiveSessions();
+      sequencer.enabled = true; // as at boot
+      await sequencer.armAll();
 
       const [dj, j2, j3, sb] = await openAll();
       streams.push(dj, j2, j3, sb);
@@ -1483,8 +1489,7 @@ Deno.test({
 });
 
 Deno.test({
-  name:
-    "DJ gates: the DJ starts the competition and ends the session; judges are held until then",
+  name: "DJ gates: the DJ starts the competition and ends the session",
   ignore: !sql,
   fn: async () => {
     const db = sql!;
@@ -1542,11 +1547,9 @@ Deno.test({
         competitor_id: null,
         phase: null,
       });
-      assertEquals(
-        SessionManager.findConflict(2, 1, ["judge2"]) !== undefined,
-        true,
-        "judge 2 is still held by the session",
-      );
+      // Judges are given back when their competition ends (per-competition
+      // claims), but are told the session ended only when it does.
+      assertEquals(judgeClaims.holder("judge2"), undefined);
       assertEquals(
         await respond(j2, { tag: closeTag(1), payload: true }),
         403,
@@ -1559,16 +1562,211 @@ Deno.test({
       assertEquals((await dj.next("session_end")).reason, "completed");
       assertEquals((await j2.next("session_end")).reason, "completed");
       await delay(100);
-      assertEquals(
-        SessionManager.findConflict(2, 1, ["judge2", "judge3"]),
-        undefined,
-        "judges are released",
-      );
+      assertEquals(SessionManager.findConflict(2, 1), undefined);
     } finally {
       Deno.env.set("DJ_GATES", "0");
       SessionManager.getSession(1)?.abort("test over");
       await Promise.all(streams.map((s) => s.close()));
       await delay(100);
+      await unseed(db);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "Sequencer: arms the first session, and after End session the next one on the track",
+  ignore: !sql,
+  fn: async () => {
+    const db = sql!;
+    await seed(db);
+    const streams: SSEStream[] = [];
+    try {
+      sequencer.enabled = true;
+      await sequencer.armAll(); // what the server does at boot
+      assert(SessionManager.getSession(1)?.isRunning(), "session 1 armed");
+      await eventually(
+        async () => (await progressOf(db)).track.open_session,
+        1,
+      );
+
+      const [dj, j2, j3, sb] = await openAll();
+      streams.push(dj, j2, j3, sb);
+      for (const pos of [0, 1]) {
+        assertEquals((await dj.next("performance_start")).position, pos);
+        assertEquals(
+          await respond(dj, { tag: perfTag(10, pos), payload: false }),
+          200,
+        );
+      }
+      assertEquals((await dj.next("session_end")).reason, "completed");
+
+      // Session 2 is armed by itself; its planned start (2030) is ahead.
+      await eventually(
+        () =>
+          Promise.resolve(SessionManager.getSession(2)?.isRunning() ?? false),
+        true,
+      );
+      await eventually(
+        () =>
+          Promise.resolve(SessionManager.getSession(2)!.status().waiting_for),
+        ["planned start 2030-01-01T14:00:00.000Z"],
+      );
+    } finally {
+      await Promise.all(streams.map((s) => s.close()));
+      await unseed(db);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "Cancel: a running session is dropped for good and its track moves on; a later one can be cancelled ahead",
+  ignore: !sql,
+  fn: async () => {
+    const db = sql!;
+    await seed(db);
+    const streams: SSEStream[] = [];
+    try {
+      const [dj, j2, j3, sb] = await openAll();
+      streams.push(dj, j2, j3, sb);
+      sequencer.enabled = true;
+      await sequencer.armAll();
+      await dj.next("performance_start");
+
+      const res = await admin("POST", "/admin/sessions/1/cancel");
+      assertEquals(res.status, 200);
+      await res.body?.cancel();
+      for (const s of [dj, j2, sb]) {
+        assertEquals((await s.next("session_end")).reason, "cancelled");
+      }
+      await eventually(async () => {
+        const [run] = await db`SELECT cancelled_at IS NOT NULL AS c
+          FROM session_runs WHERE session_id = 1`;
+        return run?.c;
+      }, true);
+      // The track moved on: session 2 is armed.
+      await eventually(
+        () =>
+          Promise.resolve(SessionManager.getSession(2)?.isRunning() ?? false),
+        true,
+      );
+      // A cancelled session is not run again.
+      sequencer.enabled = false;
+      const again = await admin("POST", "/sessions/1/start");
+      assertEquals(again.status, 409);
+      assert((await again.json()).error.includes("cancelled"));
+      SessionManager.getSession(2)!.abort("test over");
+      await gone(2);
+
+      // Cancelling a session that is not running: marked, and the track
+      // (held by session 2 since it was armed) is given back.
+      const ahead = await admin("POST", "/admin/sessions/2/cancel");
+      assertEquals(ahead.status, 200);
+      await ahead.body?.cancel();
+      assertEquals((await progressOf(db)).track.open_session, null);
+      const twice = await admin("POST", "/admin/sessions/2/cancel");
+      assertEquals(twice.status, 409);
+      await twice.body?.cancel();
+
+      // The overview shows both as cancelled (and finished).
+      const o = await (await app.fetch(
+        new Request("http://localhost/admin/overview", {
+          headers: { cookie: await adminCookie() },
+        }),
+      )).json();
+      assertEquals(
+        o.festivals[0].tracks[0].sessions.map((
+          s: any,
+        ) => [s.id, s.status, s.cancelled]),
+        [[1, "finished", true], [2, "finished", true]],
+      );
+    } finally {
+      await Promise.all(streams.map((s) => s.close()));
+      await unseed(db);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "Hold: pauses the session, survives a restart, and release lets it carry on",
+  ignore: !sql,
+  fn: async () => {
+    const db = sql!;
+    await seed(db);
+    const streams: SSEStream[] = [];
+    try {
+      const [dj, j2, j3, sb] = await openAll();
+      streams.push(dj, j2, j3, sb);
+      assertEquals((await admin("POST", "/sessions/1/start")).status, 200);
+      await dj.next("performance_start");
+
+      assertEquals((await admin("POST", "/admin/sessions/1/hold")).status, 200);
+      await eventually(async () => {
+        const [run] = await db`SELECT held_at IS NOT NULL AS h
+          FROM session_runs WHERE session_id = 1`;
+        return run.h;
+      }, true);
+      // The song ends while held: scoring does not open.
+      assertEquals(
+        await respond(dj, { tag: perfTag(10, 0), payload: true }),
+        200,
+      );
+      await delay(100);
+      assertEquals(j2.queued().includes("enable_scoring"), false);
+
+      // A restart (shutdown, then start again): it comes back held.
+      SessionManager.getSession(1)!.abort("server shutting down");
+      await gone();
+      assertEquals((await admin("POST", "/sessions/1/start")).status, 200);
+      await delay(100);
+      const st = (await (await admin("GET", "/admin/sessions")).json())[0];
+      assertEquals([st.held, st.waiting_for], [true, ["held by operator"]]);
+      assertEquals(j3.queued().includes("enable_scoring"), false);
+
+      // Released: scoring re-opens for the competitor that was performed.
+      const rel = await admin("POST", "/admin/sessions/1/release");
+      assertEquals(rel.status, 200);
+      await rel.body?.cancel();
+      assertEquals((await j3.next("enable_scoring")).position, 0);
+      const [run] =
+        await db`SELECT held_at FROM session_runs WHERE session_id = 1`;
+      assertEquals(run.held_at, null);
+    } finally {
+      await Promise.all(streams.map((s) => s.close()));
+      await unseed(db);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "Planned start: the DJ cannot start a session before its planned time (425), and is told when",
+  ignore: !sql,
+  fn: async () => {
+    const db = sql!;
+    await seed(db);
+    Deno.env.set("DJ_GATES", "1");
+    const streams: SSEStream[] = [];
+    try {
+      // Session 2 is planned for 2030 (session 1 is cancelled to free the track).
+      const c = await admin("POST", "/admin/sessions/1/cancel");
+      await c.body?.cancel();
+      const [dj, j2, j3, sb] = await openAll();
+      streams.push(dj, j2, j3, sb);
+      assertEquals((await admin("POST", "/sessions/2/start")).status, 200);
+      const ready = await dj.next("competition_ready");
+      assertEquals(ready.competition_id, 20);
+      assertEquals(ready.starts_at, "2030-01-01T14:00:00.000Z");
+      assertEquals(
+        await respond(dj, { tag: beginTag(20), payload: true }),
+        425,
+      );
+      assertEquals(sb.queued().includes("competition_start"), false);
+    } finally {
+      Deno.env.set("DJ_GATES", "0");
+      await Promise.all(streams.map((s) => s.close()));
       await unseed(db);
     }
   },

@@ -92,7 +92,8 @@ export class sseClient {
       this.setStatus(
         {
           completed: "Session complete",
-          aborted: "Session stopped by an administrator",
+          aborted: "Session stopped",
+          cancelled: "Session cancelled by an administrator",
           error: "Session ended unexpectedly",
         }[reason] ?? "Session ended",
       );

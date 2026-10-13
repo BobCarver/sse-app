@@ -6,9 +6,12 @@ import type { Scores } from "./types.ts";
 
 export type ResponseResult =
   | { ok: true }
-  | { ok: false; status: 400 | 403 | 404; error: string };
+  | { ok: false; status: 400 | 403 | 404 | 425; error: string };
 
-const fail = (status: 400 | 403 | 404, error: string): ResponseResult => ({
+const fail = (
+  status: 400 | 403 | 404 | 425,
+  error: string,
+): ResponseResult => ({
   ok: false,
   status,
   error,
@@ -49,6 +52,15 @@ export function handleResponse(
   if (!owner) {
     console.warn(`403: ${sender} tried to answer ${tag}`);
     return fail(403, "not allowed to answer this request");
+  }
+
+  // The DJ never starts before the planned time (the page's button counts
+  // down; a press on a fast clock is refused).
+  if (parsed.kind === "begin") {
+    const notBefore = session.beginNotBefore(parsed.competitionId);
+    if (notBefore) {
+      return fail(425, `not before ${notBefore.toISOString()}`);
+    }
   }
 
   let payload = body!.payload;

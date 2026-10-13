@@ -27,6 +27,17 @@ export interface DjDependencies {
   prefetcher?: AudioPrefetcher;
   /** For tests: how long to wait before retrying an incomplete download. */
   audioRetryMs?: number;
+  /** For tests: the clock (ms). */
+  now?: () => number;
+}
+
+/** "12:05" or "1:02:05" until a time, for the start button's countdown. */
+export function countdown(ms: number): string {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = String(total % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
 }
 
 /*
@@ -72,6 +83,9 @@ export class DjClient extends sseClient {
   private prefetcher?: AudioPrefetcher;
   private audioRetryMs: number;
   private audioRetry?: ReturnType<typeof setTimeout>;
+  private now: () => number;
+  /** Ticks the start button's countdown to the planned start. */
+  private countdownTimer?: ReturnType<typeof setInterval>;
 
   constructor(deps: DjDependencies = {}) {
     super({
@@ -83,6 +97,7 @@ export class DjClient extends sseClient {
     this.audio = deps.audio || new Audio();
     this.prefetcher = deps.prefetcher;
     this.audioRetryMs = deps.audioRetryMs ?? 10_000;
+    this.now = deps.now ?? Date.now;
 
     this.startPauseButton = doc.querySelector("#start") as HTMLButtonElement;
     this.skipButton = doc.querySelector("#skip") as HTMLButtonElement;
@@ -95,18 +110,37 @@ export class DjClient extends sseClient {
     // The break between competitions: the DJ starts the next one, and after the
     // last one ends the session. Replayed on reconnect, so this is idempotent.
     this.sse.addEventListener("competition_ready", ({ data }) => {
-      const { competition_id, name } = JSON.parse(
-        data,
-      ) as CompetitionReadyMessage;
-      this.setStatus(`Next competition: ${name}`);
-      this.showGate(`Start competition: ${name}`, beginTag(competition_id));
+      const msg = JSON.parse(data) as CompetitionReadyMessage;
+      const { competition_id, name } = msg;
+      // Not before the planned start, by the server's clock: this device's
+      // clock may be off, so only the difference is used.
+      const offset = msg.server_time
+        ? Date.parse(msg.server_time) - this.now()
+        : 0;
+      const notBefore = msg.starts_at
+        ? Date.parse(msg.starts_at) - offset
+        : undefined;
+      this.setStatus(
+        notBefore !== undefined && notBefore > this.now()
+          ? `Next competition: ${name}, at ${formatWhen(msg.starts_at!)}`
+          : `Next competition: ${name}`,
+      );
+      this.showGate(
+        `Start competition: ${name}`,
+        beginTag(competition_id),
+        notBefore,
+      );
     });
     this.sse.addEventListener("session_finished", ({ data }) => {
       const msg = JSON.parse(data) as SessionFinishedMessage;
       this.setStatus(
         msg.next_session_start
           ? `Session finished. The next session begins at ${
-            formatWhen(msg.next_session_start)
+            msg.next_session_estimate
+              ? `about ${formatWhen(msg.next_session_estimate)} (planned ${
+                formatWhen(msg.next_session_start)
+              })`
+              : formatWhen(msg.next_session_start)
           }`
           : "Session finished. No further sessions on this track.",
       );
@@ -146,16 +180,35 @@ export class DjClient extends sseClient {
     });
   }
 
-  /** Show the button that answers the server's wait for the DJ. */
+  /**
+   * Show the button that answers the server's wait for the DJ. With
+   * `notBefore` (local ms) it stays disabled, counting down, until then: the
+   * DJ can never start before the planned time.
+   */
   private showGate(
     label: string,
     tag: ReturnType<typeof beginTag> | ReturnType<typeof closeTag>,
+    notBefore?: number,
   ): void {
     const button = this.gateButton;
     if (!button) return;
+    this.stopCountdown();
     button.textContent = label;
     button.disabled = false;
     button.removeAttribute("hidden");
+    const tick = () => {
+      const left = notBefore === undefined ? 0 : notBefore - this.now();
+      if (left > 0) {
+        button.disabled = true;
+        button.textContent = `${label} (in ${countdown(left)})`;
+        return;
+      }
+      this.stopCountdown();
+      button.textContent = label;
+      button.disabled = false;
+    };
+    tick();
+    if (button.disabled) this.countdownTimer = setInterval(tick, 1000);
     button.onclick = async () => {
       button.disabled = true; // one press; the server moves on
       const { ok, status } = await postResponse({ tag, payload: true });
@@ -164,12 +217,20 @@ export class DjClient extends sseClient {
       this.setStatus(
         status === 401 || status === 403
           ? "Access denied - ask an administrator for a new link"
+          : status === 425
+          ? "Not yet: the competition cannot start before its planned time"
           : "Could not reach server - press the button again",
       );
     };
   }
 
+  private stopCountdown(): void {
+    clearInterval(this.countdownTimer);
+    this.countdownTimer = undefined;
+  }
+
   private hideGate(): void {
+    this.stopCountdown();
     if (!this.gateButton) return;
     this.gateButton.setAttribute("hidden", "");
     this.gateButton.onclick = null;

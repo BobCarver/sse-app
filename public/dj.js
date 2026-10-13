@@ -444,7 +444,8 @@ var sseClient = class {
       const { reason } = JSON.parse(data);
       this.setStatus({
         completed: "Session complete",
-        aborted: "Session stopped by an administrator",
+        aborted: "Session stopped",
+        cancelled: "Session cancelled by an administrator",
         error: "Session ended unexpectedly"
       }[reason] ?? "Session ended");
       this.onSessionEnd();
@@ -498,6 +499,13 @@ var sseClient = class {
 // app/frontend-src/dj.ts
 var SILENT_WAV = "data:audio/wav;base64,UklGRrQBAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YZABAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA";
 var PLAY_PROMPT = "Press play to start the song";
+function countdown(ms) {
+  const total = Math.max(0, Math.ceil(ms / 1e3));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor(total % 3600 / 60);
+  const sec = String(total % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
 var DjClient = class extends sseClient {
   startPauseButton;
   skipButton;
@@ -514,6 +522,9 @@ var DjClient = class extends sseClient {
   prefetcher;
   audioRetryMs;
   audioRetry;
+  now;
+  /** Ticks the start button's countdown to the planned start. */
+  countdownTimer;
   constructor(deps = {}) {
     super({
       sse: deps.sse,
@@ -523,6 +534,7 @@ var DjClient = class extends sseClient {
     this.audio = deps.audio || new Audio();
     this.prefetcher = deps.prefetcher;
     this.audioRetryMs = deps.audioRetryMs ?? 1e4;
+    this.now = deps.now ?? Date.now;
     this.startPauseButton = doc.querySelector("#start");
     this.skipButton = doc.querySelector("#skip");
     this.gateButton = doc.querySelector("#begin");
@@ -531,13 +543,16 @@ var DjClient = class extends sseClient {
     this.initialState();
     this.setupAudioUnlock(doc);
     this.sse.addEventListener("competition_ready", ({ data }) => {
-      const { competition_id, name } = JSON.parse(data);
-      this.setStatus(`Next competition: ${name}`);
-      this.showGate(`Start competition: ${name}`, beginTag(competition_id));
+      const msg = JSON.parse(data);
+      const { competition_id, name } = msg;
+      const offset = msg.server_time ? Date.parse(msg.server_time) - this.now() : 0;
+      const notBefore = msg.starts_at ? Date.parse(msg.starts_at) - offset : void 0;
+      this.setStatus(notBefore !== void 0 && notBefore > this.now() ? `Next competition: ${name}, at ${formatWhen(msg.starts_at)}` : `Next competition: ${name}`);
+      this.showGate(`Start competition: ${name}`, beginTag(competition_id), notBefore);
     });
     this.sse.addEventListener("session_finished", ({ data }) => {
       const msg = JSON.parse(data);
-      this.setStatus(msg.next_session_start ? `Session finished. The next session begins at ${formatWhen(msg.next_session_start)}` : "Session finished. No further sessions on this track.");
+      this.setStatus(msg.next_session_start ? `Session finished. The next session begins at ${msg.next_session_estimate ? `about ${formatWhen(msg.next_session_estimate)} (planned ${formatWhen(msg.next_session_start)})` : formatWhen(msg.next_session_start)}` : "Session finished. No further sessions on this track.");
       this.showGate("End session", closeTag(msg.session_id));
     });
     this.sse.addEventListener("competition_start", () => {
@@ -568,13 +583,31 @@ var DjClient = class extends sseClient {
       });
     });
   }
-  /** Show the button that answers the server's wait for the DJ. */
-  showGate(label, tag) {
+  /**
+   * Show the button that answers the server's wait for the DJ. With
+   * `notBefore` (local ms) it stays disabled, counting down, until then: the
+   * DJ can never start before the planned time.
+   */
+  showGate(label, tag, notBefore) {
     const button = this.gateButton;
     if (!button) return;
+    this.stopCountdown();
     button.textContent = label;
     button.disabled = false;
     button.removeAttribute("hidden");
+    const tick = () => {
+      const left = notBefore === void 0 ? 0 : notBefore - this.now();
+      if (left > 0) {
+        button.disabled = true;
+        button.textContent = `${label} (in ${countdown(left)})`;
+        return;
+      }
+      this.stopCountdown();
+      button.textContent = label;
+      button.disabled = false;
+    };
+    tick();
+    if (button.disabled) this.countdownTimer = setInterval(tick, 1e3);
     button.onclick = async () => {
       button.disabled = true;
       const { ok, status } = await postResponse({
@@ -583,10 +616,15 @@ var DjClient = class extends sseClient {
       });
       if (ok || status === 404) return;
       button.disabled = false;
-      this.setStatus(status === 401 || status === 403 ? "Access denied - ask an administrator for a new link" : "Could not reach server - press the button again");
+      this.setStatus(status === 401 || status === 403 ? "Access denied - ask an administrator for a new link" : status === 425 ? "Not yet: the competition cannot start before its planned time" : "Could not reach server - press the button again");
     };
   }
+  stopCountdown() {
+    clearInterval(this.countdownTimer);
+    this.countdownTimer = void 0;
+  }
   hideGate() {
+    this.stopCountdown();
     if (!this.gateButton) return;
     this.gateButton.setAttribute("hidden", "");
     this.gateButton.onclick = null;

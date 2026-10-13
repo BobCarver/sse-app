@@ -86,8 +86,13 @@ export type ProgressEvent =
     reason: "timeout" | "closed" | "absent";
   }
   | {
+    /** An operator hold was put on or lifted (it survives a restart). */
+    kind: "held";
+    held: boolean;
+  }
+  | {
     kind: "session_ended";
-    reason: "completed" | "aborted" | "error";
+    reason: "completed" | "aborted" | "cancelled" | "error";
     /**
      * Nothing ran in this session (no performance began, nothing was
      * finished): an abort gives the track back instead of keeping it.

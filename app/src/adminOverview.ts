@@ -7,6 +7,12 @@ import {
 import type { AudioRecord } from "./audioLibrary.ts";
 import { uploadCutoff } from "./audioLibrary.ts";
 import {
+  type Allowances,
+  estimateStarts,
+  isLate,
+  planFromBundle,
+} from "./estimate.ts";
+import {
   deriveStatus,
   entryKey,
   NOT_STARTED,
@@ -29,6 +35,7 @@ export interface ProgressRows {
     started_at: Date | null;
     finished_at: Date | null;
     cancelled_at: Date | null;
+    held_at?: Date | null;
   }[];
   /** One per track: the open session and its cursor. */
   cursors: {
@@ -56,6 +63,7 @@ export interface OverviewContext {
   /** What a running session is doing right now. */
   live(sessionId: number): OverviewLive | null;
   now?: Date;
+  allowances?: Allowances;
   cutoffMinutes?: number;
 }
 
@@ -76,6 +84,7 @@ export function sessionProgress(
     return {
       finished: !!run?.finished_at,
       cancelled: !!run?.cancelled_at,
+      started: !!run?.started_at,
       open: !!c,
       cursor: c && c.competition_id !== null && c.competitor_id !== null
         ? {
@@ -133,6 +142,25 @@ export function buildOverview(
     rows.skips.map((s) => entryKey(s.competition_id, s.competitor_id)),
   );
   const progressOf = sessionProgress(rows);
+  const runs = new Map(rows.runs.map((r) => [r.session_id, r]));
+
+  // Expected starts, per track: delays cascade from the open session.
+  const estimates = new Map<number, Date>();
+  for (const t of data.festival.tracks) {
+    const pending = sessionsInOrder(t).filter((s) => {
+      const p = progressOf(s.id);
+      return !p.finished && !p.cancelled;
+    });
+    const open = pending.find((s) => progressOf(s.id).open);
+    for (
+      const [id, at] of estimateStarts(
+        pending.map(planFromBundle),
+        open && { sessionId: open.id, cursor: progressOf(open.id).cursor },
+        ctx.now ?? new Date(),
+        ctx.allowances,
+      )
+    ) estimates.set(id, at);
+  }
 
   const rubrics = new Map(data.festival.rubrics.map((r) => [r.id, r]));
   const judgesOf = (c: BundleCompetition) =>
@@ -160,12 +188,19 @@ export function buildOverview(
       scoredBy,
     );
     const startTime = new Date(s.start_time);
+    const estimate = estimates.get(s.id);
+    const run = runs.get(s.id);
     return {
       id: s.id,
       name: s.name,
       status: derived.session,
       start_time: startTime.toISOString(),
       audio_cutoff: uploadCutoff(startTime, ctx.cutoffMinutes).toISOString(),
+      estimated_start: estimate && isLate(estimate, startTime)
+        ? estimate.toISOString()
+        : null,
+      held: live?.held ?? !!run?.held_at,
+      cancelled: !!run?.cancelled_at,
       running: live !== null,
       live,
       competitions: competitions.map((comp): OverviewCompetition => ({

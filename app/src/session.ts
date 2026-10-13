@@ -1,5 +1,6 @@
 import type { ClientStatusMessage, ServerToClientMessage } from "./protocol.ts";
 import { resolveTag, waitForTag } from "./resolveTag.ts";
+import type { JudgeClaims } from "./sessionManager.ts";
 import {
   beginTag,
   closeTag,
@@ -50,6 +51,31 @@ class SkipWaitError extends Error {}
 /** Scoring was closed before every judge submitted. */
 class ScoringClosedError extends Error {}
 
+/** The longest delay setTimeout takes (longer ones fire at once). */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/**
+ * Wait `ms`, or until `signal` aborts (then reject with its reason). Long waits
+ * (a session planned weeks ahead) are taken in steps setTimeout can handle.
+ */
+async function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  const until = Date.now() + ms;
+  for (let left = ms; left > 0; left = until - Date.now()) {
+    await new Promise<void>((resolve, reject) => {
+      if (signal.aborted) return reject(signal.reason);
+      const timer = setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, Math.min(left, MAX_TIMER_MS));
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(signal.reason);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+}
+
 /** A judge score that never arrived. */
 export interface IncompleteScore {
   competition_id: number;
@@ -93,24 +119,47 @@ export interface SessionDependencies {
   };
   /** Track this session runs on (one running session per track). */
   trackId?: number;
-  /** Client ids held by this session until it ends (judges for every competition). */
-  claimedClients?: string[];
+  /**
+   * Shared judge claims: a competition's judges are claimed when its start gate
+   * opens and given back when it ends; a judge held by another session is
+   * waited for. Absent = no claiming (unit tests).
+   */
+  claims?: JudgeClaims;
+  /**
+   * The planned start: the session's first competition cannot begin before it
+   * (the DJ's start button stays disabled; the server refuses an early press).
+   */
+  plannedStart?: Date;
+  /** Start held (an operator hold that survived a restart). */
+  held?: boolean;
   /**
    * The DJ starts every competition and ends the session with a button; the
    * scoreboards announce each one and, at the end, the next session. Off = the
    * session runs straight through (unit tests, DJ_GATES=0).
    */
   djGates?: boolean;
-  /** The track's following session, shown when this one is finished. */
-  followingSession?: () => Promise<
-    { name: string; startTime: Date } | undefined
-  >;
+  /**
+   * The track's following session, shown when this one is finished
+   * (`estimate`: when it is expected to start if the track runs late).
+   */
+  followingSession?: () => Promise<FollowingSession | undefined>;
+}
+
+export interface FollowingSession {
+  name: string;
+  startTime: Date;
+  estimate?: Date;
 }
 
 /** What the session is waiting for the DJ to do. */
 type DjGate =
-  | { kind: "begin"; competition: { id: number; name: string } }
-  | { kind: "close"; next: { name: string; startTime: Date } | null };
+  | {
+    kind: "begin";
+    competition: { id: number; name: string };
+    /** Not before this (the planned start of the session's first competition). */
+    startsAt: Date | null;
+  }
+  | { kind: "close"; next: FollowingSession | null };
 
 export class Session {
   clients: Map<string, SSEClient | undefined> = new Map();
@@ -128,7 +177,9 @@ export class Session {
   currentScores: ScoreSubmission[] = [];
   /** Judge scores that never arrived (timed out, closed early, or judge absent). */
   incomplete: IncompleteScore[] = [];
-  endReason: "completed" | "aborted" | "error" | null = null;
+  endReason: "completed" | "aborted" | "cancelled" | "error" | null = null;
+  /** An operator hold: nothing new starts until it is released. */
+  held = false;
   /** Clients the session is currently waiting to connect. */
   waitingFor: string[] = [];
 
@@ -149,6 +200,12 @@ export class Session {
   private operatorSkipped = false;
   /** Something ran (a performance began or an entry is done): see session_ended. */
   private touched = false;
+  /** Resolves the wait of a held session (see `hold`, `release`). */
+  private holdRelease: (() => void) | null = null;
+  /** `cancel()` was called: the session ends as cancelled. */
+  private cancelRequested = false;
+  /** Judges who took part in this run (told when it ends, wherever they wait). */
+  private judgesSeen = new Set<string>();
 
   constructor(
     public id: number,
@@ -173,18 +230,30 @@ export class Session {
     return this.gate?.kind === "begin" ? this.gate.competition.id : undefined;
   }
 
+  /** The DJ may not start this competition before this time (planned start). */
+  beginNotBefore(competitionId: number): Date | undefined {
+    const g = this.gate;
+    return g?.kind === "begin" && g.competition.id === competitionId &&
+        g.startsAt && g.startsAt.getTime() > Date.now()
+      ? g.startsAt
+      : undefined;
+  }
+
   private gateMessage(gate: DjGate): ServerToClientMessage {
     return gate.kind === "begin"
       ? {
         event: "competition_ready",
         competition_id: gate.competition.id,
         name: gate.competition.name,
+        starts_at: gate.startsAt?.toISOString() ?? null,
+        server_time: new Date().toISOString(),
       }
       : {
         event: "session_finished",
         session_id: this.id,
         next_session_name: gate.next?.name ?? null,
         next_session_start: gate.next?.startTime.toISOString() ?? null,
+        next_session_estimate: gate.next?.estimate?.toISOString() ?? null,
       };
   }
 
@@ -218,6 +287,7 @@ export class Session {
   private beginGate(
     competition: Competition,
     resume: ResumePlan,
+    startsAt: Date | null,
   ): Promise<void> | undefined {
     if (!this.deps.djGates) return undefined;
     const begun = resume.reopen?.competitionId === competition.id ||
@@ -230,15 +300,74 @@ export class Session {
       {
         kind: "begin",
         competition: { id: competition.id, name: competition.name },
+        startsAt,
       },
       beginTag(competition.id),
     );
   }
 
+  /** Wait for the planned start (not skippable: the DJ never starts early). */
+  private async untilPlanned(at: Date): Promise<void> {
+    const ms = at.getTime() - Date.now();
+    if (ms <= 0) return;
+    console.log(
+      `Session ${this.id}: waiting for the planned start ${at.toISOString()}`,
+    );
+    this.waitingFor = [`planned start ${at.toISOString()}`];
+    try {
+      await sleep(ms, this.signal);
+    } finally {
+      this.waitingFor = [];
+    }
+  }
+
+  /**
+   * Claim the competition's judges. A judge another session holds is waited
+   * for (shown as `judge<N> (held by track <T>)`) until it gives them back; an
+   * operator `skip()` goes on without them (excused for this competition).
+   * Returns the judges the session goes on without.
+   */
+  private async claimJudges(competition: Competition): Promise<Set<string>> {
+    const without = new Set<string>();
+    const claims = this.deps.claims;
+    if (!claims) return without;
+    const owner = { sessionId: this.id, trackId: this.trackId };
+    let blocked = claims.claim(
+      competition.rubric.judges.map((j) => `judge${j.id}`),
+      owner,
+    );
+    if (blocked.length === 0) return without;
+    const skip = new AbortController();
+    this.waitController = skip;
+    const signal = AbortSignal.any([this.signal, skip.signal]);
+    try {
+      while (blocked.length > 0 && !signal.aborted) {
+        this.waitingFor = blocked.map((id) =>
+          `${id} (held by track ${claims.holder(id)?.trackId ?? "?"})`
+        );
+        await claims.changed(signal);
+        blocked = claims.claim(blocked, owner);
+      }
+    } finally {
+      this.waitController = null;
+      this.waitingFor = [];
+    }
+    this.signal.throwIfAborted();
+    for (const id of blocked) {
+      console.warn(
+        `Session ${this.id}: going on without ${id} (held elsewhere)`,
+      );
+      this.skippedClients.add(id);
+      this.excusedJudges.add(Number(id.slice("judge".length)));
+      without.add(id);
+    }
+    return without;
+  }
+
   /** After the last competition: wait for the DJ to end the session. */
   private async closeGate(): Promise<void> {
     if (!this.deps.djGates) return;
-    let next: { name: string; startTime: Date } | null = null;
+    let next: FollowingSession | null = null;
     try {
       next = await this.deps.followingSession?.() ?? null;
     } catch (err) {
@@ -303,11 +432,6 @@ export class Session {
 
   get trackId(): number | undefined {
     return this.deps.trackId;
-  }
-
-  /** Clients this session holds until it finishes (a judge can't leave mid-session). */
-  get claimedClients(): ReadonlySet<string> {
-    return new Set(this.deps.claimedClients ?? []);
   }
 
   /**
@@ -482,7 +606,10 @@ export class Session {
    * Register required clients for a competition
    * Checks unassigned pool for already-connected clients
    */
-  registerRequiredClients(competition: Competition): void {
+  registerRequiredClients(
+    competition: Competition,
+    without: ReadonlySet<string> = new Set(),
+  ): void {
     console.log("Session: registerRequiredClients", {
       sessionId: this.id,
       competitionId: competition.id,
@@ -492,6 +619,8 @@ export class Session {
     // Register all judges for this competition
     competition.rubric.judges.forEach((judge) => {
       const clientKey = `judge${judge.id}`;
+      if (without.has(clientKey)) return; // held by another session
+      this.judgesSeen.add(clientKey);
       if (!this.clients.has(clientKey)) {
         // Check if this client is already connected in unassigned pool
         const unassignedClient = this.deps.unassignedClients.get(clientKey);
@@ -670,16 +799,69 @@ export class Session {
    * ended, and everyone goes back to the unassigned pool. Returns false if it
    * is not running.
    */
-  abort(reason = "aborted by administrator"): boolean {
+  abort(reason = "server shutting down"): boolean {
     if (
       !this.running || !this.runController || this.runController.signal.aborted
     ) {
       return false;
     }
     console.warn(`Session ${this.id}: ${reason}`);
-    this.endReason = "aborted";
+    this.endReason = this.cancelRequested ? "cancelled" : "aborted";
     this.runController.abort(new SessionAbortedError(reason));
     return true;
+  }
+
+  /**
+   * Drop the session for good (operator): it stops now, everyone is told, it is
+   * marked cancelled and never run again; its track moves on.
+   */
+  cancel(): boolean {
+    if (!this.running) return false;
+    this.cancelRequested = true;
+    return this.abort("cancelled by administrator");
+  }
+
+  /**
+   * Pause the session where it is: whatever is under way finishes, but nothing
+   * new starts (no competition, performance, scoring or end) until `release()`.
+   * Persisted, so a restart keeps it held.
+   */
+  hold(): boolean {
+    if (!this.running || this.held) return false;
+    this.held = true;
+    console.warn(`Session ${this.id}: held by the operator`);
+    this.progress({ kind: "held", held: true });
+    return true;
+  }
+
+  release(): boolean {
+    if (!this.held) return false;
+    this.held = false;
+    console.log(`Session ${this.id}: released by the operator`);
+    this.progress({ kind: "held", held: false });
+    const go = this.holdRelease;
+    this.holdRelease = null;
+    go?.();
+    return true;
+  }
+
+  /** Between steps: wait here while the session is held. */
+  private async checkpoint(): Promise<void> {
+    if (!this.held) return;
+    const signal = this.signal;
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        this.holdRelease = null;
+        reject(signal.reason);
+      };
+      if (signal.aborted) return onAbort();
+      signal.addEventListener("abort", onAbort, { once: true });
+      this.holdRelease = () => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      if (!this.held) this.holdRelease(); // released meanwhile
+    });
   }
 
   /**
@@ -745,7 +927,7 @@ export class Session {
   /** What the operator needs to see: where the session is and what it waits for. */
   status() {
     const competition = this.currentCompetition;
-    const waitingFor = this.waitingFor.length > 0
+    const waiting = this.waitingFor.length > 0
       ? [...this.waitingFor]
       : this.gate
       ? [this.gate.kind === "begin" ? "dj-start" : "dj-close"]
@@ -760,10 +942,12 @@ export class Session {
         )
         .map((j) => `judge${j.id}`)
       : [];
+    const waitingFor = this.held ? ["held by operator", ...waiting] : waiting;
     return {
       id: this.id,
       track_id: this.trackId ?? null,
       running: this.running,
+      held: this.held,
       phase: this.currentPhase,
       competition_id: competition?.id ?? null,
       competition_name: competition?.name ?? null,
@@ -1088,6 +1272,7 @@ export class Session {
     position: number,
   ): Promise<"closed" | "skipped"> {
     for (;;) {
+      await this.checkpoint();
       await this.scorePhase(competition);
       const judges = competition.rubric.judges;
       const scored = judges.some((j) =>
@@ -1177,6 +1362,12 @@ export class Session {
     this.submittedScores.clear();
     this.touched = finished.size > 0 || !!reopen ||
       resume.underway !== undefined;
+    this.cancelRequested = false;
+    this.judgesSeen.clear();
+    this.held = !!this.deps.held;
+    if (this.held) {
+      console.warn(`Session ${this.id}: starts held by the operator`);
+    }
     this.progress({
       kind: "session_started",
       resume: this.touched,
@@ -1204,17 +1395,27 @@ export class Session {
           if (isJudge(id)) this.skippedClients.delete(id);
         }
 
-        // Register required clients for THIS competition
-        this.registerRequiredClients(competition);
+        await this.checkpoint();
 
         // Tell everyone it is about to begin; the DJ's go-ahead is awaited
-        // while the judges connect (an early press is not lost).
-        const began = this.beginGate(competition, resume);
+        // while the judges connect (an early press is not lost). The session's
+        // first competition cannot begin before the planned start.
+        const planned = this.deps.plannedStart;
+        const startsAt = index === 0 && !this.touched && planned &&
+            planned.getTime() > Date.now()
+          ? planned
+          : null;
+        const began = this.beginGate(competition, resume, startsAt);
         began?.catch(() => {}); // a stop is reported where it is awaited below
+        if (startsAt) await this.untilPlanned(startsAt);
 
-        // Wait for all required clients to connect
+        // The judges are claimed now (not for the whole session), waited for
+        // if another track holds them, then waited for to connect.
+        const without = await this.claimJudges(competition);
+        this.registerRequiredClients(competition, without);
         await this.requireAllClients();
         await began;
+        await this.checkpoint();
 
         // Announce competition start
         this.competitionStart(competition);
@@ -1248,6 +1449,7 @@ export class Session {
           };
           let performed = false;
           try {
+            await this.checkpoint();
             if (reopening) {
               this.reopenScoring(competition, position, reopen.scores);
             }
@@ -1312,23 +1514,22 @@ export class Session {
         this.currentPosition = -1;
         this.currentScores = [];
 
-        // Clean up clients not needed for next competition. After the last one
-        // everyone is released by reset(), once they have been told it ended.
-        const nextCompetition = competitions[index + 1];
-        if (nextCompetition) {
-          this.clearUnneededClients(nextCompetition, permanentClientIds);
-        }
+        // The competition is over: its judges go back to the pool and are
+        // given back, so another track can claim them (the next competition
+        // claims its own).
+        this.clearUnneededClients(undefined, permanentClientIds);
+        this.deps.claims?.release(this.id);
       }
 
-      // All done: the scoreboards say so, and the DJ ends the session, which
-      // releases the judges.
+      // All done: the scoreboards say so, and the DJ ends the session.
+      await this.checkpoint();
       await this.closeGate();
 
       this.endReason = "completed";
       console.log(`Session ${this.id} completed successfully`);
     } catch (err) {
       if (err instanceof SessionAbortedError) {
-        this.endReason = "aborted";
+        this.endReason = this.cancelRequested ? "cancelled" : "aborted";
         console.warn(`Session ${this.id} stopped: ${err.message}`);
       } else {
         this.endReason = "error";
@@ -1350,9 +1551,9 @@ export class Session {
   }
 
   /**
-   * Tell everyone the session is over: connected clients, and judges the
-   * session is holding who are parked in the unassigned pool between
-   * competitions.
+   * Tell everyone the session is over: connected clients, and this run's judges
+   * who are back in the unassigned pool (judges are given back after each
+   * competition) unless another session has them now.
    */
   private announceEnd(): void {
     const message: ServerToClientMessage = {
@@ -1361,7 +1562,7 @@ export class Session {
       incomplete: this.incomplete.length,
     };
     this.broadcast(message);
-    for (const id of this.claimedClients) {
+    for (const id of this.judgesSeen) {
       const parked = this.deps.unassignedClients.get(id);
       if (parked && !this.clients.get(id)) this.sendToClient(parked, message);
     }
@@ -1396,5 +1597,7 @@ export class Session {
     }
 
     this.clients.clear();
+    this.deps.claims?.release(this.id);
+    this.holdRelease = null;
   }
 }

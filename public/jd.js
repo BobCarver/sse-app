@@ -360,7 +360,8 @@ var sseClient = class {
       const { reason } = JSON.parse(data);
       this.setStatus({
         completed: "Session complete",
-        aborted: "Session stopped by an administrator",
+        aborted: "Session stopped",
+        cancelled: "Session cancelled by an administrator",
         error: "Session ended unexpectedly"
       }[reason] ?? "Session ended");
       this.onSessionEnd();
