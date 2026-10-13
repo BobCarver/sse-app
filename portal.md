@@ -297,7 +297,9 @@ competition server and not in the DJ's browser.
      not `jsonb`, which reorders keys and breaks the digest), the digest,
      `generated_at`, and who ran it.
 - Keep the bundle types, the validator and the serialiser in **one small module**
-  that the competition server's loader can share, so the format is defined once.
+  that the competition server's loader can share, so the format is defined once. It
+  lives in `shared/festival-bundle/` in the `sse-app` repo until the portal has its
+  own repo, then it is published and both projects pin one version.
 - **Score receiver** endpoint for section 9.
 - Stack: TypeScript on Deno is the natural fit with the competition server, but
   nothing in the contract depends on it.
