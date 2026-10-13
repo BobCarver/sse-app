@@ -6,7 +6,13 @@ import { streamSSE } from "@hono/hono/streaming";
 // TYPES
 // ============================================================================
 
-import { ProgressEvent, ScoreSubmission, SSEClient } from "./types.ts";
+import {
+  Competition,
+  ProgressEvent,
+  ScoreSubmission,
+  SSEClient,
+} from "./types.ts";
+import type { Session, SessionDependencies } from "./session.ts";
 import { AudioLibrary, type AudioMetadataStore } from "./audioLibrary.ts";
 import { BundleError, loadBundle } from "./bundle.ts";
 import { Festival, festival, setFestival } from "./festival.ts";
@@ -633,6 +639,199 @@ const reply = (
   status: StartResult["status"] = 200,
 ): StartResult => ({ status, body });
 
+/** What a start needs once the session is known to be startable. */
+interface StartPlan {
+  competitions: Competition[];
+  trackId: number;
+  resume: ReturnType<typeof planResume>;
+  /** An operator hold survived a restart: start held. */
+  held: boolean;
+}
+
+type Rejected = { rejected: StartResult };
+
+/**
+ * Is the session in the festival, with something to run, and neither finished
+ * nor cancelled? Reads its saved progress to plan where it picks up (after a
+ * stop or a server restart).
+ */
+async function planStart(
+  sessionId: number,
+): Promise<{ plan: StartPlan } | Rejected> {
+  const competitions = festival().sessionCompetitions(sessionId);
+  const trackId = festival().sessionTrackId(sessionId);
+  if (trackId === undefined) {
+    return {
+      rejected: reply(
+        { error: `No session ${sessionId} in the festival` },
+        404,
+      ),
+    };
+  }
+  if (competitions.length === 0) {
+    return {
+      rejected: reply({
+        error: `No competitions provided for session ${sessionId}`,
+      }, 400),
+    };
+  }
+  try {
+    const rows = await getResumeRows(sessionId);
+    if (rows?.finished) {
+      return {
+        rejected: reply(
+          { error: `Session ${sessionId} has already finished` },
+          409,
+        ),
+      };
+    }
+    if (rows?.cancelled) {
+      return {
+        rejected: reply({ error: `Session ${sessionId} was cancelled` }, 409),
+      };
+    }
+    return {
+      plan: {
+        competitions,
+        trackId,
+        resume: planResume(competitions, rows),
+        held: !!rows?.held,
+      },
+    };
+  } catch (err) {
+    console.error(`Session ${sessionId}: database error on start:`, err);
+    return {
+      rejected: reply({ error: "Database error while loading session" }, 500),
+    };
+  }
+}
+
+/**
+ * Reserve the track: against running sessions in memory, then with the lock in
+ * the database, which survives a restart. A fresh session's cursor starts on
+ * its first competitor. `fresh`: the lock was newly taken (not a resume).
+ */
+async function takeTrack(
+  sessionId: number,
+  plan: StartPlan,
+): Promise<{ fresh: boolean } | Rejected> {
+  const { trackId, competitions } = plan;
+  const conflict = SessionManager.findConflict(sessionId, trackId);
+  if (conflict) return { rejected: reply({ error: conflict }, 409) };
+
+  let lock;
+  try {
+    lock = await openSession(sessionId, trackId, {
+      competitionId: competitions[0].id,
+      competitorId: competitions[0].competitors[0].id,
+    });
+  } catch (err) {
+    console.error(
+      `Session ${sessionId}: could not take track ${trackId}:`,
+      err,
+    );
+    return {
+      rejected: reply(
+        { error: "Database error while opening the session" },
+        500,
+      ),
+    };
+  }
+  if (!lock.ok) {
+    return {
+      rejected: reply({
+        error:
+          `Track ${trackId} has session ${lock.heldBy} open: it must finish first`,
+      }, 409),
+    };
+  }
+  return { fresh: lock.fresh };
+}
+
+/** Everything a session is wired to: clients, claims, database, audio, cloud. */
+function sessionDeps(
+  sessionId: number,
+  plan: StartPlan,
+  resumed: boolean,
+): SessionDependencies {
+  const { trackId, held } = plan;
+  return {
+    unassignedClients,
+    trackId,
+    claims: judgeClaims,
+    plannedStart: festival().session(sessionId)?.startTime,
+    held,
+    djGates: Deno.env.get("DJ_GATES") !== "0",
+    followingSession: () => followingSession(sessionId),
+    saveScore: (scoreData: ScoreSubmission) => {
+      dlog("Saving score data:", scoreData);
+      return saveScore(scoreData);
+    },
+    recordProgress: async (event: ProgressEvent) => {
+      await recordProgress(sessionId, event);
+      // A competition or the session is over: send the scores (best effort,
+      // never awaited; push() does not throw).
+      if (shouldPushAfter(event)) void cloudCopy.pusher?.push();
+    },
+    // The DJ holds the whole track's audio, reported once for the day (the
+    // report outlives the session). After a crash the audio was in place
+    // before: don't wait for the DJ page to report it again.
+    audioGate: resumed ? undefined : {
+      expectedDigest: () =>
+        trackAudioDigest(audio, festival().trackCompetitions(trackId)),
+      reported: (djId: string) => audioReports.get(djId),
+    },
+  };
+}
+
+/**
+ * Register the session. Synchronous on purpose: the lock was taken before an
+ * await, so another start may have got in since, and nothing may interleave
+ * between this final conflict check, createSession and the caller starting the
+ * run. `release`: the caller must give back the lock it newly took.
+ */
+function registerSession(
+  sessionId: number,
+  trackId: number,
+  fresh: boolean,
+  stale: Session | undefined,
+  deps: SessionDependencies,
+): { session: Session } | Rejected & { release: boolean } {
+  const conflict = SessionManager.findConflict(sessionId, trackId);
+  if (conflict) {
+    return { rejected: reply({ error: conflict }, 409), release: fresh };
+  }
+  if (stale) {
+    console.warn(`Session ${sessionId} is stale (not running); replacing`);
+    SessionManager.deleteSession(sessionId);
+  }
+  try {
+    return { session: SessionManager.createSession(sessionId, deps) };
+  } catch (err) {
+    return { rejected: reply({ error: String(err) }, 500), release: false };
+  }
+}
+
+/** Run the session asynchronously; it is removed when it finishes or fails. */
+function runInBackground(session: Session, plan: StartPlan): void {
+  const { trackId, competitions, resume } = plan;
+  const sessionId = session.id;
+  const permanent = [`dj${trackId}`, `sb${trackId}`];
+  session.runSession(competitions, permanent, resume)
+    .catch((error: unknown) => {
+      console.error(`Session ${sessionId} error:`, error);
+    })
+    .finally(() => {
+      // Only delete our own session (a restart may have replaced it).
+      if (SessionManager.getSession(sessionId) === session) {
+        SessionManager.deleteSession(sessionId);
+      }
+      console.log(`Session ${sessionId} ended (${session.endReason})`);
+      // The track moves on to its next session (when the sequencer runs).
+      sequencer.sessionEnded(trackId, session.endReason);
+    });
+}
+
 /**
  * Load a session from the bundle and run (arm) it from wherever it stopped.
  * `resumed`: it had begun before (a restart), so the audio start gate is
@@ -652,154 +851,58 @@ async function startSession(
     });
   }
 
-  const competitions = festival().sessionCompetitions(sessionId);
-  const trackId = festival().sessionTrackId(sessionId);
-  if (trackId === undefined) {
-    return reply({ error: `No session ${sessionId} in the festival` }, 404);
-  }
-  if (competitions.length === 0) {
-    return reply({
-      error: `No competitions provided for session ${sessionId}`,
-    }, 400);
-  }
+  const planned = await planStart(sessionId);
+  if ("rejected" in planned) return planned.rejected;
+  const { plan } = planned;
 
-  let resume: ReturnType<typeof planResume>;
-  let held = false;
-  try {
-    const rows = await getResumeRows(sessionId);
-    if (rows?.finished) {
-      return reply({ error: `Session ${sessionId} has already finished` }, 409);
-    }
-    if (rows?.cancelled) {
-      return reply({ error: `Session ${sessionId} was cancelled` }, 409);
-    }
-    held = !!rows?.held;
-    // Start where the session left off (after a stop or a server restart).
-    resume = planResume(competitions, rows);
-  } catch (err) {
-    console.error(`Session ${sessionId}: database error on start:`, err);
-    return reply({ error: "Database error while loading session" }, 500);
-  }
+  const track = await takeTrack(sessionId, plan);
+  if ("rejected" in track) return track.rejected;
 
-  const judgeClients = [
-    ...new Set(
-      competitions.flatMap((comp) =>
-        comp.rubric.judges.map((j) => `judge${j.id}`)
-      ),
-    ),
-  ];
-  const permanentClientIds = [`dj${trackId}`, `sb${trackId}`];
+  // No await from here to runInBackground (see registerSession).
+  const registered = registerSession(
+    sessionId,
+    plan.trackId,
+    track.fresh,
+    existing,
+    sessionDeps(sessionId, plan, resumed),
+  );
+  if ("rejected" in registered) {
+    if (registered.release) await releaseSession(sessionId);
+    return registered.rejected;
+  }
+  runInBackground(registered.session, plan);
 
   // Report (don't block on) audio the bundle does not have: those
   // performances would be skipped.
-  const missingAudio = (await audio.missing(competitions, AUDIO_KINDS)).map(
-    (m) => ({
+  const missingAudio = (await audio.missing(plan.competitions, AUDIO_KINDS))
+    .map((m) => ({
       competition_id: m.competitionId,
       competitor_id: m.competitorId,
       kind: m.kind,
-    }),
-  );
-
-  let conflict = SessionManager.findConflict(sessionId, trackId);
-  if (conflict) return reply({ error: conflict }, 409);
-
-  // The track's lock in the database: survives a restart, unlike the check
-  // above. A fresh session's cursor starts on its first competitor.
-  let lock;
-  try {
-    lock = await openSession(sessionId, trackId, {
-      competitionId: competitions[0].id,
-      competitorId: competitions[0].competitors[0].id,
-    });
-  } catch (err) {
-    console.error(
-      `Session ${sessionId}: could not take track ${trackId}:`,
-      err,
-    );
-    return reply({ error: "Database error while opening the session" }, 500);
-  }
-  if (!lock.ok) {
-    return reply({
-      error:
-        `Track ${trackId} has session ${lock.heldBy} open: it must finish first`,
-    }, 409);
-  }
-
-  // No await between this check and createSession: the claim is atomic.
-  conflict = SessionManager.findConflict(sessionId, trackId);
-  if (conflict) {
-    if (lock.fresh) await releaseSession(sessionId);
-    return reply({ error: conflict }, 409);
-  }
-
-  if (existing) {
-    console.warn(`Session ${sessionId} is stale (not running); replacing`);
-    SessionManager.deleteSession(sessionId);
-  }
-
-  let session;
-  try {
-    session = SessionManager.createSession(sessionId, {
-      unassignedClients,
-      trackId,
-      claims: judgeClaims,
-      plannedStart: festival().session(sessionId)?.startTime,
-      held,
-      djGates: Deno.env.get("DJ_GATES") !== "0",
-      followingSession: () => followingSession(sessionId),
-      saveScore: (scoreData: ScoreSubmission) => {
-        dlog("Saving score data:", scoreData);
-        return saveScore(scoreData);
-      },
-      recordProgress: async (event: ProgressEvent) => {
-        await recordProgress(sessionId, event);
-        // A competition or the session is over: send the scores (best effort,
-        // never awaited; push() does not throw).
-        if (shouldPushAfter(event)) void cloudCopy.pusher?.push();
-      },
-      // The DJ holds the whole track's audio, reported once for the day (the
-      // report outlives the session). After a crash the audio was in place
-      // before: don't wait for the DJ page to report it again.
-      audioGate: resumed ? undefined : {
-        expectedDigest: () =>
-          trackAudioDigest(audio, festival().trackCompetitions(trackId)),
-        reported: (djId: string) => audioReports.get(djId),
-      },
-    });
-  } catch (err) {
-    return reply({ error: String(err) }, 500);
-  }
-
-  // Run asynchronously; the session is removed when it finishes or fails.
-  session.runSession(competitions, permanentClientIds, resume)
-    .catch((error: unknown) => {
-      console.error(`Session ${sessionId} error:`, error);
-    })
-    .finally(() => {
-      // Only delete our own session (a restart may have replaced it).
-      if (SessionManager.getSession(sessionId) === session) {
-        SessionManager.deleteSession(sessionId);
-      }
-      console.log(`Session ${sessionId} ended (${session.endReason})`);
-      // The track moves on to its next session (when the sequencer runs).
-      sequencer.sessionEnded(trackId, session.endReason);
-    });
-
+    }));
   if (missingAudio.length > 0) {
     console.warn(
       `Session ${sessionId}: ${missingAudio.length} audio file(s) missing`,
     );
   }
 
+  const judges = new Set(
+    plan.competitions.flatMap((comp) =>
+      comp.rubric.judges.map((j) => `judge${j.id}`)
+    ),
+  );
   return reply({
     success: true,
     message: "Session started",
     sessionId,
-    trackId,
+    trackId: plan.trackId,
     missing_audio: missingAudio,
-    already_finished: resume.finished.size,
-    reopened_scoring: resume.reopen ? true : false,
-    clients: { permanent: permanentClientIds, judges: judgeClients },
+    already_finished: plan.resume.finished.size,
+    reopened_scoring: plan.resume.reopen ? true : false,
+    clients: {
+      permanent: [`dj${plan.trackId}`, `sb${plan.trackId}`],
+      judges: [...judges],
+    },
   });
 }
 
