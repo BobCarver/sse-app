@@ -50,6 +50,7 @@ app/src/            server
   session.ts        Session: phases, waits, replay-on-connect, skip/hold/release/cancel, status
   sessionManager.ts sessions map; findConflict (one session per track); JudgeClaims (per competition)
   sequencer.ts      arms each track's open session (boot, after End session, after cancel)
+  sessionStarter.ts SessionStarter: plan, take the track (memory + DB lock), register atomically, run; deps injected (unit-tested without a DB); wired in main.ts (wireSession)
   estimate.ts       delay estimate: cascading expected starts (allowances per competitor)
   sse.ts            per-connection lifecycle (identity-guarded cleanup, ping)
   responseService.ts  /response logic (validate, ownership, scores); route stays thin
@@ -122,7 +123,7 @@ revocation cache, audio reports, the cloud copy's state. A restart resumes at th
 
 **Sessions run themselves** (redesign Phase 3; `sequencer.ts`). Each track always has its
 **open session armed**: the one holding the track, else the first in running order (planned
-start, then `order_number`) not finished or cancelled. Arming = `startSession` in `main.ts`
+start, then `order_number`) not finished or cancelled. Arming = `SessionStarter.start` (`sessionStarter.ts`, wired in `main.ts`)
 (load from the festival, take the track, register DJ and scoreboard, wait for clients, audio
 gate, planned-time gate, the DJ's begin gate). The sequencer arms at boot (which also resumes
 a session a crash or shutdown cut off: no audio gate when it had started), after a session
@@ -430,7 +431,7 @@ Phases 0-7 of the "make it correctly functioning" plan are done, then `/response
 service, competitor audio and DJ gates. The **redesign (`redesign.md`) is complete**:
 Phase 1 bundle loader, 2 cursor progress / skips / missing scores / zero-score rule,
 3 sequencer (planned start, delay estimate, per-competition judge claims, hold / release /
-cancel, no abort), 4 audio per track (no cut-off), 5 cloud copy, 6 docs. Suites: 200 unit
+cancel, no abort), 4 audio per track (no cut-off), 5 cloud copy, 6 docs. Suites: 218 unit
 (incl. `shared/festival-bundle`), 124 frontend, 39 contract, 22 integration (with a DB),
 12 browser tests; all green with exit code 0, with and without `DATABASE_URL` (scratch
 Postgres 17). `deno task static` only passes once generated `public/*.js` is committed.
