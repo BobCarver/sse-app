@@ -23,7 +23,7 @@ shared/             festival-bundle/: the bundle format shared with the portal (
 fixtures/           bundles/e2e (committed), bundles/demo (generated)
 docker/             docker-compose.yml, postgres/db-init/01_schema.sql
 scripts/            build_artifacts.ts, issue-links.ts, fixtures.ts
-tools/              e2e.sh, run-e2e.sh
+tools/              e2e.sh, run-e2e.sh, run-tests.sh
 ```
 
 ## Rules

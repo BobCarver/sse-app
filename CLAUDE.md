@@ -23,14 +23,24 @@ deno task demo          # DEMO=1 server + /demo page with the demo bundle (see "
 deno task fixtures      # regenerate the committed e2e bundle (fixtures/bundles/e2e) from scripts/fixtures.ts
 deno task dev           # run the server, restarting on file changes (needs a bundle; ADMIN_TOKEN, DATABASE_URL to be useful)
 ADMIN_TOKEN=... deno task links issue --tracks 1,2 --judges 2,3   # see "Operating"
+ADMIN_TOKEN=... deno task links push [--final]   # send the scores to the portal now (see "Cloud copy")
 ```
 
 Always check **exit codes**, not just "N passed" (see Gotchas). Environment:
-`DATABASE_URL`, `ADMIN_TOKEN` (admin routes return 503 without it), `PORT`
-(3000), `PUBLIC_URL` (base for issued links), `JUDGE_SCORE_TIMEOUT_MS` (60000),
-`PERFORMANCE_TIMEOUT_MS` (0 = none), `BUNDLE_DIR` (./bundle: manifest.json + data.json),
-`AUDIO_DIR` (./audio, gitignored: the bundle's audio files), `DJ_GATES` (0 = no DJ start/end buttons; tests and e2e set it), `ARMING` (0 = sessions do not arm themselves; also off with `DEMO=1`), `ALLOWANCE_ANNOUNCE_S` / `ALLOWANCE_SCORING_S` / `ALLOWANCE_CHANGEOVER_S` (20/30/45, per-competitor seconds for the delay estimate), `CLOUD_URL` / `CLOUD_TOKEN` / `CLOUD_PUSH_INTERVAL_S` (300) (cloud copy of the scores; off without `CLOUD_URL`), `REQUIRE_DB=1` (integration tests fail
-instead of skipping), `E2E_PORT` (8000), `DEBUG=1`.
+
+- Server: `DATABASE_URL`, `ADMIN_TOKEN` (admin routes return 503 without it), `PORT`
+  (3000), `PUBLIC_URL` (base for issued links), `BUNDLE_DIR` (./bundle: manifest.json +
+  data.json), `AUDIO_DIR` (./audio, gitignored: the bundle's audio files), `DEBUG=1`.
+- Timing: `JUDGE_SCORE_TIMEOUT_MS` (60000), `PERFORMANCE_TIMEOUT_MS` (0 = none),
+  `ALLOWANCE_ANNOUNCE_S` / `ALLOWANCE_SCORING_S` / `ALLOWANCE_CHANGEOVER_S` (20/30/45,
+  per-competitor seconds for the delay estimate).
+- Running the day: `ARMING` (0 = sessions do not arm themselves; also off with `DEMO=1`),
+  `DJ_GATES` (0 = no DJ start/end buttons; tests and e2e set it).
+- Cloud copy: `CLOUD_URL` (https; http for localhost only), `CLOUD_TOKEN`,
+  `CLOUD_PUSH_INTERVAL_S` (300). Off without `CLOUD_URL`.
+- Demo: `DEMO=1`, `DEMO_DOMAIN` (lvh.me), `DEMO_SESSION` (1000).
+- Tests and tools: `REQUIRE_DB=1` (integration tests fail instead of skipping),
+  `E2E_PORT` (8000), `BASE_URL` (the `links` CLI's server, default http://localhost:3000).
 
 ## Layout
 
@@ -99,6 +109,16 @@ unread). `shared/festival-bundle/` is the format, shared with the portal (types,
 `resolveSession`). Test and demo festivals are defined in `scripts/fixtures.ts`.
 Issuing a credential returns 404 if the judge/track is not in the bundle. The bundle
 carries no emails, so the admin page's judges have none.
+
+**Persistence: what Postgres holds** (`docker/postgres/db-init/01_schema.sql`; the
+structure is never stored, it comes from the bundle). `festival_bundle` (the paired
+bundle's digest + exact `data.json`), `scores` (one row per judge, competitor and
+criterion, upserted), `track_progress` (one row per track: the open session = the lock,
+and the cursor), `session_runs` (opened/started/finished/cancelled/held times),
+`skips` and `missing_scores` (append-only audit), `client_credentials` (hashes only).
+No foreign keys to the structure: ids are checked against the loaded bundle in code.
+The server holds in memory only what can be rebuilt: the festival, live sessions, the
+revocation cache, audio reports, the cloud copy's state. A restart resumes at the cursor.
 
 **Sessions run themselves** (redesign Phase 3; `sequencer.ts`). Each track always has its
 **open session armed**: the one holding the track, else the first in running order (planned
@@ -406,33 +426,37 @@ static mount). Keep new code within the spirit of those rules; ask before restru
 
 ## Status
 
-Phases 0-7 of the "make it correctly functioning" plan are done and committed, then
-`/response` as a service, competitor audio (manifest, DJ prefetch, start gate) and DJ
-gates (latest commit `88c3a10`: redesign spec). **Redesign (`redesign.md`) Phases 1
-(bundle loader), 2 (cursor progress, skips, missing scores, zero-score rule), 3
-(sequencer, planned start, delay estimate, per-competition judge claims, hold/release/
-cancel, no abort) are committed; Phase 4 (audio per track: track manifest and gate, no
-cut-off) is committed; Phase 5 (cloud copy) is committed.** Suites: 200 unit (incl.
-`shared/festival-bundle`), 124 frontend, 39 contract, 22 integration (with a DB), 12
-browser tests; all green with exit code 0, with and without `DATABASE_URL` (scratch
-Postgres 17). `deno task static`
-only passes once generated `public/*.js` is committed.
+Phases 0-7 of the "make it correctly functioning" plan are done, then `/response` as a
+service, competitor audio and DJ gates. The **redesign (`redesign.md`) is complete**:
+Phase 1 bundle loader, 2 cursor progress / skips / missing scores / zero-score rule,
+3 sequencer (planned start, delay estimate, per-competition judge claims, hold / release /
+cancel, no abort), 4 audio per track (no cut-off), 5 cloud copy, 6 docs. Suites: 200 unit
+(incl. `shared/festival-bundle`), 124 frontend, 39 contract, 22 integration (with a DB),
+12 browser tests; all green with exit code 0, with and without `DATABASE_URL` (scratch
+Postgres 17). `deno task static` only passes once generated `public/*.js` is committed.
 
 Working style (owner): analysis only when asked to analyse; commit only when asked.
 
 ## Open items (next session)
 
-1. **Redesign Phase 6** (`redesign.md`): docs. The cloud copy needs the portal's receiver
-   (the payload above is the proposed contract) and a push on shutdown is not done. Not done in Phase 3: learning the allowances from the day's times;
-   browser tests for the countdown and the delay message (covered by frontend tests: the
-   e2e server runs with `DJ_GATES=0`).
-2. **Portal** (`portal.md`): registration, uploads, loudness normalisation, the exporter
-   (uses `shared/festival-bundle`). There is no upload path on this server any more.
-3. Bundle verification hashes every audio file at each boot (fine for hundreds of
+1. **Portal** (`portal.md`): registration, uploads, loudness normalisation, the exporter
+   (uses `shared/festival-bundle`) and the **score receiver** for the cloud copy (the
+   payload in "Cloud copy" is the proposed contract). There is no upload path on this
+   server. Distribution B (an HTTPS pull of the bundle) is not built.
+2. Not done: learning the delay allowances from the day's actual times; browser tests for
+   the DJ countdown and the scoreboard delay message (covered by frontend tests; the e2e
+   server runs with `DJ_GATES=0`); a cloud push on shutdown; sending progress and actual
+   times to the cloud (only scores and skips go); the admin page does not show whether a
+   DJ holds the track's audio (only `audio:dj<N>` in `waiting_for`).
+3. Audio manifest is the whole track, so a DJ page that reloads with an empty cache
+   downloads finished sessions' files too (narrowing it would change the digest as the day
+   goes on).
+4. Bundle verification hashes every audio file at each boot (fine for hundreds of
    files; cache by size+mtime if it gets slow). A dry run's database cannot take the
    final bundle (pairing guard): use a fresh database for the event.
-4. Single-instance assumption: the revocation cache is in process memory.
-5. CI: `ci.yml` is green on GitHub. Pinned to `ubuntu-24.04`, `actions/checkout@v5`,
+5. Single-instance assumption: the revocation cache and the audio reports are in process
+   memory.
+6. CI: `ci.yml` is green on GitHub. Pinned to `ubuntu-24.04`, `actions/checkout@v5`,
    `setup-node`/`upload-artifact@v6` (Node 24; all three jobs passed on GitHub, run of
-   `570aa84`). Still open: `.vscode/tasks.json` references a missing
-   `start-debug-session.sh`.
+   `570aa84`; not re-run since the redesign commits). Still open: `.vscode/tasks.json`
+   references a missing `start-debug-session.sh`.

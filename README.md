@@ -29,6 +29,61 @@ database remembers the bundle it first ran with and refuses a different one once
 anything has happened (use a fresh database for a different bundle). The bundle
 is final: there are no uploads or changes on this server.
 
+**Audio.** Each track's DJ page downloads the audio of *all of that track's sessions*
+once, as soon as the page is open (there is no cut-off time), checks every file's
+hash, keeps it in the browser and plays from that copy. The first session to start on
+a track waits until the DJ page reports it holds everything (`audio:dj<N>` under
+`sessions`; `skip` stops waiting). Open the DJ page well before the event, over HTTPS
+or `localhost` if you can (on plain http the copy is kept in memory only, and a page
+reload downloads it again). If a file is missing or broken the DJ skips that
+performance, which is recorded as a skip.
+
+## Configuration
+
+Environment variables (all optional except where noted):
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `DATABASE_URL` | none | Postgres for scores, progress and credentials; without it nothing is saved |
+| `ADMIN_TOKEN` | none | enables the admin API, page and `deno task links` (503 without it) |
+| `BUNDLE_DIR`, `AUDIO_DIR` | `./bundle`, `./audio` | the festival bundle and its audio files |
+| `PORT`, `PUBLIC_URL` | `3000`, none | listen port; public address used in issued links behind a proxy |
+| `JUDGE_SCORE_TIMEOUT_MS` | `60000` | how long judges have to score |
+| `PERFORMANCE_TIMEOUT_MS` | `0` (none) | cap on a performance; a timeout counts as skipped |
+| `ALLOWANCE_ANNOUNCE_S`, `ALLOWANCE_SCORING_S`, `ALLOWANCE_CHANGEOVER_S` | `20`, `30`, `45` | per-competitor seconds in the "about 14:25" delay estimate |
+| `ARMING` | on | `0`: sessions do not start themselves (start by hand) |
+| `DJ_GATES` | on | `0`: no DJ Start / End buttons (tests and the browser tests) |
+| `CLOUD_URL`, `CLOUD_TOKEN`, `CLOUD_PUSH_INTERVAL_S` | off, none, `300` | cloud copy of the scores, see below |
+| `DEMO`, `DEMO_DOMAIN`, `DEMO_SESSION` | off, `lvh.me`, `1000` | development demo page, see below |
+| `REQUIRE_DB`, `E2E_PORT`, `BASE_URL`, `DEBUG` | | tests (`1` makes a missing database a failure; browser-test port) / the `links` tool's server / debug logging |
+
+## Cloud copy of the scores
+
+With `CLOUD_URL` (https; plain http only for localhost) and `CLOUD_TOKEN` set, the
+server sends the festival's scores (and skips) to the portal's receiver, without
+the event ever waiting on it:
+
+- A snapshot goes out **when a competition ends and when a session ends**, and every
+  `CLOUD_PUSH_INTERVAL_S` (300 s) as a safety net and retry. It is not sent again
+  while nothing has changed. The portal replaces the festival's scores with each
+  snapshot, so a missed push needs no special handling.
+- If the portal cannot be reached the server carries on, retries with a growing pause
+  (up to 5 minutes) and the admin page header says "Cloud copy: offline since ...".
+  Otherwise it says "Cloud copy: last sent 12 s ago".
+- **After the event**, send the authoritative copy and check it arrived:
+
+  ```sh
+  ADMIN_TOKEN=... deno task links push --final
+  ```
+
+  `push` without `--final` sends now unless nothing changed. Both exit with an error
+  and the reason if the portal did not accept it.
+- The payload is `POST` JSON with `Authorization: Bearer $CLOUD_TOKEN`:
+  `festival_id`, `bundle_digest` (the receiver should reject a different bundle),
+  `digest`, `final`, `sent_at`, `scores[]` (`competition_id, competitor_id, judge_id,
+  criteria_id, score`) and `skips[]`. The receiver is part of the portal (`portal.md`
+  section 9).
+
 Access: links for DJs, judges and scoreboards
 
 Nothing on the server trusts a device until it opens an admin-issued link.
@@ -142,7 +197,7 @@ Open `/admin` (for example `http://localhost:3000/admin`) and sign in with the
 admin token (`ADMIN_TOKEN`). The token is entered once into a form; the server
 answers with a separate `HttpOnly`, `SameSite=Strict` cookie that expires after 12
 hours, so the token never appears in a URL or the page. The command-line tool keeps
-using the bearer token.
+using the bearer token. The header also shows the state of the cloud copy.
 
 - **Festival tab**: the whole festival as a tree with a hide/reveal triangle at every
   level: festival, track, session, competition, competitor. Upcoming, in progress and

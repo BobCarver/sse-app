@@ -7,6 +7,11 @@ server runs from.
 
 ---
 
+> **Status (2026-10-13): all six phases are implemented and committed.** The record of
+> what the code does now is `CLAUDE.md`; this file keeps the decisions and the reasoning.
+> Deviations: the cloud push also fires when a competition or a session ends (the timer
+> is 300 s, not 30-60 s), and its payload carries skips as well as scores.
+
 ## Prompt
 
 Redesign how the competition server gets its festival data, records progress and
