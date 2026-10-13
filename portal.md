@@ -78,23 +78,21 @@ section 12).
 ## 4. Data ownership
 
 The portal owns the festival structure and everything about people. The bundle
-carries only what the competition server needs to run the day:
+carries only what the competition server needs to run the day, nested the way the
+server walks it (festival > tracks > sessions > competitions > competitors):
 
-| Bundle table | Fields |
+| Bundle level | Fields |
 |---|---|
-| `festival` | `id, name` |
-| `tracks` | `id, festival_id, name, location` |
-| `sessions` | `id, track_id, name, start_time` (planned, UTC), `order_number` |
-| `competitions` | `id, session_id, order_number, rubric_id, name` |
-| `rubrics` | `id, name` |
-| `criteria` | `id, name` |
-| `rubric_criteria` | `rubric_id, criteria_id, weight` |
-| `rubric_judges` | `rubric_id, judge_id` |
-| `rubric_judge_criteria` | `rubric_id, judge_id, criteria_id` |
-| `judges` | `id, name` (display name only) |
-| `competitors` | `id, name, type` |
-| `entries` | `competition_id, competitor_id, order_number, duration` (seconds) |
-| `audio_files` | `competition_id, competitor_id, kind, sha256, content_type, bytes` |
+| `festival` | `id, name, rubrics, tracks` |
+| `rubrics[]` | `id, name, criteria: [{id, name, weight}], judges: [{id, name, criteria: [criteria ids]}]` (every rubric used by an exported competition, once) |
+| `tracks[]` | `id, name, location, sessions` |
+| `sessions[]` | `id, name, start_time` (planned, UTC), `order_number`, `competitions` |
+| `competitions[]` | `id, name, order_number, rubric_id` (must match an entry in `rubrics`), `competitors` |
+| `competitors[]` | `id, name, type, order_number, duration` (seconds), `audio` (`music` and optional `announce`: `sha256, content_type, bytes`) |
+
+Only judges assigned to a rubric are exported (they exist as people only to be
+assigned); a judge in no rubric is left out. Competitions with no entries are left
+out too, as today. Criteria are exported inside each rubric, not as a shared list.
 
 Ids are assigned by the portal and used unchanged by the competition server, so
 scores coming back join directly to the portal's own rows.
@@ -119,7 +117,7 @@ not compress):
 ```
 festival-<id>-<generated_at>/
   manifest.json        what this bundle is and how to verify it
-  data.json            the structure, as tables (section 4)
+  data.json            the structure, as a nested tree (section 4)
   audio/
     <sha256>.mp3       one file per distinct hash, normalised (section 6)
 ```
@@ -145,26 +143,63 @@ festival-<id>-<generated_at>/
 }
 ```
 
-`data.json` is **tables, not a nested tree**: no duplication (a rubric shared by
-several competitions, or a competitor in several competitions, appears once), every
-reference is an id that can be checked, and the shapes match the competition
-server's schema names.
+`data.json` is a **nested tree** that mirrors the competition server's in-memory
+structure: each competition holds its competitors in running order, and each
+competitor holds its own audio. The rubrics are listed once under the festival, and a
+competition refers to its rubric by `rubric_id`.
 
 ```json
 {
-  "festival": { "id": 1, "name": "..." },
-  "tracks": [...], "sessions": [...], "competitions": [...],
-  "rubrics": [...], "criteria": [...], "rubric_criteria": [...],
-  "rubric_judges": [...], "rubric_judge_criteria": [...],
-  "judges": [{ "id": 1001, "name": "Judge Ada" }],
-  "competitors": [{ "id": 1001, "name": "Alex Rivera", "type": "individual" }],
-  "entries": [{ "competition_id": 1000, "competitor_id": 1001,
-                "order_number": 1, "duration": 15 }],
-  "audio_files": [{ "competition_id": 1000, "competitor_id": 1001,
-                    "kind": "music", "sha256": "...",
-                    "content_type": "audio/mpeg", "bytes": 4123456 }]
+  "festival": {
+    "id": 1, "name": "Autumn Open",
+    "rubrics": [
+      {
+        "id": 1, "name": "Standard",
+        "criteria": [{ "id": 1, "name": "Technique", "weight": 1 },
+                     { "id": 2, "name": "Musicality", "weight": 1 }],
+        "judges": [{ "id": 1001, "name": "Judge Ada", "criteria": [1, 2] }]
+      }
+    ],
+    "tracks": [
+      {
+        "id": 1, "name": "Main floor", "location": "Hall A",
+        "sessions": [
+          {
+            "id": 1000, "name": "Session 1", "start_time": "2026-10-20T18:00:00Z",
+            "order_number": 1,
+            "competitions": [
+              {
+                "id": 1000, "name": "Latin solo", "order_number": 1, "rubric_id": 1,
+                "competitors": [
+                  { "id": 1001, "name": "Alex Rivera", "type": "individual",
+                    "order_number": 1, "duration": 15,
+                    "audio": { "music": { "sha256": "...", "content_type": "audio/mpeg",
+                                          "bytes": 4123456 } } }
+                ]
+              },
+              {
+                "id": 1001, "name": "Latin couples", "order_number": 2, "rubric_id": 1,
+                "competitors": [
+                  { "id": 1002, "name": "Sam and Kim", "type": "couple",
+                    "order_number": 1, "duration": 20,
+                    "audio": { "music": { "sha256": "...", "content_type": "audio/mpeg",
+                                          "bytes": 3987654 } } }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
 }
 ```
+
+**Rubrics.** Each rubric is written once, under `festival.rubrics`, with a unique
+`id`. Every competition's `rubric_id` must match one of them. Nothing is inherited
+from another competition: each competition names its rubric.
+
+Other rules:
 
 Rules:
 
@@ -187,10 +222,12 @@ Rules:
 ### What the competition server does with it (specified there, summarised here)
 
 - Verifies before use: `data_sha256`; every hash in `audio` present with matching
-  size and sha256; referential integrity; strict running order (unique
-  `order_number` at every level). Refuses the bundle with a clear message
-  otherwise.
-- Runs from `data.json` held in memory as static, read-only data; does not load it
+  size and sha256; strict running order (unique `order_number` at every level);
+  rubric ids unique; every competition's `rubric_id` names a rubric in the festival;
+  every judge criterion names a criterion of its rubric. Refuses the bundle with a
+  clear message otherwise.
+- Runs from `data.json` held in memory as static, read-only data; resolves each
+  `rubric_id` into the same `Competition` objects as today, and does not load it
   into its database tables. It stores the digest and the exact `data.json` text in
   its database, so its backups are complete on their own.
 - Any copy tool can move the files (USB, `cp`, `rsync -a --ignore-existing`, later
@@ -244,12 +281,15 @@ competition server and not in the DJ's browser.
 - **Exporter** (TypeScript), not one big SQL query:
   1. One `REPEATABLE READ` transaction; a few plain `SELECT`s per table (one
      consistent snapshot).
-  2. Build typed objects in the `data.json` shape, copying only the fields in
-     section 4 (this enforces the privacy boundary).
+  2. Build the nested tree (section 5) from the snapshot, copying only the fields in
+     section 4 (this enforces the privacy boundary). Write each rubric used by an
+     exported competition once, under the festival.
   3. Validate with readable errors: strict running order (every session,
-     competition and entry has an `order_number`, unique at its level), references, every
-     `music` file `ready` with sha256 and size (the rest to `problems`), UTC times.
-  4. Serialise canonically: sorted keys, arrays ordered by id or `order_number`,
+     competition and entry has an `order_number`, unique at its level), every
+     `music` file `ready` with sha256 and size (the rest to `problems`), UTC times,
+     and the rubric rules (every competition's rubric is in the export; judge
+     criteria exist in their rubric).
+  4. Serialise canonically: sorted keys, arrays in running order (`order_number`),
      UTC ISO timestamps, fixed formatting.
   5. Compute `data_sha256` and `digest`; write `manifest.json`.
   6. Write the folder (and the uncompressed zip).
@@ -316,7 +356,9 @@ The competition server pushes the festival's scores to the portal:
   outcome.
 - **Testing:** unit tests for sniffing, the exporter (same data -> same digest; any
   exported field changed -> different digest; private fields never appear),
-  validation (duplicate `order_number`, missing file, file still `processing`);
+  rubric references (each used rubric written once; a competition whose `rubric_id`
+  is not in the festival's rubrics is refused), validation (duplicate `order_number`,
+  missing file, file still `processing`, judge criteria not in the rubric);
   a fixture bundle shared with the competition server's loader tests; integration
   tests for upload -> normalise -> export with real ffmpeg on a short silent WAV;
   the score receiver (replace, digest mismatch rejected).

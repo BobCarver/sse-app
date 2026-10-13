@@ -19,7 +19,7 @@ not commit until asked.
 ### Goals
 
 1. **The festival structure is a static, read-only JSON bundle** made by the portal
-   (`manifest.json`, `data.json` as tables, `audio/<sha256>.<ext>`; `portal.md`
+   (`manifest.json`, `data.json` as a nested tree, `audio/<sha256>.<ext>`; `portal.md`
    section 5). It is loaded into memory and never written. **No late changes:** the
    bundle is final once the festival starts.
 2. **Postgres holds only what happens on the day:** scores, the per-track cursor,
@@ -42,9 +42,11 @@ not commit until asked.
   `rubric_*`, `judges`, `competitors`, `competition_competitors`, `audio_files`)
   are no longer read on the competition server; drop them once tests no longer need
   them.
-- `data.json` is tables (portal.md section 4), not a nested tree. The loader builds
-  indexes and assembles the same `Competition` objects that
-  `getSessionCompetitionsWithRubrics` returns today, so `session.ts` changes little.
+- `data.json` is a nested tree (festival > rubrics and tracks > sessions >
+  competitions > competitors, portal.md section 5). Each rubric is listed once under
+  the festival; a competition names it by `rubric_id`. The loader resolves that id, so
+  the same `Competition` objects that `getSessionCompetitionsWithRubrics` returns
+  today come out, and `session.ts` changes little.
 - **Pairing guard:** on first use the database records the bundle `digest` and the
   exact `data.json` text; the server refuses to start with a different bundle once
   anything has run. Scores (or the cursor rows) carry the digest or festival id so
@@ -56,8 +58,9 @@ not commit until asked.
   in `AUDIO_DIR` with matching size and sha256; referential integrity; strict
   running order (every session, competition and entry has an `order_number`,
   unique for sessions per track, competitions per session, entries per
-  competition; the portal assigns one by default). Refuse with a clear message
-  otherwise.
+  competition; the portal assigns one by default); every competition's `rubric_id`
+  names a rubric in the festival; rubric ids are unique; every judge criterion names
+  a criterion of its rubric. Refuse with a clear message otherwise.
 - Copying the bundle is done by any tool (USB, `cp`,
   `rsync -a --ignore-existing`); the verification decides correctness. A built-in
   HTTPS pull from the portal comes later (fetch the manifest, then missing hashes
@@ -151,7 +154,8 @@ not commit until asked.
 
 1. **Bundle loader.** Shared module with the portal (types, validator, canonical
    serialiser): load and verify the bundle, digest guard and `data.json` text in the
-   database, build the in-memory structure. Replace the structure reads in `db.ts`:
+   database, build the in-memory structure with each competition's rubric resolved.
+   Replace the structure reads in `db.ts`:
    `getSessionCompetitionsWithRubrics`, `getSessionTrackId`, `getFollowingSession`,
    `clientExists` (credential issue), the session lookup used by the audio
    cut-off, the overview queries, and the `audio_files` metadata (manifest from the
@@ -178,7 +182,9 @@ not commit until asked.
 ### Tests to update or add
 
 - Unit: bundle verification (bad hash, missing file, duplicate `order_number`,
-  broken reference, digest mismatch); derive-status helper; resume from the cursor
+  broken reference, digest mismatch, a `rubric_id` missing from the festival, judge
+  criterion outside its rubric); rubric resolution (each competition gets the rubric
+  it names); derive-status helper; resume from the cursor
   (both phases); zero-score rule; sequencer (arming after End session, planned-time
   gate, delay estimate, cross-track judge wait); push sender (digest skip, retry)
   with an injected fetch.
