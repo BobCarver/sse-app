@@ -183,6 +183,11 @@ export class Festival {
     );
   }
 
+  /** Every audio file in the bundle. */
+  allAudio(): AudioRecord[] {
+    return [...this.audio.values()];
+  }
+
   audioFor(competitionIds: number[]): AudioRecord[] {
     const ids = new Set(competitionIds);
     return [...this.audio.values()].filter((a) => ids.has(a.competitionId));

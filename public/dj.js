@@ -410,6 +410,9 @@ function formatWhen(iso, now = /* @__PURE__ */ new Date()) {
   });
   return `${day} ${time}`;
 }
+function formatNextStart(planned, estimate, now = /* @__PURE__ */ new Date()) {
+  return estimate ? `about ${formatWhen(estimate, now)} (planned ${formatWhen(planned, now)})` : formatWhen(planned, now);
+}
 function durationMs(c) {
   return (c.duration ?? 0) * 1e3;
 }
@@ -552,7 +555,7 @@ var DjClient = class extends sseClient {
     });
     this.sse.addEventListener("session_finished", ({ data }) => {
       const msg = JSON.parse(data);
-      this.setStatus(msg.next_session_start ? `Session finished. The next session begins at ${msg.next_session_estimate ? `about ${formatWhen(msg.next_session_estimate)} (planned ${formatWhen(msg.next_session_start)})` : formatWhen(msg.next_session_start)}` : "Session finished. No further sessions on this track.");
+      this.setStatus(msg.next_session_start ? `Session finished. The next session begins at ${formatNextStart(msg.next_session_start, msg.next_session_estimate)}` : "Session finished. No further sessions on this track.");
       this.showGate("End session", closeTag(msg.session_id));
     });
     this.sse.addEventListener("competition_start", () => {

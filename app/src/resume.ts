@@ -1,5 +1,5 @@
 import type { Competition, ScoreSubmission } from "./types.ts";
-import type { Cursor } from "./progress.ts";
+import { type Cursor, entryKey } from "./progress.ts";
 
 /** One saved score row (a judge's score for one criterion). */
 export type SavedScore = {
@@ -45,9 +45,6 @@ export type ResumePlan = {
 
 export const NO_RESUME: ResumePlan = { finished: new Set() };
 
-export const finishedKey = (competitionId: number, competitorId: number) =>
-  `${competitionId}:${competitorId}`;
-
 /**
  * "start" resumes at the cursor. Everything before it in running order is
  * finished and never revisited. At the cursor:
@@ -66,7 +63,7 @@ export function planResume(
   const cursor = rows.cursor;
   for (const comp of competitions) {
     for (const competitor of comp.competitors) {
-      const key = finishedKey(comp.id, competitor.id);
+      const key = entryKey(comp.id, competitor.id);
       if (
         !cursor || cursor.competitionId !== comp.id ||
         cursor.competitorId !== competitor.id

@@ -14,6 +14,7 @@ export {
 } from "./canonical.ts";
 export { validateData, validateManifest } from "./validate.ts";
 export {
+  byOrder,
   type ResolvedCompetition,
   resolveSession,
   sessionsInOrder,

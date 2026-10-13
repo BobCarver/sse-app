@@ -38,6 +38,17 @@ export function formatWhen(iso: string, now: Date = new Date()): string {
   return `${day} ${time}`;
 }
 
+/** "14:30", or "about 14:55 (planned 14:30)" when the track runs late. */
+export function formatNextStart(
+  planned: string,
+  estimate?: string | null,
+  now: Date = new Date(),
+): string {
+  return estimate
+    ? `about ${formatWhen(estimate, now)} (planned ${formatWhen(planned, now)})`
+    : formatWhen(planned, now);
+}
+
 /** A competitor's performance length in milliseconds (durations are stored in seconds). */
 function durationMs(c: { duration?: number | null }): number {
   return (c.duration ?? 0) * 1000;

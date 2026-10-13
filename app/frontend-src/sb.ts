@@ -2,7 +2,7 @@
 import { CompetitorId, Rubric } from "../src/types.ts";
 import type { SseLike } from "./connect.ts";
 import { escapeHtml } from "./html.ts";
-import { formatWhen, sseClient } from "./sseClient.ts";
+import { formatNextStart, formatWhen, sseClient } from "./sseClient.ts";
 import type {
   CompetitionReadyMessage,
   CompetitionStartMessage,
@@ -64,11 +64,7 @@ export class ScoreboardClient extends sseClient {
     this.sse.addEventListener("session_finished", ({ data }) => {
       const msg = JSON.parse(data) as SessionFinishedMessage;
       const when = msg.next_session_start &&
-        (msg.next_session_estimate
-          ? `about ${formatWhen(msg.next_session_estimate)} (planned ${
-            formatWhen(msg.next_session_start)
-          })`
-          : formatWhen(msg.next_session_start));
+        formatNextStart(msg.next_session_start, msg.next_session_estimate);
       this.showBanner(
         when
           ? `Session ended. The next session${

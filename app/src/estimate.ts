@@ -1,5 +1,10 @@
-import type { BundleSession } from "../../shared/festival-bundle/mod.ts";
-import type { Cursor } from "./progress.ts";
+import {
+  type BundleSession,
+  type BundleTrack,
+  byOrder,
+  sessionsInOrder,
+} from "../../shared/festival-bundle/mod.ts";
+import type { Cursor, SessionProgress } from "./progress.ts";
 
 /**
  * When will a track's sessions start? Delays cascade: a session starts at the
@@ -44,8 +49,6 @@ export interface PlannedSession {
 
 /** A bundle session as the estimate needs it (entries in running order). */
 export function planFromBundle(s: BundleSession): PlannedSession {
-  const byOrder = <T extends { order_number: number }>(a: T, b: T) =>
-    a.order_number - b.order_number;
   return {
     id: s.id,
     plannedStart: new Date(s.start_time),
@@ -57,6 +60,29 @@ export function planFromBundle(s: BundleSession): PlannedSession {
       }))
     ),
   };
+}
+
+/**
+ * Expected start of each of a track's sessions that has not finished or been
+ * cancelled (see `estimateStarts`), from where each session is.
+ */
+export function estimateTrack(
+  track: BundleTrack,
+  progressOf: (sessionId: number) => SessionProgress,
+  now: Date,
+  a?: Allowances,
+): Map<number, Date> {
+  const pending = sessionsInOrder(track).filter((s) => {
+    const p = progressOf(s.id);
+    return !p.finished && !p.cancelled;
+  });
+  const open = pending.find((s) => progressOf(s.id).open);
+  return estimateStarts(
+    pending.map(planFromBundle),
+    open && { sessionId: open.id, cursor: progressOf(open.id).cursor },
+    now,
+    a,
+  );
 }
 
 /** A start this much after the planned time counts as late. */

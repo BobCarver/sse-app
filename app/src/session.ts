@@ -8,12 +8,8 @@ import {
   requiredTag,
   scoreTag,
 } from "./contract.ts";
-import {
-  finishedKey,
-  nextInOrder,
-  NO_RESUME,
-  type ResumePlan,
-} from "./resume.ts";
+import { entryKey } from "./progress.ts";
+import { nextInOrder, NO_RESUME, type ResumePlan } from "./resume.ts";
 import {
   type Competition,
   type ProgressEvent,
@@ -293,7 +289,7 @@ export class Session {
     const begun = resume.reopen?.competitionId === competition.id ||
       resume.underway === competition.id ||
       competition.competitors.some((p) =>
-        resume.finished.has(finishedKey(competition.id, p.id))
+        resume.finished.has(entryKey(competition.id, p.id))
       );
     if (begun) return undefined;
     return this.awaitDj(
@@ -845,23 +841,40 @@ export class Session {
     return true;
   }
 
-  /** Between steps: wait here while the session is held. */
-  private async checkpoint(): Promise<void> {
-    if (!this.held) return;
+  /**
+   * A wait that something else ends: `arm` receives the function that resolves
+   * it. Stopping the session rejects with the stop reason; `disarm` then drops
+   * whatever `arm` registered.
+   */
+  private abortable<T>(
+    arm: (done: (value: T) => void) => void,
+    disarm: () => void,
+  ): Promise<T> {
     const signal = this.signal;
-    await new Promise<void>((resolve, reject) => {
+    return new Promise<T>((resolve, reject) => {
       const onAbort = () => {
-        this.holdRelease = null;
+        disarm();
         reject(signal.reason);
       };
       if (signal.aborted) return onAbort();
       signal.addEventListener("abort", onAbort, { once: true });
-      this.holdRelease = () => {
+      arm((value) => {
         signal.removeEventListener("abort", onAbort);
-        resolve();
-      };
-      if (!this.held) this.holdRelease(); // released meanwhile
+        resolve(value);
+      });
     });
+  }
+
+  /** Between steps: wait here while the session is held. */
+  private async checkpoint(): Promise<void> {
+    if (!this.held) return;
+    await this.abortable<void>(
+      (done) => {
+        this.holdRelease = done;
+        if (!this.held) done(); // released meanwhile
+      },
+      () => (this.holdRelease = null),
+    );
   }
 
   /**
@@ -1292,21 +1305,16 @@ export class Session {
   /** Wait for the operator's `skip()` or `reopen()`; stopping the session throws. */
   private awaitOperator(): Promise<"skip" | "reopen"> {
     this.currentPhase = "unscored";
-    const signal = this.signal;
-    return new Promise((resolve, reject) => {
-      const onAbort = () => {
-        this.operatorChoice = null;
-        reject(signal.reason);
-      };
-      if (signal.aborted) return onAbort();
-      signal.addEventListener("abort", onAbort, { once: true });
-      this.operatorChoice = (choice) => {
-        signal.removeEventListener("abort", onAbort);
-        this.operatorChoice = null;
-        this.currentPhase = "idle";
-        resolve(choice);
-      };
-    });
+    return this.abortable<"skip" | "reopen">(
+      (done) => {
+        this.operatorChoice = (choice) => {
+          this.operatorChoice = null;
+          this.currentPhase = "idle";
+          done(choice);
+        };
+      },
+      () => (this.operatorChoice = null),
+    );
   }
 
   /**
@@ -1342,7 +1350,7 @@ export class Session {
   ): Promise<void> {
     const { finished, reopen } = resume;
     const competitions = allCompetitions.filter((c) =>
-      c.competitors.some((p) => !finished.has(finishedKey(c.id, p.id)))
+      c.competitors.some((p) => !finished.has(entryKey(c.id, p.id)))
     );
     const allCompetitionCount = allCompetitions.length;
     if (this.running) {
@@ -1425,7 +1433,7 @@ export class Session {
           const [position, competitor] of competition.competitors.entries()
         ) {
           this.signal.throwIfAborted();
-          if (finished.has(finishedKey(competition.id, competitor.id))) {
+          if (finished.has(entryKey(competition.id, competitor.id))) {
             continue;
           }
           const reopening = reopen?.competitionId === competition.id &&

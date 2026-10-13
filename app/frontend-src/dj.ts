@@ -11,7 +11,7 @@ import {
 import { audioUrl, beginTag, closeTag, perfTag } from "../src/contract.ts";
 import { AudioPrefetcher } from "./audioCache.ts";
 import { postResponse, type SseLike } from "./connect.ts";
-import { formatWhen, sseClient } from "./sseClient.ts";
+import { formatNextStart, formatWhen, sseClient } from "./sseClient.ts";
 
 // 25ms of silence: playing it inside a click unlocks audio for the page.
 const SILENT_WAV =
@@ -136,11 +136,7 @@ export class DjClient extends sseClient {
       this.setStatus(
         msg.next_session_start
           ? `Session finished. The next session begins at ${
-            msg.next_session_estimate
-              ? `about ${formatWhen(msg.next_session_estimate)} (planned ${
-                formatWhen(msg.next_session_start)
-              })`
-              : formatWhen(msg.next_session_start)
+            formatNextStart(msg.next_session_start, msg.next_session_estimate)
           }`
           : "Session finished. No further sessions on this track.",
       );

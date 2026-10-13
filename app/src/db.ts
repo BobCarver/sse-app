@@ -228,6 +228,13 @@ export async function setHeld(
     ON CONFLICT (session_id) DO UPDATE SET held_at = EXCLUDED.held_at`;
 }
 
+/** The session no longer holds its track: the lock and the cursor are cleared. */
+const releaseTrack = (tx: typeof sql, sessionId: number) =>
+  tx`UPDATE track_progress SET open_session = NULL,
+      competition_id = NULL, competitor_id = NULL, phase = NULL,
+      updated_at = NOW()
+    WHERE open_session = ${sessionId}`;
+
 /**
  * Drop a session for good: marked cancelled (never run again) and, if it held
  * its track, the track is given back so it moves on to its next session.
@@ -243,20 +250,13 @@ export async function cancelSession(
       ON CONFLICT (session_id) DO UPDATE
         SET cancelled_at = COALESCE(session_runs.cancelled_at, NOW()),
             held_at = NULL`;
-    await tx`UPDATE track_progress SET open_session = NULL,
-        competition_id = NULL, competitor_id = NULL, phase = NULL,
-        updated_at = NOW()
-      WHERE open_session = ${sessionId}`;
+    await releaseTrack(tx, sessionId);
   });
 }
 
 /** Give the track back (the session is no longer open; its cursor is cleared). */
 export async function releaseSession(sessionId: number): Promise<void> {
-  if (!sql) return;
-  await sql`UPDATE track_progress SET open_session = NULL,
-      competition_id = NULL, competitor_id = NULL, phase = NULL,
-      updated_at = NOW()
-    WHERE open_session = ${sessionId}`;
+  if (sql) await releaseTrack(sql, sessionId);
 }
 
 /**
@@ -328,10 +328,7 @@ export async function recordProgress(
         await sql.begin(async (tx: typeof sql) => {
           await tx`UPDATE session_runs SET finished_at = NOW()
             WHERE session_id = ${sessionId}`;
-          await tx`UPDATE track_progress SET open_session = NULL,
-              competition_id = NULL, competitor_id = NULL, phase = NULL,
-              updated_at = NOW()
-            WHERE open_session = ${sessionId}`;
+          await releaseTrack(tx, sessionId);
         });
       } else if (event.untouched) {
         // Stopped before anything ran: the track is free again. Otherwise it
@@ -378,16 +375,6 @@ export async function getResumeRows(
     cursor,
     cursorScores: [...cursorScores],
   };
-}
-
-/** The session holding a track, if any. */
-export async function getTrackHolder(
-  trackId: number,
-): Promise<number | undefined> {
-  if (!sql) return undefined;
-  const [row] = await sql<{ open_session: number | null }[]>`
-    SELECT open_session FROM track_progress WHERE track_id = ${trackId}`;
-  return row?.open_session ?? undefined;
 }
 
 /** Sessions that ran to the end or were cancelled, and who holds each track. */

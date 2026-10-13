@@ -1,16 +1,12 @@
 import {
   type BundleCompetition,
   type BundleSession,
+  byOrder,
   type FestivalData,
   sessionsInOrder,
 } from "../../shared/festival-bundle/mod.ts";
 import type { AudioRecord } from "./audioLibrary.ts";
-import {
-  type Allowances,
-  estimateStarts,
-  isLate,
-  planFromBundle,
-} from "./estimate.ts";
+import { type Allowances, estimateTrack, isLate } from "./estimate.ts";
 import {
   deriveStatus,
   entryKey,
@@ -139,8 +135,8 @@ export function buildOverview(
     links: activeLinks.get(clientId) ?? [],
   });
 
-  const audioByKey = new Map(
-    ctx.audio.map((a) => [`${a.competitionId}:${a.competitorId}:${a.kind}`, a]),
+  const audioKeys = new Set(
+    ctx.audio.map((a) => `${a.competitionId}:${a.competitorId}:${a.kind}`),
   );
   const scoredBy = new Map(
     rows.scores.map((
@@ -156,19 +152,13 @@ export function buildOverview(
   // Expected starts, per track: delays cascade from the open session.
   const estimates = new Map<number, Date>();
   for (const t of data.festival.tracks) {
-    const pending = sessionsInOrder(t).filter((s) => {
-      const p = progressOf(s.id);
-      return !p.finished && !p.cancelled;
-    });
-    const open = pending.find((s) => progressOf(s.id).open);
-    for (
-      const [id, at] of estimateStarts(
-        pending.map(planFromBundle),
-        open && { sessionId: open.id, cursor: progressOf(open.id).cursor },
-        ctx.now ?? new Date(),
-        ctx.allowances,
-      )
-    ) estimates.set(id, at);
+    const starts = estimateTrack(
+      t,
+      progressOf,
+      ctx.now ?? new Date(),
+      ctx.allowances,
+    );
+    for (const [id, at] of starts) estimates.set(id, at);
   }
 
   const rubrics = new Map(data.festival.rubrics.map((r) => [r.id, r]));
@@ -177,8 +167,6 @@ export function buildOverview(
       id: j.id,
       name: j.name,
     }));
-  const byOrder = <T extends { order_number: number }>(a: T, b: T) =>
-    a.order_number - b.order_number;
 
   const buildSession = (s: BundleSession): OverviewSession => {
     const live = ctx.live(s.id);
@@ -226,8 +214,8 @@ export function buildOverview(
           status: derived.competitors.get(entryKey(comp.id, c.id))!,
           scored_by: scoredBy.get(entryKey(comp.id, c.id)) ?? 0,
           audio: {
-            announce: audioByKey.has(`${comp.id}:${c.id}:announce`),
-            music: audioByKey.has(`${comp.id}:${c.id}:music`),
+            announce: audioKeys.has(`${comp.id}:${c.id}:announce`),
+            music: audioKeys.has(`${comp.id}:${c.id}:music`),
           },
         })),
       })),

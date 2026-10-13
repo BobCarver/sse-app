@@ -12,7 +12,8 @@ export interface ResolvedCompetition
   rubric: BundleRubric;
 }
 
-const byOrder = <T extends { order_number: number }>(a: T, b: T) =>
+/** Sort comparator: running order (`order_number`). */
+export const byOrder = <T extends { order_number: number }>(a: T, b: T) =>
   a.order_number - b.order_number;
 
 /** A track's sessions in running order: planned start, then order_number. */

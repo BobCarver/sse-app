@@ -235,6 +235,9 @@ function formatWhen(iso, now = /* @__PURE__ */ new Date()) {
   });
   return `${day} ${time}`;
 }
+function formatNextStart(planned, estimate, now = /* @__PURE__ */ new Date()) {
+  return estimate ? `about ${formatWhen(estimate, now)} (planned ${formatWhen(planned, now)})` : formatWhen(planned, now);
+}
 function durationMs(c) {
   return (c.duration ?? 0) * 1e3;
 }
@@ -353,7 +356,7 @@ var ScoreboardClient = class extends sseClient {
     });
     this.sse.addEventListener("session_finished", ({ data }) => {
       const msg = JSON.parse(data);
-      const when = msg.next_session_start && (msg.next_session_estimate ? `about ${formatWhen(msg.next_session_estimate)} (planned ${formatWhen(msg.next_session_start)})` : formatWhen(msg.next_session_start));
+      const when = msg.next_session_start && formatNextStart(msg.next_session_start, msg.next_session_estimate);
       this.showBanner(when ? `Session ended. The next session${msg.next_session_name ? ` (${msg.next_session_name})` : ""} begins at ${when}` : "Session ended. No further sessions are scheduled on this track.");
     });
     this.sse.addEventListener("performance_start", () => this.showLabel());

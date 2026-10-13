@@ -49,6 +49,49 @@ function parse(text: string, name: string): unknown {
   }
 }
 
+/** Files read and hashed at once at boot (a bundle has hundreds). */
+const AUDIO_CHECKS_AT_ONCE = 8;
+
+/** `fn` over `items`, `limit` at a time; results in the order of `items`. */
+async function mapLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (let i = next++; i < items.length; i = next++) {
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, worker),
+  );
+  return out;
+}
+
+/** What is wrong with one audio file of the manifest, if anything. */
+async function audioProblem(
+  audioDir: string,
+  a: BundleManifest["audio"][number],
+): Promise<string | undefined> {
+  const path = `${audioDir}/${audioFileName(a)}`;
+  let bytes: Uint8Array;
+  try {
+    bytes = await Deno.readFile(path);
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return `${path} is missing`;
+    throw err;
+  }
+  if (bytes.length !== a.bytes) {
+    return `${path} is ${bytes.length} bytes, the manifest says ${a.bytes} (incomplete copy?)`;
+  }
+  if (await sha256Hex(bytes) !== a.sha256) {
+    return `${path} does not match its sha256 (damaged copy?)`;
+  }
+}
+
 export async function loadBundle(
   bundleDir: string,
   audioDir: string,
@@ -68,25 +111,11 @@ export async function loadBundle(
   if (manifestProblems.length > 0) throw new BundleError(manifestProblems);
   const manifest = manifestRaw as BundleManifest;
 
-  const audioProblems: string[] = [];
-  for (const a of manifest.audio) {
-    const path = `${audioDir}/${audioFileName(a)}`;
-    let bytes: Uint8Array;
-    try {
-      bytes = await Deno.readFile(path);
-    } catch (err) {
-      if (!(err instanceof Deno.errors.NotFound)) throw err;
-      audioProblems.push(`${path} is missing`);
-      continue;
-    }
-    if (bytes.length !== a.bytes) {
-      audioProblems.push(
-        `${path} is ${bytes.length} bytes, the manifest says ${a.bytes} (incomplete copy?)`,
-      );
-    } else if (await sha256Hex(bytes) !== a.sha256) {
-      audioProblems.push(`${path} does not match its sha256 (damaged copy?)`);
-    }
-  }
+  const audioProblems = (await mapLimit(
+    manifest.audio,
+    AUDIO_CHECKS_AT_ONCE,
+    (a) => audioProblem(audioDir, a),
+  )).filter((p) => p !== undefined);
   if (audioProblems.length > 0) throw new BundleError(audioProblems);
 
   for (const p of manifest.problems ?? []) {

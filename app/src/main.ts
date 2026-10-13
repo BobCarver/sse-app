@@ -20,20 +20,14 @@ import { type AnnouncerDeps, startAudioAnnouncer } from "./audioAnnouncer.ts";
 import { AUDIO_KINDS, type AudioKind } from "./contract.ts";
 import { DEFAULT_DEMO_SESSION, registerDemoRoutes } from "./demo.ts";
 import { ADMIN_COOKIE, AdminSessions } from "./adminAuth.ts";
-import { buildOverview } from "./adminOverview.ts";
+import { buildOverview, sessionProgress } from "./adminOverview.ts";
 import { cloudConfig, CloudPusher, shouldPushAfter } from "./cloudPush.ts";
 import { planResume } from "./resume.ts";
 import { handleResponse } from "./responseService.ts";
 import { handleSSEConnection } from "./sse.ts";
 import { judgeClaims, SessionManager } from "./sessionManager.ts";
 import { Sequencer } from "./sequencer.ts";
-import {
-  allowances,
-  estimateStarts,
-  isLate,
-  planFromBundle,
-} from "./estimate.ts";
-import { sessionsInOrder } from "../../shared/festival-bundle/mod.ts";
+import { allowances, estimateTrack, isLate } from "./estimate.ts";
 import {
   Credentials,
   hashSecret,
@@ -141,29 +135,8 @@ const audioReports = new Map<string, string>();
 async function trackEstimates(trackId: number): Promise<Map<number, Date>> {
   const track = festival().tracks.find((t) => t.id === trackId);
   if (!track) return new Map();
-  const [marks, rows] = await Promise.all([
-    getSessionMarks(),
-    getProgressRows(),
-  ]);
-  const open = marks.openByTrack.get(trackId);
-  const c = rows.cursors.find((x) => x.track_id === trackId);
-  return estimateStarts(
-    sessionsInOrder(track).filter((s) => !marks.done.has(s.id)).map(
-      planFromBundle,
-    ),
-    open === undefined ? undefined : {
-      sessionId: open,
-      cursor: c && c.competition_id !== null && c.competitor_id !== null
-        ? {
-          competitionId: c.competition_id,
-          competitorId: c.competitor_id,
-          phase: c.phase,
-        }
-        : null,
-    },
-    new Date(),
-    allowances(),
-  );
+  const progressOf = sessionProgress(await getProgressRows());
+  return estimateTrack(track, progressOf, new Date(), allowances());
 }
 
 /**
@@ -353,11 +326,7 @@ app.get("/admin/overview", requireAdmin, async (c: Ctx) => {
   try {
     const f = festival();
     const overview = buildOverview(f.data, await getProgressRows(), {
-      audio: f.audioFor(
-        f.tracks.flatMap((t) =>
-          t.sessions.flatMap((s) => s.competitions.map((x) => x.id))
-        ),
-      ),
+      audio: f.allAudio(),
       credentials: await credentials.all(),
       connected: connectedClientIds(),
       cloud: cloudCopy.pusher?.status(),
@@ -657,7 +626,7 @@ app.get("/js/:file", (c) => {
 // Start a session - loads it from the festival bundle and runs it.
 // Rules: one open session per track (the database's progress row is the lock);
 // the track's DJ (dj<trackId>) and scoreboard (sb<trackId>) are permanent
-// clients; judges are held by the session until it completes.
+// clients; judges are claimed per competition (see JudgeClaims).
 type StartResult = { status: 200 | 400 | 404 | 409 | 500; body: object };
 const reply = (
   body: object,
