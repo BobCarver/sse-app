@@ -29,7 +29,7 @@ Always check **exit codes**, not just "N passed" (see Gotchas). Environment:
 `DATABASE_URL`, `ADMIN_TOKEN` (admin routes return 503 without it), `PORT`
 (3000), `PUBLIC_URL` (base for issued links), `JUDGE_SCORE_TIMEOUT_MS` (60000),
 `PERFORMANCE_TIMEOUT_MS` (0 = none), `BUNDLE_DIR` (./bundle: manifest.json + data.json),
-`AUDIO_DIR` (./audio, gitignored: the bundle's audio files), `DJ_GATES` (0 = no DJ start/end buttons; tests and e2e set it), `ARMING` (0 = sessions do not arm themselves; also off with `DEMO=1`), `ALLOWANCE_ANNOUNCE_S` / `ALLOWANCE_SCORING_S` / `ALLOWANCE_CHANGEOVER_S` (20/30/45, per-competitor seconds for the delay estimate), `REQUIRE_DB=1` (integration tests fail
+`AUDIO_DIR` (./audio, gitignored: the bundle's audio files), `DJ_GATES` (0 = no DJ start/end buttons; tests and e2e set it), `ARMING` (0 = sessions do not arm themselves; also off with `DEMO=1`), `ALLOWANCE_ANNOUNCE_S` / `ALLOWANCE_SCORING_S` / `ALLOWANCE_CHANGEOVER_S` (20/30/45, per-competitor seconds for the delay estimate), `CLOUD_URL` / `CLOUD_TOKEN` / `CLOUD_PUSH_INTERVAL_S` (300) (cloud copy of the scores; off without `CLOUD_URL`), `REQUIRE_DB=1` (integration tests fail
 instead of skipping), `E2E_PORT` (8000), `DEBUG=1`.
 
 ## Layout
@@ -51,6 +51,7 @@ app/src/            server
   adminAuth.ts      admin cookie sessions;  adminOverview.ts  festival tree for /admin;  adminTypes.ts  shared shapes
   demo.ts           DEMO=1 only: /demo page (4 frames), reset
   sha256.ts         sha256 with a pure-JS fallback (no crypto.subtle on plain http)
+  cloudPush.ts      cloud copy: snapshot push of scores + skips (when a competition/session ends, digest skip, backoff, final push)
   audioManifest.ts  the track's file list + digest;  audioAnnouncer.ts  audio_available ticks
   resolveTag.ts     waitForTag/resolveTag rendezvous (takes AbortSignal)
   contract.ts       tag builders + payload validation, shared with the browser
@@ -242,6 +243,27 @@ Order of events:
 `GET /audio/:competition/:competitor/:kind` serves files (Range supported) to the
 DJ of that track only. `/start` lists `missing_audio` but does not block.
 
+**Cloud copy** (redesign Phase 5; `cloudPush.ts`, portal.md section 9). With `CLOUD_URL`
+(https, or http for localhost only) and `CLOUD_TOKEN` set, a background `CloudPusher`
+POSTs a snapshot **when a competition or a session ends** (`shouldPushAfter`, called from
+the session's `recordProgress` in `main.ts` after the database write: the last competitor
+of a competition finalized or skipped, session completed or cancelled; fire and forget)
+and every `CLOUD_PUSH_INTERVAL_S` (300 s; first one 5 s after boot) as the retry and
+catch-all, with `Authorization: Bearer $CLOUD_TOKEN`: `{festival_id, bundle_digest, digest, final,
+sent_at, scores[{competition_id, competitor_id, judge_id, criteria_id, score}],
+skips[...]}`, read in one repeatable-read transaction (`getCloudSnapshot`). The portal
+replaces the festival's scores with it. Skipped when the snapshot digest (festival,
+bundle, sorted scores and skips; not `sent_at`) equals the last one that arrived. Pushes run one at a time; one asked for meanwhile waits and then reads a fresh
+snapshot. A
+failure (network, timeout, non-2xx) never throws and never touches the event: it is
+logged, shown as offline, and retried with backoff (interval x 2^failures, max 5 min).
+`POST /admin/cloud/push {final}` / `deno task links push [--final]`: send now; `final`
+always sends and is the authoritative upload after the event (502 with the reason if it
+failed, 409 if not configured). `GET /admin/overview` has `cloud` (enabled, last sent,
+last final, offline since, last error); the admin header shows it ("Cloud copy: last
+sent 12 s ago" / "offline since ..."). Only scores and skips go (progress and times are
+not sent yet). There is no receiver in this repo: the portal builds it (`portal.md`).
+
 **Admin page.** `GET /admin` (page, no login needed to load) + `/js/admin.js`. Browser
 sign-in: `POST /admin/login {token}` -> random session id in the `admin_session`
 cookie (HttpOnly, SameSite=Strict, 12 h, in memory; `/admin/logout`, `/admin/me`).
@@ -390,8 +412,8 @@ gates (latest commit `88c3a10`: redesign spec). **Redesign (`redesign.md`) Phase
 (bundle loader), 2 (cursor progress, skips, missing scores, zero-score rule), 3
 (sequencer, planned start, delay estimate, per-competition judge claims, hold/release/
 cancel, no abort) are committed; Phase 4 (audio per track: track manifest and gate, no
-cut-off) is implemented, not yet committed.** Suites: 188 unit (incl.
-`shared/festival-bundle`), 123 frontend, 35 contract, 21 integration (with a DB), 12
+cut-off) is committed; Phase 5 (cloud copy) is committed.** Suites: 200 unit (incl.
+`shared/festival-bundle`), 124 frontend, 39 contract, 22 integration (with a DB), 12
 browser tests; all green with exit code 0, with and without `DATABASE_URL` (scratch
 Postgres 17). `deno task static`
 only passes once generated `public/*.js` is committed.
@@ -400,7 +422,8 @@ Working style (owner): analysis only when asked to analyse; commit only when ask
 
 ## Open items (next session)
 
-1. **Redesign Phases 5-6** (`redesign.md`): cloud push, docs. Not done in Phase 3: learning the allowances from the day's times;
+1. **Redesign Phase 6** (`redesign.md`): docs. The cloud copy needs the portal's receiver
+   (the payload above is the proposed contract) and a push on shutdown is not done. Not done in Phase 3: learning the allowances from the day's times;
    browser tests for the countdown and the delay message (covered by frontend tests: the
    e2e server runs with `DJ_GATES=0`).
 2. **Portal** (`portal.md`): registration, uploads, loudness normalisation, the exporter

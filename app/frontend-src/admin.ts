@@ -1,7 +1,12 @@
 /// <reference lib="dom" />
 import { qrcode } from "@libs/qrcode";
 import type { AdminOverview } from "../src/adminTypes.ts";
-import { renderJudges, renderOverview, type ViewState } from "./adminView.ts";
+import {
+  cloudText,
+  renderJudges,
+  renderOverview,
+  type ViewState,
+} from "./adminView.ts";
 
 const OPEN_KEY = "admin-open";
 const POLL_MS = 3000;
@@ -114,10 +119,13 @@ export function startAdminPage(doc: Document = document): void {
       const res = await api("GET", "/admin/overview");
       if (res.ok) {
         const text = await res.text();
+        const o = JSON.parse(text) as AdminOverview;
+        state.now = Date.now();
+        // Every poll: "N s ago" moves on even when nothing else changed.
+        $("cloud").textContent = cloudText(o.cloud, state.now);
+        $("cloud").classList.toggle("bad", !!o.cloud.offline_since);
         if (text !== last) {
           last = text;
-          const o = JSON.parse(text) as AdminOverview;
-          state.now = Date.now();
           tree.innerHTML = renderOverview(o, state);
           judges.innerHTML = renderJudges(o);
         }

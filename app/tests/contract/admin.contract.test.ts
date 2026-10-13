@@ -2,6 +2,7 @@
 // that the CLI's bearer token keeps working.
 import { assert, assertEquals } from "@std/assert";
 import { app } from "../../src/main.ts";
+import { CLOUD_OFF } from "../../src/adminOverview.ts";
 import { ADMIN_TOKEN, adminHeaders } from "../auth-utils.ts";
 
 const req = (path: string, init: RequestInit = {}) =>
@@ -55,7 +56,11 @@ Deno.test("admin cookie: reads work; changes need the x-admin-request header", a
   assertEquals((await req("/admin/me", { headers: auth })).status, 200);
   const overview = await req("/admin/overview", { headers: auth });
   assertEquals(overview.status, 200);
-  assertEquals(await overview.json(), { festivals: [], judges: [] }); // no database here
+  assertEquals(await overview.json(), {
+    festivals: [],
+    judges: [],
+    cloud: CLOUD_OFF,
+  }); // no database here
 
   // A cross-site form post could send the cookie but not this header.
   const bare = await req("/admin/credentials", {

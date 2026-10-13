@@ -19,7 +19,9 @@
   [role=tablist] { display: flex; gap: 4px; }
   [role=tab] { font: inherit; padding: 4px 12px; border: 1px solid var(--line); border-radius: 6px; background: transparent; cursor: pointer; color: inherit; }
   [role=tab][aria-selected=true] { background: #2563eb; color: #fff; border-color: #2563eb; }
-  #conn { color: #dc2626; margin-left: auto; }
+  #cloud { color: var(--muted, GrayText); font-size: 12px; margin-left: auto; }
+  #cloud.bad { color: #dc2626; }
+  #conn { color: #dc2626; }
   main { padding: 12px 16px 60px; }
   #login { display: flex; flex-direction: column; gap: 8px; }
   #login h2 { margin: 0; font-size: 18px; }
@@ -94,6 +96,7 @@
     <button role="tab" id="tab-judges" aria-selected="false">Judges</button>
   </div>
   <span class="legend" aria-label="Status colours"><span class="badge upcoming">Upcoming</span><span class="badge in_progress">In progress</span><span class="badge finished">Finished</span><span class="badge skipped">Skipped</span></span>
+  <span id="cloud"></span>
   <span id="conn"></span>
   <button id="logout" type="button" class="small">Sign out</button>
 </header>

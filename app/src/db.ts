@@ -1,6 +1,7 @@
 // db.ts
 import postgres from "postgres";
 import type { ProgressRows } from "./adminOverview.ts";
+import type { CloudSnapshot } from "./cloudPush.ts";
 import type { Cursor, Phase } from "./progress.ts";
 import type { ResumeRows } from "./resume.ts";
 import type { NextEntry, ProgressEvent, ScoreSubmission } from "./types.ts";
@@ -447,4 +448,27 @@ export async function resetSession(
     await tx`DELETE FROM session_runs WHERE session_id = ${sessionId}`;
     await tx`DELETE FROM track_progress WHERE open_session = ${sessionId}`;
   });
+}
+
+/**
+ * Every score and skip, read in one transaction so the snapshot is consistent
+ * (for the cloud copy, see cloudPush.ts).
+ */
+export async function getCloudSnapshot(): Promise<CloudSnapshot> {
+  if (!sql) return { scores: [], skips: [] };
+  return await sql.begin(
+    "isolation level repeatable read read only",
+    async (tx: typeof sql) => {
+      const scores = await tx`
+      SELECT competition_id, competitor_id, judge_id, criteria_id,
+             score::float8 AS score FROM scores`;
+      const skips = await tx`
+      SELECT session_id, competition_id, competitor_id, stage, actor, reason
+      FROM skips`;
+      return {
+        scores: [...scores],
+        skips: [...skips],
+      } as unknown as CloudSnapshot;
+    },
+  ) as CloudSnapshot;
 }

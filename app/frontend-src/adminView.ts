@@ -1,6 +1,7 @@
 import { escapeHtml as esc } from "./html.ts";
 import type {
   AdminOverview,
+  CloudStatus,
   OverviewCompetition,
   OverviewCompetitor,
   OverviewDevice,
@@ -33,6 +34,32 @@ export function fmtTime(iso: string): string {
     dateStyle: "medium",
     timeStyle: "short",
   });
+}
+
+/** "5 s ago", "3 min ago", "2 h ago". */
+export function ago(iso: string, now: number): string {
+  const s = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000));
+  return s < 90
+    ? `${s} s ago`
+    : s < 5400
+    ? `${Math.round(s / 60)} min ago`
+    : `${Math.round(s / 3600)} h ago`;
+}
+
+/** The cloud copy line for the page header (plain text). */
+export function cloudText(c: CloudStatus, now: number): string {
+  if (!c.enabled) return "Cloud copy: off";
+  const final = c.last_final_at
+    ? ` · final sent ${ago(c.last_final_at, now)}`
+    : "";
+  if (c.offline_since) {
+    return `Cloud copy: offline since ${fmtTime(c.offline_since)}${
+      c.last_sent_at ? ` · last sent ${ago(c.last_sent_at, now)}` : ""
+    }${final}`;
+  }
+  return c.last_sent_at
+    ? `Cloud copy: last sent ${ago(c.last_sent_at, now)}${final}`
+    : "Cloud copy: not sent yet";
 }
 
 /** A native <details>: the browser draws the hide/reveal triangle. */

@@ -12,6 +12,9 @@
 //   ADMIN_TOKEN=... deno task links release 1       let session 1 carry on
 //   ADMIN_TOKEN=... deno task links cancel 1        drop session 1 for good; its track moves on
 //
+//   ADMIN_TOKEN=... deno task links push            send the scores to the portal now (cloud copy)
+//   ADMIN_TOKEN=... deno task links push --final    the authoritative upload after the event
+//
 // Sessions run themselves: each track arms its next session (see sequencer.ts).
 //
 // Options: --base <url>   server address (default $BASE_URL or http://localhost:3000)
@@ -39,7 +42,8 @@ const base =
 const tracks = opt("tracks")?.split(",").filter(Boolean) ?? [];
 const judges = opt("judges")?.split(",").filter(Boolean) ?? [];
 const label = opt("label");
-const [command, arg] = args;
+const final_ = args.includes("--final");
+const [command, arg] = args.filter((a) => a !== "--final");
 
 async function call(path: string, init: RequestInit = {}) {
   const res = await fetch(`${base}${path}`, {
@@ -147,9 +151,22 @@ switch (command) {
     );
     break;
   }
+  case "push": {
+    const final = final_;
+    const r = await call("/admin/cloud/push", {
+      method: "POST",
+      body: JSON.stringify({ final }),
+    });
+    console.log(
+      r.sent
+        ? `${final ? "final " : ""}push sent (digest ${r.digest})`
+        : `nothing to send (${r.skipped})`,
+    );
+    break;
+  }
   default:
     console.error(
-      "Usage: issue | list | revoke <id> | sessions | skip <sessionId> | reopen | hold | release | cancel <sessionId>",
+      "Usage: issue | list | revoke <id> | sessions | skip <sessionId> | reopen | hold | release | cancel <sessionId> | push [--final]",
     );
     Deno.exit(2);
 }

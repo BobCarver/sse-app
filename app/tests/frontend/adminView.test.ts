@@ -1,5 +1,6 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  cloudText,
   renderDevice,
   renderJudges,
   renderOverview,
@@ -8,7 +9,12 @@ import {
 import { qrSvg, shareLinks, whatsappNumber } from "../../frontend-src/admin.ts";
 // Test-only: an independent decoder, to prove the codes actually scan.
 import { decode } from "@pinta365/qr/decode";
-import type { AdminOverview, OverviewSession } from "../../src/adminTypes.ts";
+import type {
+  AdminOverview,
+  CloudStatus,
+  OverviewSession,
+} from "../../src/adminTypes.ts";
+import { CLOUD_OFF } from "../../src/adminOverview.ts";
 
 const state = (
   open: Record<string, boolean> = {},
@@ -110,6 +116,7 @@ const overview = (s: OverviewSession = session()): AdminOverview => ({
     },
     competitions: [{ id: 100, name: "Jive <b>" }],
   }],
+  cloud: CLOUD_OFF,
 });
 
 Deno.test("admin view: the tree is hierarchical <details> with a triangle at every level", () => {
@@ -264,14 +271,14 @@ Deno.test("admin view: the judges tab lists judges with email and what they judg
   assertStringIncludes(html, "ada@x.test");
   assertStringIncludes(html, "Jive &lt;b&gt;");
   assertStringIncludes(
-    renderJudges({ festivals: [], judges: [] }),
+    renderJudges({ festivals: [], judges: [], cloud: CLOUD_OFF }),
     "No judges yet",
   );
 });
 
 Deno.test("admin view: an empty database explains how to get data", () => {
   assertStringIncludes(
-    renderOverview({ festivals: [], judges: [] }, state()),
+    renderOverview({ festivals: [], judges: [], cloud: CLOUD_OFF }, state()),
     "demo:seed",
   );
 });
@@ -374,4 +381,41 @@ Deno.test("admin view: a skipped competitor has its own colour class, badge and 
   assertStringIncludes(html, '<li class="competitor in_progress">');
   // No skipped badge on the competition when nothing was skipped.
   assert(!renderOverview(overview(), state()).includes("skipped</span>"));
+});
+
+Deno.test("admin view: the cloud copy line says off, not sent yet, last sent, or offline since", () => {
+  const now = Date.parse("2030-01-01T12:00:00Z");
+  const on: CloudStatus = { ...CLOUD_OFF, enabled: true };
+  assertEquals(cloudText(CLOUD_OFF, now), "Cloud copy: off");
+  assertEquals(cloudText(on, now), "Cloud copy: not sent yet");
+  assertEquals(
+    cloudText({ ...on, last_sent_at: "2030-01-01T11:59:30Z" }, now),
+    "Cloud copy: last sent 30 s ago",
+  );
+  assertEquals(
+    cloudText({ ...on, last_sent_at: "2030-01-01T11:50:00Z" }, now),
+    "Cloud copy: last sent 10 min ago",
+  );
+  const down = cloudText(
+    {
+      ...on,
+      last_sent_at: "2030-01-01T11:59:00Z",
+      offline_since: "2030-01-01T11:59:30Z",
+      last_error: "x",
+    },
+    now,
+  );
+  assertStringIncludes(down, "offline since");
+  assertStringIncludes(down, "last sent 60 s ago");
+  assertStringIncludes(
+    cloudText(
+      {
+        ...on,
+        last_sent_at: "2030-01-01T10:00:00Z",
+        last_final_at: "2030-01-01T10:00:00Z",
+      },
+      now,
+    ),
+    "final sent 2 h ago",
+  );
 });

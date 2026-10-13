@@ -21,6 +21,7 @@ import {
 import type { Credential } from "./credentials.ts";
 import type {
   AdminOverview,
+  CloudStatus,
   OverviewCompetition,
   OverviewDevice,
   OverviewLive,
@@ -63,7 +64,17 @@ export interface OverviewContext {
   live(sessionId: number): OverviewLive | null;
   now?: Date;
   allowances?: Allowances;
+  /** The cloud copy's state (absent = not configured). */
+  cloud?: CloudStatus;
 }
+
+export const CLOUD_OFF: CloudStatus = {
+  enabled: false,
+  last_sent_at: null,
+  last_final_at: null,
+  offline_since: null,
+  last_error: null,
+};
 
 /** Where each session is, from the progress rows. */
 export function sessionProgress(
@@ -266,5 +277,6 @@ export function buildOverview(
       device: device("judge", `judge${id}`, name),
       competitions: judgedBy.get(id) ?? [],
     })),
+    cloud: ctx.cloud ?? CLOUD_OFF,
   };
 }

@@ -1,6 +1,10 @@
 import { assertEquals } from "@std/assert";
 import type { FestivalData } from "../../../shared/festival-bundle/mod.ts";
-import { buildOverview, type ProgressRows } from "../../src/adminOverview.ts";
+import {
+  buildOverview,
+  CLOUD_OFF,
+  type ProgressRows,
+} from "../../src/adminOverview.ts";
 import type { AudioRecord } from "../../src/audioLibrary.ts";
 import type { Credential } from "../../src/credentials.ts";
 
@@ -248,5 +252,5 @@ Deno.test("overview: no festival loaded gives an empty tree", () => {
     { runs: [], cursors: [], skips: [], scores: [] },
     ctx(),
   );
-  assertEquals(o, { festivals: [], judges: [] });
+  assertEquals(o, { festivals: [], judges: [], cloud: CLOUD_OFF });
 });

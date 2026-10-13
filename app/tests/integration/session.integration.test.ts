@@ -7,6 +7,7 @@
 import { assert, assertEquals } from "@std/assert";
 import type { FestivalData } from "../../../shared/festival-bundle/mod.ts";
 import {
+  getCloudSnapshot,
   getResumeRows,
   pairBundle,
   resetSession,
@@ -19,11 +20,13 @@ import { Hono } from "@hono/hono";
 import {
   app,
   audio,
+  cloudCopy,
   credentials,
   loadFestival,
   sequencer,
 } from "../../src/main.ts";
 import { registerDemoRoutes } from "../../src/demo.ts";
+import { CloudPusher } from "../../src/cloudPush.ts";
 import { announceAudio } from "../../src/audioAnnouncer.ts";
 import { judgeClaims, SessionManager } from "../../src/sessionManager.ts";
 import { clearAllResolvers } from "../../src/resolveTag.ts";
@@ -281,6 +284,20 @@ Deno.test({
     const db = sql!;
     await seed(db);
     const streams: SSEStream[] = [];
+    // The cloud copy sends the scores when the competition ends, with no timer.
+    const pushed: any[] = [];
+    cloudCopy.pusher = new CloudPusher({
+      url: "https://portal.test/scores",
+      token: "t",
+      intervalMs: 3_600_000,
+      festivalId: () => festival().id,
+      bundleDigest: () => festival().digest,
+      snapshot: getCloudSnapshot,
+      fetch: ((_u: string | URL | Request, init?: RequestInit) => {
+        pushed.push(JSON.parse(init!.body as string));
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }) as typeof fetch,
+    });
     try {
       // Track 1 => DJ "dj1" and scoreboard "sb1"; judges by judge id.
       const [dj, j2, j3, sb] = await openAll();
@@ -368,6 +385,14 @@ Deno.test({
       // Session discards itself when finished.
       await gone();
 
+      // One push, when the competition ended: all four scores. The session end
+      // that followed found nothing new.
+      await eventually(() => Promise.resolve(pushed.length), 1);
+      assertEquals(pushed[0].scores.length, 4);
+      assertEquals(pushed[0].final, false);
+      await delay(100);
+      assertEquals(pushed.length, 1);
+
       // Every judge's score for every competitor was persisted (4 rows).
       const rows = await db`
         SELECT competitor_id, judge_id, criteria_id, score::float AS score
@@ -421,6 +446,7 @@ Deno.test({
       assertEquals(again.status, 409);
       assert((await again.json()).error.includes("already finished"));
     } finally {
+      cloudCopy.pusher = undefined;
       await Promise.all(streams.map((s) => s.close()));
       await delay(50); // let SSE cleanup clear its ping timers
       await unseed(db);
@@ -1753,6 +1779,56 @@ Deno.test({
     } finally {
       Deno.env.set("DJ_GATES", "0");
       await Promise.all(streams.map((s) => s.close()));
+      await unseed(db);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "Cloud copy: the snapshot is read from the database and pushed; a new score changes it",
+  ignore: !sql,
+  fn: async () => {
+    const db = sql!;
+    await seed(db);
+    try {
+      assertEquals(await getCloudSnapshot(), { scores: [], skips: [] });
+      await db`INSERT INTO scores (competition_id, competitor_id, judge_id, criteria_id, score)
+        VALUES (10, 100, 2, 1, 7.5), (10, 100, 3, 1, 8)`;
+      await db`INSERT INTO skips (session_id, competition_id, competitor_id, stage, actor, reason)
+        VALUES (1, 10, 101, 'performance', 'dj', 'no show')`;
+      const snap = await getCloudSnapshot();
+      assertEquals(
+        snap.scores.map((x) => [x.judge_id, x.score]).toSorted(),
+        [[2, 7.5], [3, 8]], // numbers, not strings
+      );
+      assertEquals(snap.skips[0].reason, "no show");
+
+      const bodies: any[] = [];
+      const pusher = new CloudPusher({
+        url: "https://portal.test/scores",
+        token: "t",
+        intervalMs: 1000,
+        festivalId: () => festival().id,
+        bundleDigest: () => festival().digest,
+        snapshot: getCloudSnapshot,
+        fetch: ((_u: string | URL | Request, init?: RequestInit) => {
+          bodies.push(JSON.parse(init!.body as string));
+          return Promise.resolve(new Response(null, { status: 204 }));
+        }) as typeof fetch,
+      });
+      assert((await pusher.push()).sent);
+      assertEquals((await pusher.push()).sent, false); // unchanged
+      await saveScore({
+        competition_id: 10,
+        competitor_id: 101,
+        judge_id: 2,
+        scores: [{ criteria_id: 1, score: 6 }],
+      });
+      assert((await pusher.push()).sent);
+      assertEquals(bodies.map((b) => b.scores.length), [2, 3]);
+      assertEquals(bodies[1].bundle_digest, "test");
+    } finally {
       await unseed(db);
     }
   },

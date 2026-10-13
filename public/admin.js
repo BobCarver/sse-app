@@ -1629,6 +1629,18 @@ function fmtTime(iso) {
     timeStyle: "short"
   });
 }
+function ago(iso, now) {
+  const s = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1e3));
+  return s < 90 ? `${s} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
+}
+function cloudText(c, now) {
+  if (!c.enabled) return "Cloud copy: off";
+  const final = c.last_final_at ? ` \xB7 final sent ${ago(c.last_final_at, now)}` : "";
+  if (c.offline_since) {
+    return `Cloud copy: offline since ${fmtTime(c.offline_since)}${c.last_sent_at ? ` \xB7 last sent ${ago(c.last_sent_at, now)}` : ""}${final}`;
+  }
+  return c.last_sent_at ? `Cloud copy: last sent ${ago(c.last_sent_at, now)}${final}` : "Cloud copy: not sent yet";
+}
 function section(key, dflt, state, cls, summary, body) {
   const open = state.isOpen(key, dflt) ? " open" : "";
   return `<details data-key="${escapeHtml(key)}" class="${cls}"${open}><summary>${summary}</summary>${body}</details>`;
@@ -1795,10 +1807,12 @@ function startAdminPage(doc = document) {
       const res = await api("GET", "/admin/overview");
       if (res.ok) {
         const text = await res.text();
+        const o = JSON.parse(text);
+        state.now = Date.now();
+        $("cloud").textContent = cloudText(o.cloud, state.now);
+        $("cloud").classList.toggle("bad", !!o.cloud.offline_since);
         if (text !== last) {
           last = text;
-          const o = JSON.parse(text);
-          state.now = Date.now();
           tree.innerHTML = renderOverview(o, state);
           judges.innerHTML = renderJudges(o);
         }

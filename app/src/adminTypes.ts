@@ -94,7 +94,21 @@ export interface OverviewJudge {
   competitions: { id: number; name: string }[];
 }
 
+/** The cloud copy of the scores (see cloudPush.ts). */
+export interface CloudStatus {
+  /** False when CLOUD_URL is not set. */
+  enabled: boolean;
+  /** When the last push arrived (an unchanged snapshot is not sent again). */
+  last_sent_at: string | null;
+  /** When the final (authoritative) push arrived. */
+  last_final_at: string | null;
+  /** Since when pushes have been failing; null while they arrive. */
+  offline_since: string | null;
+  last_error: string | null;
+}
+
 export interface AdminOverview {
   festivals: OverviewFestival[];
   judges: OverviewJudge[];
+  cloud: CloudStatus;
 }

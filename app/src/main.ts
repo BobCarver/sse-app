@@ -21,6 +21,7 @@ import { AUDIO_KINDS, type AudioKind } from "./contract.ts";
 import { DEFAULT_DEMO_SESSION, registerDemoRoutes } from "./demo.ts";
 import { ADMIN_COOKIE, AdminSessions } from "./adminAuth.ts";
 import { buildOverview } from "./adminOverview.ts";
+import { cloudConfig, CloudPusher, shouldPushAfter } from "./cloudPush.ts";
 import { planResume } from "./resume.ts";
 import { handleResponse } from "./responseService.ts";
 import { handleSSEConnection } from "./sse.ts";
@@ -42,6 +43,7 @@ import {
 import {
   cancelSession,
   credentialStore,
+  getCloudSnapshot,
   getProgressRows,
   getResumeRows,
   getSessionMarks,
@@ -358,6 +360,7 @@ app.get("/admin/overview", requireAdmin, async (c: Ctx) => {
       ),
       credentials: await credentials.all(),
       connected: connectedClientIds(),
+      cloud: cloudCopy.pusher?.status(),
       live: (id: number) => {
         const sess = SessionManager.getSession(id);
         if (!sess?.isRunning()) return null;
@@ -435,6 +438,46 @@ app.delete("/admin/credentials/:id", requireAdmin, async (c: Ctx) => {
     return c.json({ error: "no active credential with that id" }, 404);
   }
   return c.json({ success: true });
+});
+
+// --- admin: the cloud copy of the scores (see cloudPush.ts) ------------------
+
+/** The sender, set at boot when CLOUD_URL is configured. */
+export const cloudCopy: { pusher?: CloudPusher } = {};
+
+/** Build the sender from CLOUD_URL / CLOUD_TOKEN, or say why there is none. */
+export function cloudFromEnv(): CloudPusher | undefined {
+  const cfg = cloudConfig((k) => Deno.env.get(k));
+  if (!cfg) return undefined;
+  if ("error" in cfg) {
+    console.warn(`Cloud copy is off: ${cfg.error}`);
+    return undefined;
+  }
+  return new CloudPusher({
+    ...cfg,
+    festivalId: () => festival().id,
+    bundleDigest: () => festival().digest,
+    snapshot: getCloudSnapshot,
+  });
+}
+
+/**
+ * Send the scores to the portal now. `{"final": true}` is the authoritative
+ * upload after the event (always sent); otherwise it is sent unless unchanged.
+ */
+app.post("/admin/cloud/push", requireAdmin, async (c: Ctx) => {
+  const pusher = cloudCopy.pusher;
+  if (!pusher) {
+    return c.json({
+      error: "cloud copy is not configured (CLOUD_URL, CLOUD_TOKEN)",
+    }, 409);
+  }
+  const body = await c.req.json().catch(() => ({})) as { final?: unknown };
+  const result = await pusher.push({ final: body.final === true });
+  if (!result.sent && "error" in result) {
+    return c.json({ error: result.error }, 502);
+  }
+  return c.json({ success: true, ...result });
 });
 
 // --- admin: watch and control running sessions ------------------------------
@@ -739,8 +782,12 @@ async function startSession(
         dlog("Saving score data:", scoreData);
         return saveScore(scoreData);
       },
-      recordProgress: (event: ProgressEvent) =>
-        recordProgress(sessionId, event),
+      recordProgress: async (event: ProgressEvent) => {
+        await recordProgress(sessionId, event);
+        // A competition or the session is over: send the scores (best effort,
+        // never awaited; push() does not throw).
+        if (shouldPushAfter(event)) void cloudCopy.pusher?.push();
+      },
       // The DJ holds the whole track's audio, reported once for the day (the
       // report outlives the session). After a crash the audio was in place
       // before: don't wait for the DJ page to report it again.
@@ -1011,6 +1058,7 @@ export async function shutdown(code = 0): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log("Shutting down...");
+  cloudCopy.pusher?.stop();
   for (const s of SessionManager.getRunningSessions()) {
     s.abort("server shutting down");
   }
@@ -1071,6 +1119,8 @@ if (import.meta.main) {
     Deno.exit(1);
   }
   startAudioAnnouncer(announcerDeps);
+  cloudCopy.pusher = cloudFromEnv();
+  cloudCopy.pusher?.start();
   if (Deno.env.get("DEMO") !== "1" && Deno.env.get("ARMING") !== "0") {
     sequencer.enabled = true;
     await sequencer.armAll();
