@@ -6,44 +6,19 @@
 //
 // Pushes happen when a competition or a session ends (shouldPushAfter), plus a
 // slow timer that retries a failed push and catches anything else.
+import {
+  type ScorePush,
+  type ScoreSnapshot,
+  snapshotDigest,
+  sortSnapshot,
+} from "../../shared/festival-bundle/mod.ts";
 import type { CloudStatus } from "./adminTypes.ts";
-import { sha256Hex } from "./sha256.ts";
 import type { ProgressEvent } from "./types.ts";
 
-export interface ScoreRow {
-  competition_id: number;
-  competitor_id: number;
-  judge_id: number;
-  criteria_id: number;
-  score: number;
-}
-
-/** A competitor skipped by an explicit action (the `skips` table). */
-export interface SkipRow {
-  session_id: number;
-  competition_id: number;
-  competitor_id: number;
-  stage: string;
-  actor: string;
-  reason: string;
-}
-
-export interface CloudSnapshot {
-  scores: ScoreRow[];
-  skips: SkipRow[];
-}
-
-/** What the receiver gets: POST, JSON, `Authorization: Bearer <token>`. */
-export interface CloudPayload extends CloudSnapshot {
-  festival_id: number;
-  /** The bundle the scores belong to: the receiver rejects a different one. */
-  bundle_digest: string;
-  /** Digest of the festival id, bundle digest, scores and skips (not of the rest). */
-  digest: string;
-  /** The authoritative upload after the event. */
-  final: boolean;
-  sent_at: string;
-}
+// The payload and its digest are the shared contract with the portal
+// (shared/festival-bundle/score-push.ts); these names are kept for this app.
+export type CloudSnapshot = ScoreSnapshot;
+export type CloudPayload = ScorePush;
 
 export interface CloudConfig {
   url: string;
@@ -111,41 +86,6 @@ export interface CloudDeps extends CloudConfig {
   timeoutMs?: number;
   /** The longest pause between attempts while the receiver is unreachable. */
   maxBackoffMs?: number;
-}
-
-const byKey = <T>(key: (x: T) => number[]) => (a: T, b: T) => {
-  const x = key(a), y = key(b);
-  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] - y[i];
-  return 0;
-};
-
-/** The snapshot in a fixed order, so equal data gives an equal digest. */
-export function sortSnapshot(s: CloudSnapshot): CloudSnapshot {
-  return {
-    scores: s.scores.toSorted(byKey((r) => [
-      r.competition_id,
-      r.competitor_id,
-      r.judge_id,
-      r.criteria_id,
-    ])),
-    skips: s.skips.toSorted(byKey((r) => [
-      r.session_id,
-      r.competition_id,
-      r.competitor_id,
-    ])),
-  };
-}
-
-export function snapshotDigest(
-  festivalId: number,
-  bundleDigest: string,
-  s: CloudSnapshot,
-): Promise<string> {
-  return sha256Hex(
-    new TextEncoder().encode(
-      JSON.stringify([festivalId, bundleDigest, s.scores, s.skips]),
-    ),
-  );
 }
 
 export class CloudPusher {

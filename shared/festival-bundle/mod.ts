@@ -1,7 +1,11 @@
 /**
- * The festival bundle format, shared by the registration portal (which exports
- * bundles) and the competition server (which loads them). See portal.md
- * section 5. Standard library and web APIs only.
+ * The contract between the registration portal and the competition server,
+ * shared by both so neither can drift:
+ * - the festival bundle (portal -> venue): the portal exports it, the server
+ *   loads it. See portal.md section 5.
+ * - the score push (venue -> portal): the server sends it, the portal receives
+ *   it. See portal.md section 9.
+ * Standard library and web APIs only.
  */
 export * from "./types.ts";
 export {
@@ -19,3 +23,18 @@ export {
   resolveSession,
   sessionsInOrder,
 } from "./resolve.ts";
+export {
+  checkScoresAgainstBundle,
+  isValidScore,
+  type ScorePush,
+  type ScoreRow,
+  type ScoreSnapshot,
+  SKIP_ACTORS,
+  SKIP_STAGES,
+  type SkipActor,
+  type SkipRow,
+  type SkipStage,
+  snapshotDigest,
+  sortSnapshot,
+  validateScorePush,
+} from "./score-push.ts";
