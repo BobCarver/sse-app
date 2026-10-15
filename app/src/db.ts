@@ -112,7 +112,7 @@ export async function pairBundle(
   b: { festivalId: number; digest: string; dataText: string },
 ): Promise<string | undefined> {
   if (!sql) return undefined;
-  return await sql.begin(async (tx: typeof sql) => {
+  return await sql.begin(async (tx: NonNullable<typeof sql>) => {
     await tx`LOCK TABLE festival_bundle IN EXCLUSIVE MODE`;
     const [row] = await tx<
       { festival_id: number; digest: string; loaded_at: Date }[]
@@ -188,7 +188,7 @@ export async function openSession(
   first: NextEntry,
 ): Promise<{ ok: true; fresh: boolean } | { ok: false; heldBy: number }> {
   if (!sql) return { ok: true, fresh: true };
-  return await sql.begin(async (tx: typeof sql) => {
+  return await sql.begin(async (tx: NonNullable<typeof sql>) => {
     const taken = await tx<{ track_id: number }[]>`
       INSERT INTO track_progress
         (track_id, open_session, competition_id, competitor_id, phase)
@@ -229,7 +229,7 @@ export async function setHeld(
 }
 
 /** The session no longer holds its track: the lock and the cursor are cleared. */
-const releaseTrack = (tx: typeof sql, sessionId: number) =>
+const releaseTrack = (tx: NonNullable<typeof sql>, sessionId: number) =>
   tx`UPDATE track_progress SET open_session = NULL,
       competition_id = NULL, competitor_id = NULL, phase = NULL,
       updated_at = NOW()
@@ -244,7 +244,7 @@ export async function cancelSession(
   trackId: number,
 ): Promise<void> {
   if (!sql) return;
-  await sql.begin(async (tx: typeof sql) => {
+  await sql.begin(async (tx: NonNullable<typeof sql>) => {
     await tx`INSERT INTO session_runs (session_id, track_id, cancelled_at)
       VALUES (${sessionId}, ${trackId}, NOW())
       ON CONFLICT (session_id) DO UPDATE
@@ -269,7 +269,7 @@ export async function recordProgress(
   event: ProgressEvent,
 ): Promise<void> {
   if (!sql) return;
-  const moveTo = (tx: typeof sql, next: NextEntry) =>
+  const moveTo = (tx: NonNullable<typeof sql>, next: NextEntry) =>
     tx`UPDATE track_progress
       SET competition_id = ${next?.competitionId ?? null},
           competitor_id = ${next?.competitorId ?? null},
@@ -296,7 +296,7 @@ export async function recordProgress(
           AND competitor_id = ${event.competitorId}`;
       break;
     case "competitor_skipped":
-      await sql.begin(async (tx: typeof sql) => {
+      await sql.begin(async (tx: NonNullable<typeof sql>) => {
         await tx`INSERT INTO skips
             (session_id, competition_id, competitor_id, stage, actor, reason)
           VALUES (${sessionId}, ${event.competitionId}, ${event.competitorId},
@@ -325,7 +325,7 @@ export async function recordProgress(
           SELECT track_id FROM session_runs WHERE session_id = ${sessionId}`;
         if (row) await cancelSession(sessionId, row.track_id);
       } else if (event.reason === "completed") {
-        await sql.begin(async (tx: typeof sql) => {
+        await sql.begin(async (tx: NonNullable<typeof sql>) => {
           await tx`UPDATE session_runs SET finished_at = NOW()
             WHERE session_id = ${sessionId}`;
           await releaseTrack(tx, sessionId);
@@ -424,7 +424,7 @@ export async function resetSession(
   competitionIds: number[],
 ): Promise<void> {
   if (!sql) return;
-  await sql.begin(async (tx: typeof sql) => {
+  await sql.begin(async (tx: NonNullable<typeof sql>) => {
     if (competitionIds.length > 0) {
       await tx`DELETE FROM scores WHERE competition_id IN ${
         tx(competitionIds)
@@ -445,7 +445,7 @@ export async function getCloudSnapshot(): Promise<CloudSnapshot> {
   if (!sql) return { scores: [], skips: [] };
   return await sql.begin(
     "isolation level repeatable read read only",
-    async (tx: typeof sql) => {
+    async (tx: NonNullable<typeof sql>) => {
       const scores = await tx`
       SELECT competition_id, competitor_id, judge_id, criteria_id,
              score::float8 AS score FROM scores`;
